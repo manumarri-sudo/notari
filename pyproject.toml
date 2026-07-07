@@ -71,7 +71,7 @@ touchid = [
 otel = [
     "opentelemetry-api>=1.27,<2",
     "opentelemetry-sdk>=1.27,<2",
-    "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.43.0,<2",
 ]
 # Cross-platform PDF rendering for `quill audit export --pack` when no
 # system browser (Chrome / Brave / Edge / Chromium) is available.
