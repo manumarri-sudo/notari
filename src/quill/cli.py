@@ -678,7 +678,7 @@ def check_approval_cmd(
 # rejects a non-SHA pin, so init and status stay consistent. Bump this SHA on
 # every release (part of the release process); it is the SINGLE source of truth
 # shared with docs/secure-workflow.yml.
-_QUILL_ACTION_PIN = "manumarri-sudo/quill@bde249a49480199e12de07f16b45ac21be7bdb47"  # v0
+_QUILL_ACTION_PIN = "manumarri-sudo/quill@679e7afb2e0266e8ac3871b72bd68151600ac998"  # v0
 
 _CONSUMER_WORKFLOW = f"""\
 name: quill-change-control
