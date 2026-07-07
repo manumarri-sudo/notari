@@ -99,7 +99,7 @@ quill_event_types = ["tool.attempted", "verdict.scope_violation"]
 standard = "AIUC-1 Accountability"
 code = "AIUC-D003.3"
 title = "Tool call log including MCP server calls"
-description = """Documents both traditional function calls and MCP server calls. Quill's MCP-proxy form factor logs both surfaces in one chained audit log."""
+description = """Documents tool calls routed through Quill's gate. The local PreToolUse hook emits one HMAC-chained audit entry per tool call, covering both built-in tool calls and MCP-server calls the agent makes through the hooked framework."""
 quill_event_types = ["tool.attempted"]
 
 [[controls]]
