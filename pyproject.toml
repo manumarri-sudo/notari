@@ -53,7 +53,7 @@ dependencies = [
     # the platform marker makes it a no-op on Linux/Windows. Keeping it optional
     # silently degraded every Mac install to "Touch ID unavailable", which after
     # the self-disable hardening meant `quill off` refused outright. (audit #1/#2)
-    "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-LocalAuthentication>=12.2.1,<13; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +63,7 @@ postgres = ["asyncpg>=0.31.0"]
 # Apple-platform-only; on Linux/Windows the typed-token flow remains
 # the only option. Quill auto-detects availability at runtime.
 touchid = [
-    "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-LocalAuthentication>=12.2.1,<13; sys_platform == 'darwin'",
 ]
 # OpenTelemetry GenAI semconv emission. Optional because the OTel SDK is
 # ~450 KB pure Python + a 1.5 MB protobuf wheel. Audit log remains the
