@@ -1,0 +1,41 @@
+quill - vendored third-party code
+
+This product includes adapted code from the following projects.
+
+================================================================================
+sparfenyuk/mcp-proxy
+  Repository:  https://github.com/sparfenyuk/mcp-proxy
+  Version:     v0.11.0 (2026-01-15)
+  License:     MIT
+  Copyright:   2024 Sergey Parfenyuk
+
+  Quill incorporates an adapted version of `src/mcp_proxy/proxy_server.py` at
+  `src/quill/_vendor/proxy_factory.py`. License terms preserved at
+  `src/quill/_vendor/sparfenyuk_LICENSE`.
+
+  Quill modifications:
+    - Added `gate` callable injection on `_call_tool`, `_read_resource`,
+      `_get_prompt` so policy decisions interpose between client and upstream.
+    - Added `upstream_name` parameter for tool-name namespacing
+      (e.g. `filesystem.read_file` rather than `read_file`).
+    - Preserve upstream JSON-RPC error codes by re-raising `McpError`
+      instead of swallowing into `CallToolResult(isError=True)`.
+
+================================================================================
+IBM/mcp-context-forge
+  Repository:  https://github.com/IBM/mcp-context-forge
+  License:     Apache-2.0
+  Copyright:   IBM Corp. and contributors
+
+  Quill borrows the class-name-substring dispatch idiom from
+  `mcpgateway/services/notification_service.py` for routing MCP
+  ServerNotifications to event handlers. Specifically the pattern of
+  matching `type(notification.root).__name__` against a set of class-name
+  fragments, used in `src/quill/notifications.py::_classify`. The rest of
+  IBM's NotificationService (persistence, subscription tracking, refresh
+  queues) was not adopted.
+
+  Apache-2.0 LICENSE text is available at
+  https://www.apache.org/licenses/LICENSE-2.0.
+
+================================================================================

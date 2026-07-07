@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "Quill Change Control: signed change control for AI-authored pull requests"
+message: "If you use this software in research or commentary, please cite it."
+type: software
+authors:
+  - family-names: Marri
+    given-names: Manu
+    affiliation: Loomiq LLC
+repository-code: https://github.com/manumarri-sudo/quill
+url: https://github.com/manumarri-sudo/quill
+license: MIT
+version: 0.3.0
+date-released: "2026-05-27"
+keywords:
+  - ai-agents
+  - agent-governance
+  - change-control
+  - code-review
+  - ci-cd
+  - human-in-the-loop
+  - audit
+  - security
+  - claude-code
+  - cursor

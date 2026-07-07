@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/manumarri-sudo/quill/security/advisories/new
+    about: Report a vulnerability privately (preferred over filing a public issue)
+  - name: Threat-model review
+    url: https://github.com/manumarri-sudo/quill/blob/main/SECURITY.md
+    about: Read SECURITY.md first if your question is about the threat model
+  - name: How to integrate with my coding agent
+    url: https://github.com/manumarri-sudo/quill/blob/main/docs/clients.md
+    about: Per-client integration recipes (Claude Code, Cursor, Cline, Aider, Continue, Windsurf, Zed)

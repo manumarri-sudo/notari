@@ -1,0 +1,174 @@
+name: "Quill Change Control"
+description: >-
+  Verify AI-written diffs against a human-signed perimeter. Enforces the signed
+  boundary (forbidden paths and gate-tamper edits BLOCK), scans added lines for
+  secrets, checks approver provenance, and issues a Quill Change Passport as a
+  commit Status Check. The passport is gate-signed when a gate key is configured
+  (gate-key + gate-pubkeys); otherwise it is unsigned.
+author: "Manu Marri"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  head:
+    description: "Ref to verify against the contract's base commit."
+    required: false
+    default: "HEAD"
+  passport-dir:
+    description: "Directory for passport.json + passport.md."
+    required: false
+    default: ".quill"
+  fail-on-block:
+    description: "Exit 1 (fail the job) when the verdict is BLOCK."
+    required: false
+    default: "true"
+  block-on-review:
+    description: >-
+      Exit 1 (fail the job) on NEEDS_REVIEW verdicts, not just BLOCK. Use this
+      for strict deployments where any finding — including sensitive surfaces —
+      must be explicitly approved before merge.
+    required: false
+    default: "false"
+  github-token:
+    description: "Token used to publish the commit Status Check."
+    required: false
+    default: ${{ github.token }}
+  head-sha:
+    description: "Commit SHA to attach the Status Check to (defaults to the PR head)."
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  quill-version:
+    description: >-
+      Version spec for the quillx package. Pinned to the exact version this
+      Action release was cut from. The Change Control engine (quill begin/verify)
+      requires >=0.3.0; earlier versions do not contain it.
+    required: false
+    default: "==0.3.0"
+  install-from-source:
+    description: "Install quill from this checked-out repo instead of PyPI (used for dogfooding)."
+    required: false
+    default: "false"
+  strict:
+    description: >-
+      Require a signed perimeter from a trusted approver. When true (recommended),
+      an unsigned / tampered / absent perimeter BLOCKs instead of silently passing.
+    required: false
+    default: "true"
+  gate-key:
+    description: >-
+      Gate identity PRIVATE key (PEM) used to sign the passport, so reviewers can
+      verify the verdict with `quill verify-passport`. Pass from a repo/org secret,
+      e.g. ${{ secrets.QUILL_GATE_KEY }}. Never commit this.
+    required: false
+    default: ""
+  gate-pubkeys:
+    description: >-
+      Trusted gate PUBLIC key(s) (PEM) matching the gate-key. When set, the wrapper
+      re-verifies the passport's own signature before trusting the verdict, so a
+      tampered or unsigned passport fails the job closed. Pass from a secret/variable,
+      e.g. ${{ vars.QUILL_GATE_PUBKEYS }}.
+    required: false
+    default: ""
+  allow-unsigned-evidence:
+    description: >-
+      In strict mode a gate-signed passport is REQUIRED by default. Set this to
+      "true" to explicitly accept report-grade UNSIGNED evidence (no gate key).
+      This is a visible, deliberate downgrade - strict mode never silently accepts
+      unsigned evidence.
+    required: false
+    default: "false"
+  approver-pubkeys:
+    description: >-
+      Trusted approver PUBLIC keys (PEM) that may sign the perimeter/contract. Pass
+      INLINE from a secret/variable so a PR cannot edit the trust root, e.g.
+      ${{ secrets.QUILL_APPROVER_PUBKEYS }}. In strict mode (the default) the
+      committed .quill/approvers/*.pub set is IGNORED, and a key path resolving
+      inside the checkout is rejected; only these externally-pinned keys are
+      trusted. In cooperative mode the committed set is used in addition.
+    required: false
+    default: ""
+  allow-pull-request-trigger:
+    description: >-
+      In strict mode the Action refuses to run under the 'pull_request' event
+      because the PR controls the workflow and can remove Quill entirely. Set to
+      "true" ONLY for dogfood repos that install-from-source. Consumers MUST use
+      pull_request_target instead. See docs/SECURITY-MODEL.md.
+    required: false
+    default: "false"
+  checkout-path:
+    description: >-
+      Path to the candidate checkout (relative to $GITHUB_WORKSPACE). When the
+      checkout lives in a subdirectory (recommended: path: _pr_checkout in the
+      checkout step), set this so Quill finds the git repo. Defaults to "."
+      (workspace root). Using a subdirectory prevents candidate-controlled Python
+      modules from shadowing trusted imports.
+    required: false
+    default: "."
+
+outputs:
+  verdict:
+    description: "PASS, NEEDS_REVIEW, or BLOCK."
+    value: ${{ steps.verify.outputs.verdict }}
+  exit-code:
+    description: "Passport exit code: 0 for PASS / NEEDS_REVIEW, 1 for BLOCK. Note: block-on-review affects the job exit, not this output."
+    value: ${{ steps.verify.outputs.exit_code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+      with:
+        python-version: "3.12"
+
+    - name: Install Quill
+      shell: bash
+      env:
+        PYTHONSAFEPATH: "1"
+      run: |
+        # -I = isolated mode: cwd is NOT added to sys.path, so a candidate
+        # pip.py / json.py / sitecustomize.py in the checkout cannot shadow
+        # stdlib or pip (CRITICAL: prevents pre-gate code execution).
+        #
+        # We do NOT run `pip install --upgrade pip` here: this job holds the gate
+        # signing key + approver pubkeys, so it must pull as little fresh code from
+        # the network as possible. The runner's bundled pip is sufficient to install
+        # a pinned wheel. SUPPLY-CHAIN LIMITATION: this installs the exact quillx
+        # version but resolves its (already-pinned) dependency tree from PyPI without
+        # --require-hashes; for a fully hermetic gate, install from a hash-locked
+        # requirements file or a prebuilt container. See docs/SECURITY-MODEL.md.
+        if [[ "${{ inputs.install-from-source }}" == "true" ]]; then
+          python -I -m pip install -e "${{ github.action_path }}"
+        else
+          python -I -m pip install "quillx${{ inputs.quill-version }}"
+        fi
+
+    - name: Verify diff against contract
+      id: verify
+      shell: bash
+      env:
+        PYTHONSAFEPATH: "1"
+        QUILL_HEAD: ${{ inputs.head }}
+        QUILL_PASSPORT_DIR: ${{ inputs.passport-dir }}
+        QUILL_FAIL_ON_BLOCK: ${{ inputs.fail-on-block }}
+        QUILL_BLOCK_ON_REVIEW: ${{ inputs.block-on-review }}
+        QUILL_HEAD_SHA: ${{ inputs.head-sha }}
+        QUILL_STRICT: ${{ inputs.strict }}
+        QUILL_GATE_KEY: ${{ inputs.gate-key }}
+        QUILL_GATE_PUBKEYS: ${{ inputs.gate-pubkeys }}
+        QUILL_ALLOW_UNSIGNED_EVIDENCE: ${{ inputs.allow-unsigned-evidence }}
+        QUILL_ALLOW_PULL_REQUEST_TRIGGER: ${{ inputs.allow-pull-request-trigger }}
+        QUILL_APPROVER_PUBKEYS: ${{ inputs.approver-pubkeys }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        QUILL_CHECKOUT_PATH: ${{ inputs.checkout-path }}
+      run: |
+        # cd into the candidate checkout so git commands find the repo. This makes
+        # cwd candidate-controlled, so every trusted Python process started from here
+        # is isolated: the `quill` console script does not put cwd on sys.path, and
+        # the wrapper's inline reads use `python3 -I` (isolated mode, Python 3.4+),
+        # which drops cwd from sys.path independently of PYTHONSAFEPATH (3.11+). A
+        # candidate pip.py / json.py / sitecustomize.py therefore cannot execute or
+        # shadow a trusted import even though cwd is the checkout.
+        cd "${{ inputs.checkout-path }}"
+        bash "${{ github.action_path }}/scripts/quill-passport.sh"

@@ -1,0 +1,245 @@
+[build-system]
+requires = ["hatchling>=1.30.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quillx"
+version = "0.3.0"
+description = "Quill Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Manu Marri" },
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "agent-governance",
+    "human-in-the-loop",
+    "audit",
+    "security",
+    "claude-code",
+    "cursor",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "rich>=13.7",
+    "typer>=0.26.8",
+    # Ed25519 attestation is the off-box root of trust for Change Control:
+    # human-signed contracts and gate-signed passports whose verification (public
+    # key) is deliberately not the same secret as forging (private key) - the
+    # property the symmetric HMAC chain cannot provide. A headline security
+    # primitive belongs in the base install, not an optional extra.
+    "cryptography>=42",
+    # Touch ID is a headline security control (gate-disable + approve), so the
+    # binding ships in the BASE install on macOS rather than an opt-in extra -
+    # the platform marker makes it a no-op on Linux/Windows. Keeping it optional
+    # silently degraded every Mac install to "Touch ID unavailable", which after
+    # the self-disable hardening meant `quill off` refused outright. (audit #1/#2)
+    "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=25.7.0"]
+postgres = ["asyncpg>=0.31.0"]
+# Touch-ID-gated approvals on macOS. Optional because the binding is
+# Apple-platform-only; on Linux/Windows the typed-token flow remains
+# the only option. Quill auto-detects availability at runtime.
+touchid = [
+    "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
+]
+# OpenTelemetry GenAI semconv emission. Optional because the OTel SDK is
+# ~450 KB pure Python + a 1.5 MB protobuf wheel. Audit log remains the
+# authoritative store; OTel is observability tooling on top.
+otel = [
+    "opentelemetry-api>=1.27,<2",
+    "opentelemetry-sdk>=1.27,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+]
+# Cross-platform PDF rendering for `quill audit export --pack` when no
+# system browser (Chrome / Brave / Edge / Chromium) is available.
+# Optional because weasyprint pulls in pango / cairo / harfbuzz at runtime
+# on Linux; the browser path is preferred when present (faster, fewer deps).
+pdf = ["weasyprint>=62"]
+all = ["quillx[keyring,postgres,touchid,otel,pdf]"]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-benchmark>=5.2.3",
+    "hypothesis>=6.155.7",
+    "syrupy>=5.3.4",
+    "ruff==0.15.20",   # pinned so CI's format-check matches local formatting exactly
+    "mypy>=2.1.0",
+    "pyright>=1.1.411",
+    "pip-audit>=2.10.1",
+]
+
+[project.scripts]
+quill = "quill.cli:app"
+# Mirror entry point so `uvx quillx start` resolves: uvx runs the executable
+# named after the package, and the dist name is `quillx`. Installed users still
+# get the canonical `quill` binary; both point at the same CLI.
+quillx = "quill.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/manumarri-sudo/quill"
+Documentation = "https://github.com/manumarri-sudo/quill#readme"
+Source = "https://github.com/manumarri-sudo/quill"
+Changelog = "https://github.com/manumarri-sudo/quill/blob/main/CHANGELOG.md"
+Issues = "https://github.com/manumarri-sudo/quill/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quill"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle, pyflakes, warnings
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "C4",            # comprehensions
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+    "S",             # bandit (security)
+    "ANN",           # annotations
+    "PTH",           # pathlib
+    "PL",            # pylint
+    "TCH",           # type-checking
+    "TID",           # tidy-imports
+]
+ignore = [
+    "ANN002", "ANN204", "ANN401",  # *args / dunder / Any - not actually bugs
+    "PLR0911", "PLR0913", # too many returns / args
+    "S101",               # asserts in tests are fine
+    "S105",               # false positive on the PASS/WARN/FAIL color constants
+    "S603", "S607",       # subprocess.run with arg list, no shell - safe
+    "S310",               # urlopen for telemetry endpoint is intentional
+    "TC001", "TC002", "TC003",  # type-checking import gymnastics, not worth it
+    "RUF001", "RUF012", "RUF059",  # mostly false positives in this codebase
+    "N801", "N806", "N818",  # naming nitpicks
+    "UP036", "UP042",     # py3.11-fallback shims + str-enum migration
+    "C416", "SIM103", "SIM105",  # cosmetic
+    "PTH123",             # open() instead of Path.open() is sometimes clearer
+    "E741",               # `l` for line, etc - not ambiguous in context
+    "PLC0415",            # deferred imports inside functions - used to avoid circular deps
+    "PLR0912", "PLR0915", # too many branches / statements - complexity gates
+    "PLR2004",            # magic-value-comparison (e.g. `x == 200`) - common in tests
+    "S110",               # try-except-pass for best-effort cleanup
+    "E701", "E702",       # multiple statements on one line - fine in compact dispatch
+    "E501",               # line too long - handled by formatter, not always reachable
+    "RUF002", "RUF003",   # ambiguous unicode (×, curly quotes) in prose docstrings/comments - intentional
+    "PLW0603",            # `global` for the self-test / cache flags - deliberate, not a bug
+    "S108",               # hardcoded /tmp in best-effort cleanup paths - intentional
+    "S606",               # starting a process without a shell (os.execvp) - the SECURE choice here
+    "SIM117",             # nested `with` (contextlib.suppress + resource) - a wash; not worth re-indenting stable code
+    "PLC3002",            # directly-called lambda - intentional inline compute
+    "ANN202",             # missing return type on a couple of private helpers - minor
+    "PTH105",             # os.replace for atomic rename - the canonical primitive
+    "PLW1510",            # subprocess.run without explicit check - return codes handled manually
+    "SIM102",             # nested if vs `and` - cosmetic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S", "PL"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+strict = true
+warn_unreachable = true
+warn_return_any = true
+# disallow_any_explicit intentionally OFF: this is an MCP/typer/hook codebase
+# whose boundaries (arbitrary hook JSON, MCP tool args) are correctly typed
+# `Any`. Forbidding explicit Any there produced ~180 false-positive errors that
+# buried the real ones and forced CI to `|| true`. (audit 2026-06-12, #47)
+files = ["src/quill"]
+python_version = "3.11"
+
+# LocalAuthentication is the Apple Touch ID / Secure Enclave framework, vendored
+# via pyobjc on macOS and absent on Linux/Windows. It ships no type stubs, so tell
+# mypy to ignore the missing import rather than scattering inline ignores that go
+# stale (one platform sees import-not-found, the other import-untyped).
+[[tool.mypy.overrides]]
+module = ["LocalAuthentication"]
+ignore_missing_imports = true
+
+# opentelemetry is an optional extra (the OTEL dual-write path). When it is not
+# installed, the guarded `import` inside otel.py is correct at runtime; tell mypy
+# not to flag the missing stubs rather than scattering inline ignores.
+[[tool.mypy.overrides]]
+module = ["opentelemetry.*"]
+ignore_missing_imports = true
+
+[tool.pyright]
+include = ["src/quill"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=quill",
+    "--cov-report=term-missing",
+    # Threshold covers the kernel (audit/policy/decay/telemetry/config/proxy/
+    # adapters/errors). Presentation layer (cli/tui/watch/tree/doctor/journal/
+    # session/prompt) is excluded via [tool.coverage.run] omit; those need
+    # integration tests, not unit ones.
+    "--cov-fail-under=75",
+]
+markers = [
+    "bench: performance benchmarks (deselect with '-m \"not bench\"')",
+    "integration: integration tests with real subprocesses",
+]
+
+[tool.coverage.run]
+source = ["src/quill"]
+branch = true
+omit = [
+    "src/quill/_version.py",
+    # Presentation layer: needs integration / TUI tests, not unit tests.
+    "src/quill/cli.py",
+    "src/quill/tui.py",
+    "src/quill/watch.py",
+    "src/quill/tree.py",
+    "src/quill/doctor.py",
+    "src/quill/journal.py",
+    "src/quill/session.py",
+    "src/quill/prompt.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]

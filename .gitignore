@@ -1,0 +1,104 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+build/
+dist/
+wheels/
+.eggs/
+MANIFEST
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.cache/
+pytest-cache-files-*/
+
+# --- Coverage ---
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- Quill runtime artifacts (NEVER commit) ---
+# The signing key is per-installation and must never be checked in.
+.quill/
+~/.quill/
+
+# Audit logs are user data with timestamps; keep out of source control.
+*.audit.log.jsonl
+audit.log.jsonl
+
+# Claude Code session logs - may contain transcripts / tokens; never commit.
+.claude-logs/
+
+# --- Local secrets ---
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets.json
+
+# --- Generated experiment artifacts ---
+# The harness scripts are committed; the generated runs are not.
+experiments/results/
+experiments/results.zip
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+
+# Local-only PDF renders of markdown launch material
+web/pdfs/
+
+# Internal strategy / research / critique drafts and their binary renders.
+# Keep local; the public threat model lives at docs/SECURITY-MODEL.md.
+docs/research/
+
+# Internal launch / go-to-market / business material. Kept local, not public.
+LAUNCH.md
+docs/distribution.md
+docs/marketing/messaging-guide.md
+docs/marketing/coding-agent-incident-recovery.md
+docs/marketing/engagement-terms-template.md
+docs/marketing/substack-draft-disaster-to-deadline.md
+docs/marketing/future-loomiq-saas/
+docs/marketing/outreach/
+
+# Internal experiment harness and backend infra (telemetry/analysis).
+# The client-side telemetry code stays public at src/quill/telemetry.py.
+experiments/
+infra/
+
+# marketing drafts: pre-pivot product positioning + compliance claims; kept
+# local until a Change-Control-aligned rewrite (see FINISH-STATUS.md). Not shipped.
+docs/marketing/
+
+# Manus private research cache (screenshots + competitor notes); not shipped
+research-screenshots/
+
+# internal worklists (security findings + triage); kept local, not public
+AUDIT-FIX-PLAN.md
+FINISH-STATUS.md

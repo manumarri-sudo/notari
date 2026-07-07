@@ -1,0 +1,53 @@
+# Quill Change Control — secure workflow template.
+#
+# Copy this into .github/workflows/quill-check.yml in your repo.
+#
+# WHY pull_request_target: the 'pull_request' event runs the PR's version of
+# the workflow, so an AI agent (or any contributor) can modify the workflow to
+# remove the Quill step and the gate never fires. 'pull_request_target' runs
+# from the BASE branch (main), so only merged code controls the gate. This is
+# non-negotiable for base-controlled enforcement.
+#
+# SAFETY: the PR is checked out into a DATA-ONLY subdirectory (_pr_checkout).
+# No trusted Python process runs with that directory as cwd or on sys.path.
+# Quill is installed from PyPI in isolated mode (python -I), and the wrapper
+# reads the checkout only via git commands. persist-credentials is false so
+# the token is not written into the candidate tree.
+#
+name: quill-change-control
+
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  change-control:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (data-only, isolated subdirectory)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: _pr_checkout
+          persist-credentials: false
+
+      - name: Quill Change Control
+        uses: manumarri-sudo/quill@b7d1e64d5779dfbffb6ffd294de06a7935ff4e46  # v0 — SHA-pinned; bump on release
+        with:
+          head: ${{ github.event.pull_request.head.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          strict: "true"
+          fail-on-block: "true"
+          # checkout-path tells the wrapper which subdirectory holds the candidate
+          # git repo. Without it the wrapper runs from the workspace root (no repo
+          # there) and fails closed. It MUST match the checkout `path:` above.
+          checkout-path: _pr_checkout
+          gate-key: ${{ secrets.QUILL_GATE_KEY }}
+          gate-pubkeys: ${{ vars.QUILL_GATE_PUBKEYS }}
+          approver-pubkeys: ${{ secrets.QUILL_APPROVER_PUBKEYS }}
+          passport-dir: _pr_checkout/.quill

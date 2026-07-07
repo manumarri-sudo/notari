@@ -1,0 +1,52 @@
+# Dependabot keeps Quill's deps current with weekly PRs.
+# Three ecosystems matter here: the Python runtime deps, the GitHub Actions
+# we run on every CI / release, and the optional extras (weasyprint,
+# pyobjc-LocalAuthentication, asyncpg, opentelemetry) shipped under
+# `[pdf]`, `[touchid]`, `[postgres]`, and `[otel]`.
+#
+# Security updates ship immediately regardless of the weekly cadence.
+
+version: 2
+
+updates:
+  # Python deps (project + dev + optional extras).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 5
+    groups:
+      # Pin all dev-tooling bumps into a single PR per week so the noise
+      # stays low. ruff / mypy / pyright / pytest move together anyway.
+      dev-tooling:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pyright"
+          - "pytest*"
+          - "hypothesis"
+          - "syrupy"
+          - "pip-audit"
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions versions used in ci.yml and release.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"

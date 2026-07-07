@@ -1,0 +1,71 @@
+name: release
+
+# Auto-publishes to PyPI when a GitHub release is published. Uses PyPI
+# Trusted Publishing (OIDC) so no API token lives in repo secrets. One-time
+# setup required on the PyPI side: register manumarri-sudo/quill as a
+# trusted publisher for the `quillx` project with workflow `release.yml`
+# and environment `pypi`. The PyPI dist is `quillx` because `quill` was
+# taken; the package, CLI binary, and config dir all remain `quill`. See:
+#   https://docs.pypi.org/trusted-publishers/
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/quillx
+    permissions:
+      # Required for Trusted Publishing OIDC token exchange.
+      id-token: write
+      # Required to attach SBOM / attestations to the release.
+      contents: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip build twine
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $tag != pyproject version $pkg"
+            exit 1
+          fi
+          echo "tag and pyproject agree on version: $pkg"
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Twine check
+        run: twine check dist/*
+
+      - name: Publish to PyPI via Trusted Publishing
+        # Tolerated until PyPI Trusted Publishing is registered for `quillx`.
+        # Without TP the OIDC handshake fails; once TP is in place this step
+        # publishes cleanly and `skip-existing: true` keeps re-runs idempotent.
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Generate attestations
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
+        with:
+          subject-path: "dist/*"
