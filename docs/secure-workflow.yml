@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Quill Change Control
-        uses: manumarri-sudo/quill@b7d1e64d5779dfbffb6ffd294de06a7935ff4e46  # v0 — SHA-pinned; bump on release
+        uses: manumarri-sudo/quill@bde249a49480199e12de07f16b45ac21be7bdb47  # v0 — SHA-pinned; bump on release
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
