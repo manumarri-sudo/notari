@@ -222,6 +222,53 @@ def test_fix_prompt_is_compact_and_leaks_nothing():
     assert len(prompt) < 3200  # ~800 tokens
 
 
+# Phrases that would turn the fix prompt into a BYPASS prompt. A fix prompt that
+# ever told an agent to defeat the gate would be self-defeating; guard hard.
+_BYPASS_PHRASES = [
+    "disable quill",
+    "weaken quill",
+    "turn off strict",
+    "remove the quill",
+    "delete the workflow",
+    "delete approver",
+    "change the perimeter",
+    "edit .quill",
+    "ignore quill",
+    "skip quill",
+    "bypass the gate",
+]
+
+
+def test_fix_prompt_never_instructs_bypass():
+    # Exercise every finding kind so all rendered guidance is covered.
+    p = _passport(
+        out_of_scope=["ops.cfg"],
+        forbidden_hits=["src/pay.py"],
+        gate_tamper_hits=[".quill/perimeter.json"],
+        secret_findings=[{"path": "a.py", "line": 1, "pattern": "JWT"}],
+        sensitive_surfaces={"ci": ["ci.yml"]},
+        symlink_changes=[{"path": "l", "status": "A", "target": "../x"}],
+        submodule_changes=[{"path": "vendor", "status": "M"}],
+    )
+    low = fix_prompt(p).lower()
+    for phrase in _BYPASS_PHRASES:
+        assert phrase not in low, f"fix prompt contains bypass phrase: {phrase!r}"
+    # It must positively tell the agent NOT to weaken the gate.
+    assert "do not weaken, bypass, or edit quill" in low
+
+
+def test_agent_brief_never_instructs_bypass():
+    brief = agent_brief(
+        task="t",
+        allowed_paths=["src/**"],
+        forbidden_paths=[".github/workflows/**"],
+        review_surfaces=["ci"],
+        promoted=[{"id": "x", "text": "Do not edit workflows."}],
+    ).lower()
+    for phrase in _BYPASS_PHRASES:
+        assert phrase not in brief, f"agent brief contains bypass phrase: {phrase!r}"
+
+
 def test_fix_prompt_caps_findings():
     p = _passport(out_of_scope=[f"f{i}.py" for i in range(12)])
     prompt = fix_prompt(p)

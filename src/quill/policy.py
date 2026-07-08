@@ -1608,11 +1608,25 @@ def classify_sensitive_surface(path: str) -> str | None:
                   strategy, or tracked-file set (security review H-2 residual:
                   a `.gitattributes -diff` entry can suppress secret scanning
                   in tools that don't use `--text`).
+    "agent_instructions" - files whose contents future coding agents READ and
+                  may follow (CLAUDE.md, AGENTS.md, Cursor rules). An agent that
+                  can edit these could poison the next agent, so any change must
+                  reach a human before merge.
+    "quill_learning_state" - Quill's local advisory learning state
+                  (.quill/lessons.json, .quill/mistakes.jsonl). Advisory, never a
+                  security proof; an edit surfaces for review but never changes a
+                  verdict.
     """
     p = path.removeprefix("./")
     base = p.rsplit("/", 1)[-1]
     parts = p.split("/")
 
+    if base in ("CLAUDE.md", "AGENTS.md", ".cursorrules") or (
+        p.startswith(".cursor/rules/") or ".cursor" in parts
+    ):
+        return "agent_instructions"
+    if p in (".quill/lessons.json", ".quill/mistakes.jsonl"):
+        return "quill_learning_state"
     if base in _LOCKFILE_NAMES:
         return "lockfiles"
     if base in (".gitattributes", ".gitignore", ".gitmodules"):
@@ -1653,12 +1667,33 @@ def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluatio
     # Quill's own metadata dir (contract.json, exceptions.json, passport.*) is
     # never agent-authored code; committing it must not register as an
     # out-of-scope change against the contract it describes.
-    files = tuple(f for f in parse_unified_diff(diff_text) if not f.path.startswith(".quill/"))
+    all_files = tuple(parse_unified_diff(diff_text))
+    files = tuple(f for f in all_files if not f.path.startswith(".quill/"))
     allowed = tuple(allowed_paths)
 
     out_of_scope: list[str] = []
     secret_findings: list[SecretFinding] = []
-    surfaces: dict[str, list[str]] = {"tests": [], "ci": [], "lockfiles": [], "gitconfig": []}
+    surfaces: dict[str, list[str]] = {
+        "tests": [],
+        "ci": [],
+        "lockfiles": [],
+        "gitconfig": [],
+        "agent_instructions": [],
+        "quill_learning_state": [],
+    }
+
+    # Sensitive-surface classification runs over the FULL diff (including the two
+    # .quill learning-state files) so a lesson-store or agent-instruction edit
+    # surfaces for review, even though .quill/ is exempt from the scope check
+    # below (contract.json legitimately lives there). Only lessons.json /
+    # mistakes.jsonl match a .quill category; contract/passport/keys return None.
+    for f in all_files:
+        for sp in [f.path, f.old_path] if f.status == "renamed" else [f.path]:
+            if not sp:
+                continue
+            surface = classify_sensitive_surface(sp)
+            if surface is not None and sp not in surfaces[surface]:
+                surfaces[surface].append(sp)
 
     for f in files:
         # A rename touches BOTH ends: the new location AND the old one it moved
@@ -1672,13 +1707,7 @@ def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluatio
             if sp and not path_in_scope(sp, allowed) and sp not in out_of_scope:
                 out_of_scope.append(sp)
 
-        surface_paths = [f.path]
-        if f.status == "renamed" and f.old_path and f.old_path != f.path:
-            surface_paths.append(f.old_path)
-        for sp in surface_paths:
-            surface = classify_sensitive_surface(sp)
-            if surface is not None and sp not in surfaces[surface]:
-                surfaces[surface].append(sp)
+        # (sensitive-surface classification is done above over all_files)
 
         for lineno, text in f.added_lines:
             for hit in _secrets.scan(text):

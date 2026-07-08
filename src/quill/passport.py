@@ -89,7 +89,9 @@ def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> 
     return passport
 
 
-def render_markdown(result: VerifyResult, *, generated_at: str | None = None) -> str:
+def render_markdown(
+    result: VerifyResult, *, generated_at: str | None = None, signed: bool = False
+) -> str:
     """Render the PR-ready markdown passport.
 
     Leads with an actionable block (what to do next, a compact coding-agent
@@ -134,6 +136,25 @@ def render_markdown(result: VerifyResult, *, generated_at: str | None = None) ->
         lines.append("```")
         lines.append("")
         lines.append(f"> {d['does_not_prove']}")
+        lines.append("")
+        lines.append("## Evidence trust")
+        lines.append("")
+        lines.append(
+            "This markdown is for humans. For tamper detection, verify "
+            "`passport.json` with `quill verify-passport`."
+        )
+        if signed:
+            lines.append(
+                "The JSON passport is gate-signed and can be verified with "
+                "`quill verify-passport` — a reviewer can confirm this verdict "
+                "without trusting the repo it came from."
+            )
+        else:
+            lines.append(
+                "This passport is unsigned; treat it as report-grade evidence, "
+                "not a gate-signed verdict. Configure a gate key in CI to get a "
+                "signature a reviewer can independently verify."
+            )
         lines.append("")
 
     lines.append("## Contract")
@@ -298,7 +319,9 @@ def write_passport(
     if sign_key_pem:
         passport = sign_passport(passport, sign_key_pem)
     json_path.write_text(json.dumps(passport, indent=2) + "\n")
-    md_path.write_text(render_markdown(result, generated_at=generated_at))
+    md_path.write_text(
+        render_markdown(result, generated_at=generated_at, signed=bool(sign_key_pem))
+    )
     return json_path, md_path
 
 

@@ -276,7 +276,20 @@ def test_passport_json_and_markdown(repo: Path) -> None:
     assert "## What to do next" in md
     assert "## Prompt to give Claude Code" in md
     assert "What Quill does not prove" in md
+    assert "## Evidence trust" in md
     assert md.index("## What to do next") < md.index("## Evidence")
+    # Unsigned markdown must NOT imply gate-signed evidence.
+    assert "unsigned" in md and "report-grade" in md
+    assert "gate-signed and can be verified" not in md
+    # Signed rendering says the opposite.
+    md_signed = passport_mod.render_markdown(
+        result, generated_at="2026-06-17T00:00:00+00:00", signed=True
+    )
+    assert "gate-signed and can be verified" in md_signed
+    assert "treat it as report-grade" not in md_signed
+    # Never claims to prove correctness/security.
+    for banned in ("proves the code is correct", "proves security", "guarantees no backdoor"):
+        assert banned not in md.lower()
 
     json_path, md_path = passport_mod.write_passport(result, out_dir=repo / ".quill")
     assert json_path.exists() and md_path.exists()

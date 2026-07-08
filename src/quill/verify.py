@@ -1032,8 +1032,16 @@ def verify(
             )
 
     surface_hits = {k: v for k, v in unwaived_surfaces.items() if v}
+    # These surfaces are intrinsically dangerous regardless of the perimeter's
+    # configured review list: agent-instruction files (CLAUDE.md, AGENTS.md,
+    # Cursor rules) poison the next agent, and Quill's own learning state is
+    # advisory-not-proof. They ALWAYS surface for review so an agent can't slip
+    # an instruction-poisoning edit through under a perimeter that forgot them.
+    _ALWAYS_REVIEW = {"agent_instructions", "quill_learning_state"}
     if review_categories is not None:
-        review_hits = {k: v for k, v in surface_hits.items() if k in review_categories}
+        review_hits = {
+            k: v for k, v in surface_hits.items() if k in review_categories or k in _ALWAYS_REVIEW
+        }
     else:
         review_hits = surface_hits
     if review_hits:
