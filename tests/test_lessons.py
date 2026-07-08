@@ -103,10 +103,31 @@ def test_rule_id_mapping_per_finding_type():
 
 
 def test_secret_event_carries_pattern_name_never_value():
-    p = _passport(secret_findings=[{"path": "a.py", "line": 3, "pattern": "AWS Access Key ID"}])
+    # The finding is fed a RAW secret under several plausible keys, so that a
+    # code change which copies ANY finding field into the event (not just the
+    # ones we thought of) is caught — the earlier version only checked a value
+    # the finding never carried, so it passed vacuously (mutation audit 2026-07).
+    p = _passport(
+        secret_findings=[
+            {
+                "path": "a.py",
+                "line": 3,
+                "pattern": "AWS Access Key ID",
+                "value": SECRET_VALUE,
+                "match": SECRET_VALUE,
+                "secret": SECRET_VALUE,
+                "raw": SECRET_VALUE,
+            }
+        ]
+    )
     (e,) = events_from_passport(p)
     assert e["pattern"] == "AWS Access Key ID"
+    # No serialized field may carry the raw value, whatever key it hid behind.
     assert SECRET_VALUE not in json.dumps(e)
+    # And the event's fields are a known, value-free allowlist.
+    assert not ({"value", "match", "secret", "raw"} & set(e)), (
+        f"a raw-value key leaked into the event: {set(e)}"
+    )
 
 
 def test_pass_produces_no_events():
