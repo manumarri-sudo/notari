@@ -2,6 +2,49 @@
 
 All notable changes to `quill` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — public alpha
+
+Quill Change Control: a CI/CD pull-request gate that verifies an AI-written diff
+against a human-signed task boundary and issues a tamper-evident Change Passport.
+This is the first public-alpha release.
+
+### The action loop (verify → explain → fix-prompt → lessons → teach)
+
+- **`quill explain`** turns a passport into plain-English remediation: per finding,
+  what's wrong, a safe `git checkout -- <path>` self-fix, and a paste-ready coding-agent
+  prompt — plus "what Quill does not prove." Formats: `text`, `json`, `html` (a
+  self-contained fix-it page with copy buttons), and `github` (CI annotations on the
+  exact PR diff line). `--fix-prompt` / `--agent-brief` emit the compact agent surfaces.
+- **`quill lessons` / `lessons promote` / `teach` / `agent-brief`** — repeated local
+  mistakes (recorded to `.quill/mistakes.jsonl`, never code/diffs/prompts/secret values)
+  aggregate into deterministic suggested lessons a human promotes into `CLAUDE.md`,
+  `AGENTS.md`, or Cursor rules via an idempotent managed block. Local by default, no
+  telemetry. See `docs/LEARNING-LOOP.md`.
+- **`passport.md`** now leads with an action block (verdict → what to do next → agent
+  fix prompt → "what Quill does not prove") and collapses the raw evidence; it is written
+  to the CI step summary, and findings post as inline PR annotations.
+
+### Correctness / hardening
+
+- Change Passport schema `v1.1`: additive top-level `remediation` array (v1 readers
+  unaffected).
+- Symlink opacity: an in-scope symlink redirecting at a forbidden path surfaces as
+  NEEDS_REVIEW with the target recorded.
+- Approval tokens can no longer begin with `-` (CLI-unpassable).
+- Mistake recording is fingerprint-deduplicated (re-verifying a commit doesn't inflate
+  counts) and swarm-safe (atomic append under concurrent agents).
+- Docs, version, and Action pin coherent at 0.3.0; secure-workflow template and
+  README pin the release commit SHA (not a mutable tag). Release dry-run captured in
+  `docs/LAUNCH-DRY-RUN-0.3.0.md`.
+
+### Honesty
+
+- Positioned as an honest alpha: a deterministic structural-authorization gate, **not**
+  a code reviewer, correctness prover, or compliance product. `docs/SECURITY-MODEL.md`
+  states the local-gate limits, the CI-boundary requirements, the spoofable-status and
+  unlocked-dependency residuals, and the no-external-audit status; the MCP proxy is
+  documented as removed in the Change Control pivot.
+
 ## [Unreleased]
 
 ### Wave 13 — security-review response: close the contract bypass, stop overclaiming
