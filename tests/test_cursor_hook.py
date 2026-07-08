@@ -1,7 +1,7 @@
 """Cursor 1.7+ hook adapter tests.
 
 Cursor's contract is documented at https://cursor.com/docs/hooks.
-Pinned here because Cursor versions evolve faster than Quill's release
+Pinned here because Cursor versions evolve faster than Nota's release
 cadence; if a future Cursor version changes the JSON shape, these tests
 catch it.
 """
@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from quill.adapters.cursor import (
+from nota.adapters.cursor import (
     _normalize_input,
     decide,
     install_into_settings,
     run_hook,
 )
-from quill.audit import AuditLog
+from nota.audit import AuditLog
 
 # ---------------------------------------------------------------------------
 # normalize_input - Cursor's per-event stdin shapes
@@ -46,15 +46,15 @@ def test_normalize_before_mcp_passes_through_tool_name() -> None:
     raw = {
         "hook_event_name": "beforeMCPExecution",
         "tool_name": "github.create_pull_request",
-        "tool_input": {"owner": "manumarri-sudo", "repo": "quill"},
+        "tool_input": {"owner": "manumarri-sudo", "repo": "nota"},
     }
     tool, args = _normalize_input(raw)
     assert tool == "github.create_pull_request"
-    assert args == {"owner": "manumarri-sudo", "repo": "quill"}
+    assert args == {"owner": "manumarri-sudo", "repo": "nota"}
 
 
 def test_normalize_unknown_event_falls_through_to_allow() -> None:
-    """Future Cursor events Quill doesn't know about should not crash."""
+    """Future Cursor events Nota doesn't know about should not crash."""
     raw = {"hook_event_name": "afterFileEdit", "tool_name": "edit"}
     tool, _ = _normalize_input(raw)
     assert tool == "edit"
@@ -128,7 +128,7 @@ def test_run_hook_writes_audit_entries(tmp_path: Path) -> None:
     assert "verdict.blocked" in types
     # audit entry must record this came via the cursor adapter
     blocked = next(e for e in lines if e["type"] == "verdict.blocked")
-    assert blocked["payload"]["by"] == "quill.adapters.cursor"
+    assert blocked["payload"]["by"] == "nota.adapters.cursor"
 
 
 def test_run_hook_fail_open_on_malformed_input() -> None:
@@ -160,13 +160,13 @@ def test_run_hook_emits_one_shot_approval_token_id_on_block() -> None:
 
 
 def test_run_hook_consumes_existing_approval_and_allows(tmp_path: Path) -> None:
-    """If `quill approve <token>` was run for this exact (tool, args), the
+    """If `nota approve <token>` was run for this exact (tool, args), the
     next hook invocation consumes the approval and allows the call."""
-    from quill.approvals import ApprovalStore
+    from nota.approvals import ApprovalStore
 
     store = ApprovalStore.load()
     # Issue an approval for the exact call we'll make, then approve it
-    # (simulating `quill approve <token>`) - issuance alone is inert.
+    # (simulating `nota approve <token>`) - issuance alone is inert.
     ap = store.issue("Bash", {"command": "rm -rf node_modules", "cwd": "/x"})
     store.approve(ap.token)
 
@@ -191,7 +191,7 @@ def test_install_creates_fresh_hooks_json(tmp_path: Path) -> None:
     assert data["version"] == 1
     assert "beforeShellExecution" in data["hooks"]
     cmds = [h["command"] for h in data["hooks"]["beforeShellExecution"]]
-    assert "quill cursor-hook" in cmds
+    assert "nota cursor-hook" in cmds
 
 
 def test_install_is_idempotent(tmp_path: Path) -> None:
@@ -202,11 +202,11 @@ def test_install_is_idempotent(tmp_path: Path) -> None:
     # And no duplicate entries piled up.
     data = json.loads(p.read_text())
     cmds = [h["command"] for h in data["hooks"]["beforeShellExecution"]]
-    assert cmds.count("quill cursor-hook") == 1
+    assert cmds.count("nota cursor-hook") == 1
 
 
 def test_install_preserves_existing_user_hooks(tmp_path: Path) -> None:
-    """If the user already has a custom hook, Quill must not clobber it."""
+    """If the user already has a custom hook, Nota must not clobber it."""
     p = tmp_path / "hooks.json"
     p.write_text(
         json.dumps(
@@ -224,7 +224,7 @@ def test_install_preserves_existing_user_hooks(tmp_path: Path) -> None:
     data = json.loads(p.read_text())
     cmds = [h["command"] for h in data["hooks"]["beforeShellExecution"]]
     assert "my-custom-linter" in cmds
-    assert "quill cursor-hook" in cmds
+    assert "nota cursor-hook" in cmds
 
 
 def test_install_wires_all_three_gate_events(tmp_path: Path) -> None:

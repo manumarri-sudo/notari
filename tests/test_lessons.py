@@ -3,7 +3,7 @@ managed-block teaching, and the compact agent surfaces.
 
 Non-negotiables under test: no secret VALUE ever appears in an event,
 lesson, fix prompt, or brief; promotion is human-gated and idempotent;
-`quill teach` never touches user content outside the managed block; and
+`nota teach` never touches user content outside the managed block; and
 the compact surfaces stay compact (token discipline).
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from quill.lessons import (
+from nota.lessons import (
     classify_path,
     events_from_passport,
     load_events,
@@ -22,7 +22,7 @@ from quill.lessons import (
     redact_path,
     suggest,
 )
-from quill.teach import BLOCK_END, BLOCK_START, agent_brief, fix_prompt, teach, update_file
+from nota.teach import BLOCK_END, BLOCK_START, agent_brief, fix_prompt, teach, update_file
 
 SECRET_VALUE = "AKIA" + "X" * 16  # a value that must never leak into outputs
 
@@ -41,7 +41,7 @@ def _passport(verdict: str = "BLOCK", **evidence) -> dict:
     }
     ev.update(evidence)
     return {
-        "schema": "quill.change-passport/v1.1",
+        "schema": "nota.change-passport/v1.1",
         "verdict": verdict,
         "contract": {
             "id": "abc123",
@@ -61,7 +61,7 @@ def test_classify_path_buckets():
     assert classify_path("uv.lock") == "lockfile"
     assert classify_path("src/auth/login.py") == "auth"
     assert classify_path("tests/test_x.py") == "test"
-    assert classify_path(".quill/perimeter.json") == "quill_trust_surface"
+    assert classify_path(".nota/perimeter.json") == "nota_trust_surface"
     assert classify_path("src/checkout/cart.py") == "other"
 
 
@@ -77,14 +77,14 @@ def test_scope_out_ci_workflow_event():
     assert e["finding_type"] == "out_of_scope_path"
     assert e["violating_path_kind"] == "ci_workflow"
     assert e["violating_path_redacted"] == ".github/workflows/<file>"
-    assert e["schema"] == "quill.mistake/v1"
+    assert e["schema"] == "nota.mistake/v1"
     assert e["task_hint"] == "auth"
 
 
 def test_rule_id_mapping_per_finding_type():
     p = _passport(
         forbidden_hits=["src/payments/charge.py"],
-        gate_tamper_hits=[".quill/perimeter.json"],
+        gate_tamper_hits=[".nota/perimeter.json"],
         secret_findings=[{"path": "a.py", "line": 3, "pattern": "AWS Access Key ID"}],
         sensitive_surfaces={"lockfiles": ["uv.lock"]},
         symlink_changes=[{"path": "src/x", "status": "A", "target": "../y"}],
@@ -220,7 +220,7 @@ def test_teach_writes_selected_targets(tmp_path: Path):
     promote("no-realistic-credentials", tmp_path)
     results = dict(teach(tmp_path, ["claude", "cursor"]))
     assert results["CLAUDE.md"] is True
-    assert results[".cursor/rules/quill-scope.mdc"] is True
+    assert results[".cursor/rules/nota-scope.mdc"] is True
     assert not (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / ".cursorrules").exists()  # never created, only updated
 
@@ -246,16 +246,16 @@ def test_fix_prompt_is_compact_and_leaks_nothing():
 # Phrases that would turn the fix prompt into a BYPASS prompt. A fix prompt that
 # ever told an agent to defeat the gate would be self-defeating; guard hard.
 _BYPASS_PHRASES = [
-    "disable quill",
-    "weaken quill",
+    "disable nota",
+    "weaken nota",
     "turn off strict",
-    "remove the quill",
+    "remove the nota",
     "delete the workflow",
     "delete approver",
     "change the perimeter",
-    "edit .quill",
-    "ignore quill",
-    "skip quill",
+    "edit .nota",
+    "ignore nota",
+    "skip nota",
     "bypass the gate",
 ]
 
@@ -265,7 +265,7 @@ def test_fix_prompt_never_instructs_bypass():
     p = _passport(
         out_of_scope=["ops.cfg"],
         forbidden_hits=["src/pay.py"],
-        gate_tamper_hits=[".quill/perimeter.json"],
+        gate_tamper_hits=[".nota/perimeter.json"],
         secret_findings=[{"path": "a.py", "line": 1, "pattern": "JWT"}],
         sensitive_surfaces={"ci": ["ci.yml"]},
         symlink_changes=[{"path": "l", "status": "A", "target": "../x"}],
@@ -275,7 +275,7 @@ def test_fix_prompt_never_instructs_bypass():
     for phrase in _BYPASS_PHRASES:
         assert phrase not in low, f"fix prompt contains bypass phrase: {phrase!r}"
     # It must positively tell the agent NOT to weaken the gate.
-    assert "do not weaken, bypass, or edit quill" in low
+    assert "do not weaken, bypass, or edit nota" in low
 
 
 def test_agent_brief_never_instructs_bypass():
@@ -301,7 +301,7 @@ def test_agent_brief_is_compact():
     brief = agent_brief(
         task="add rate limiting to login endpoint",
         allowed_paths=["src/auth/**", "tests/auth/**"],
-        forbidden_paths=[".github/workflows/**", "migrations/**", ".quill/**"],
+        forbidden_paths=[".github/workflows/**", "migrations/**", ".nota/**"],
         review_surfaces=["ci", "lockfiles"],
         promoted=[{"id": "x", "text": "Do not edit workflows."}],
     )

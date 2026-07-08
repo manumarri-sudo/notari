@@ -11,9 +11,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from quill import contract as contract_mod
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import contract as contract_mod
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 
 def _git(root: Path, *args: str) -> str:

@@ -5,10 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quill import attest, readiness
-from quill import perimeter as perimeter_mod
-from quill import provenance as provenance_mod
-from quill.readiness import Posture
+from nota import attest, readiness
+from nota import perimeter as perimeter_mod
+from nota import provenance as provenance_mod
+from nota.readiness import Posture
 
 
 def _sign_perimeter(root: Path) -> str:
@@ -26,10 +26,10 @@ def _sign_perimeter(root: Path) -> str:
 def _pinned_workflow(root: Path) -> None:
     wf = root / ".github" / "workflows"
     wf.mkdir(parents=True, exist_ok=True)
-    (wf / "quill.yml").write_text(
+    (wf / "nota.yml").write_text(
         "on:\n  pull_request_target:\n    branches: [main]\n"
         "jobs:\n  cc:\n    steps:\n"
-        "      - uses: manumarri-sudo/quill@" + "a" * 40 + "\n"
+        "      - uses: manumarri-sudo/nota@" + "a" * 40 + "\n"
     )
 
 
@@ -42,7 +42,7 @@ def test_cooperative_when_key_is_local_only(tmp_path: Path) -> None:
     the agent on the box can read it. Must be COOPERATIVE, not ENFORCED."""
     _sign_perimeter(tmp_path)
     _pinned_workflow(tmp_path)
-    report = readiness.assess(tmp_path, env={})  # no QUILL_APPROVER_PUBKEYS
+    report = readiness.assess(tmp_path, env={})  # no NOTA_APPROVER_PUBKEYS
     assert report.posture is Posture.COOPERATIVE
     assert any("approver trust root" in c.name and not c.ok for c in report.checks)
 
@@ -52,7 +52,7 @@ def test_enforced_when_trust_root_is_off_box(tmp_path: Path) -> None:
     _pinned_workflow(tmp_path)
     env = {
         provenance_mod.APPROVER_ENV: pub_pem,  # CI secret pin
-        "QUILL_GATE_KEY": attest.generate_keypair()[0],
+        "NOTA_GATE_KEY": attest.generate_keypair()[0],
     }
     report = readiness.assess(tmp_path, env=env)
     assert report.posture is Posture.ENFORCED
@@ -64,7 +64,7 @@ def test_unpinned_workflow_is_a_blocker(tmp_path: Path) -> None:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True, exist_ok=True)
     # runs the PR's own checkout — a PR could modify its own judge
-    (wf / "quill.yml").write_text(
+    (wf / "nota.yml").write_text(
         'jobs:\n  cc:\n    steps:\n      - uses: ./\n        with:\n          install-from-source: "true"\n'
     )
     report = readiness.assess(tmp_path, env={provenance_mod.APPROVER_ENV: pub_pem})

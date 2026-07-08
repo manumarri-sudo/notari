@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quill.pinning import PinStore, filter_pinned, fingerprint
+from nota.pinning import PinStore, filter_pinned, fingerprint
 
 
 def _tool(name: str = "read_file", **overrides: object) -> dict[str, object]:
@@ -77,7 +77,7 @@ def test_pinstore_detects_rug_pull(tmp_path: Path) -> None:
     ok, reason = store.verify("filesystem", poisoned)
     assert ok is False
     assert "digest changed" in reason
-    assert "quill pins approve" in reason
+    assert "nota pins approve" in reason
 
 
 def test_pinstore_persists_across_reload(tmp_path: Path) -> None:

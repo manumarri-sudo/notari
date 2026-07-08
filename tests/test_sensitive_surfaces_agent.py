@@ -1,4 +1,4 @@
-"""Anti-manipulation: agent-instruction files and Quill's learning state are
+"""Anti-manipulation: agent-instruction files and Nota's learning state are
 sensitive surfaces. Editing them must never silently PASS — it surfaces for
 review (>= NEEDS_REVIEW) regardless of the perimeter's configured review list,
 because those files are exactly what an agent would poison to game future runs.
@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from quill import contract as contract_mod
-from quill import policy
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import contract as contract_mod
+from nota import policy
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 
 def _git(root: Path, *args: str) -> str:
@@ -52,9 +52,9 @@ AGENT_FILES = [
     "CLAUDE.md",
     "AGENTS.md",
     ".cursorrules",
-    ".cursor/rules/quill-scope.mdc",
+    ".cursor/rules/nota-scope.mdc",
 ]
-LEARNING_FILES = [".quill/lessons.json", ".quill/mistakes.jsonl"]
+LEARNING_FILES = [".nota/lessons.json", ".nota/mistakes.jsonl"]
 
 
 @pytest.mark.parametrize("path", AGENT_FILES)
@@ -81,11 +81,11 @@ def test_learning_state_edit_surfaces_for_review(tmp_path: Path, path: str) -> N
     target = repo / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('{"promoted": []}\n')
-    _git(repo, "add", "-f", path)  # .quill may be gitignored by init templates
+    _git(repo, "add", "-f", path)  # .nota may be gitignored by init templates
     _git(repo, "commit", "-qm", "edit learning state")
     result = verify_mod.verify(contract=_contract(base, "ls", allowed=("**",)), root=repo)
     assert result.verdict is not Verdict.PASS, result.reasons
-    assert "quill_learning_state" in result.sensitive_surfaces
+    assert "nota_learning_state" in result.sensitive_surfaces
 
 
 def test_agent_instructions_always_review_even_under_narrow_perimeter() -> None:
@@ -105,7 +105,7 @@ def test_agent_instructions_needs_review_under_perimeter_that_omits_them(tmp_pat
     'agent_instructions' must still yield >= NEEDS_REVIEW on a CLAUDE.md edit.
     (The earlier test only checked classify_diff, so removing the _ALWAYS_REVIEW
     clause in verify.py slipped past it — mutation audit 2026-07.)"""
-    from quill import perimeter as perimeter_mod
+    from nota import perimeter as perimeter_mod
 
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
@@ -136,9 +136,9 @@ def test_classify_covers_all_required_paths() -> None:
     assert policy.classify_sensitive_surface("AGENTS.md") == "agent_instructions"
     assert policy.classify_sensitive_surface(".cursorrules") == "agent_instructions"
     assert policy.classify_sensitive_surface(".cursor/rules/x.mdc") == "agent_instructions"
-    assert policy.classify_sensitive_surface(".quill/lessons.json") == "quill_learning_state"
-    assert policy.classify_sensitive_surface(".quill/mistakes.jsonl") == "quill_learning_state"
-    # Quill's OWN metadata that legitimately changes must NOT be a surface.
-    assert policy.classify_sensitive_surface(".quill/contract.json") is None
-    assert policy.classify_sensitive_surface(".quill/passport.json") is None
+    assert policy.classify_sensitive_surface(".nota/lessons.json") == "nota_learning_state"
+    assert policy.classify_sensitive_surface(".nota/mistakes.jsonl") == "nota_learning_state"
+    # Nota's OWN metadata that legitimately changes must NOT be a surface.
+    assert policy.classify_sensitive_surface(".nota/contract.json") is None
+    assert policy.classify_sensitive_surface(".nota/passport.json") is None
     assert policy.classify_sensitive_surface("src/app.py") is None

@@ -1,7 +1,7 @@
 """Step D tests: stale token-suffixed pattern cleanup.
 
 Pre-rc5 bug: when an approve-token was consumed the pattern_id was
-derived from the FLIPPED reason ("approved one-shot via quill approve
+derived from the FLIPPED reason ("approved one-shot via nota approve
 <token-prefix>") instead of the ORIGINAL deny reason. That produced
 one dead pattern_stats row per token consumed. The bug is fixed in
 rc5 but the historical rows don't migrate themselves.
@@ -9,13 +9,13 @@ rc5 but the historical rows don't migrate themselves.
 Four invariants under test:
 
   1. find_stale_patterns identifies the per-token rows by their
-     distinctive "approved one-shot via quill approve" infix and
+     distinctive "approved one-shot via nota approve" infix and
      ignores everything else.
   2. cleanup_stale_patterns removes the stale rows AND leaves the
      real patterns intact (no collateral damage).
   3. Idempotent: a second cleanup invocation after a first removes
      nothing further.
-  4. The `quill suggestions cleanup --dry-run` CLI surface reports
+  4. The `nota suggestions cleanup --dry-run` CLI surface reports
      what WOULD be removed without writing; the real `cleanup`
      subcommand writes and surfaces what changed.
 """
@@ -29,9 +29,9 @@ from typer.testing import CliRunner
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
 
 
 def _seed_stats(tmp_path: Path, patterns: dict[str, dict]) -> None:
@@ -66,8 +66,8 @@ def test_find_stale_patterns_identifies_token_rows_only(
                 "last_fire_ts": 0,
                 "first_fire_ts": 0,
             },
-            "Bash:approved one-shot via quill approve aBcDeFg1": {
-                "pattern_id": "Bash:approved one-shot via quill approve aBcDeFg1",
+            "Bash:approved one-shot via nota approve aBcDeFg1": {
+                "pattern_id": "Bash:approved one-shot via nota approve aBcDeFg1",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -78,8 +78,8 @@ def test_find_stale_patterns_identifies_token_rows_only(
                 "last_fire_ts": 0,
                 "first_fire_ts": 0,
             },
-            "Bash:approved one-shot via quill approve xyZ12345": {
-                "pattern_id": "Bash:approved one-shot via quill approve xyZ12345",
+            "Bash:approved one-shot via nota approve xyZ12345": {
+                "pattern_id": "Bash:approved one-shot via nota approve xyZ12345",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -105,7 +105,7 @@ def test_find_stale_patterns_identifies_token_rows_only(
             # An edge case: a pattern with "approved one-shot" as a substring
             # of its CONTENT (e.g. someone literally writing a commit message
             # about it). This is NOT a stale token row - the marker has to
-            # be specifically "approved one-shot via quill approve <token>"
+            # be specifically "approved one-shot via nota approve <token>"
             # to qualify.
             "Bash:git commit -m 'we use approved one-shot tokens here'": {
                 "pattern_id": "Bash:git commit",
@@ -122,13 +122,13 @@ def test_find_stale_patterns_identifies_token_rows_only(
         },
     )
 
-    from quill.learning import find_stale_patterns
+    from nota.learning import find_stale_patterns
 
     stale = find_stale_patterns()
     assert sorted(stale) == sorted(
         [
-            "Bash:approved one-shot via quill approve aBcDeFg1",
-            "Bash:approved one-shot via quill approve xyZ12345",
+            "Bash:approved one-shot via nota approve aBcDeFg1",
+            "Bash:approved one-shot via nota approve xyZ12345",
         ]
     ), f"unexpected stale set: {stale}"
 
@@ -157,8 +157,8 @@ def test_cleanup_removes_stale_and_preserves_real(
                 "last_fire_ts": 0,
                 "first_fire_ts": 0,
             },
-            "Bash:approved one-shot via quill approve aBcDeFg1": {
-                "pattern_id": "Bash:approved one-shot via quill approve aBcDeFg1",
+            "Bash:approved one-shot via nota approve aBcDeFg1": {
+                "pattern_id": "Bash:approved one-shot via nota approve aBcDeFg1",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -184,11 +184,11 @@ def test_cleanup_removes_stale_and_preserves_real(
         },
     )
 
-    from quill.learning import cleanup_stale_patterns, load_stats
+    from nota.learning import cleanup_stale_patterns, load_stats
 
     n, removed = cleanup_stale_patterns()
     assert n == 1
-    assert removed == ["Bash:approved one-shot via quill approve aBcDeFg1"]
+    assert removed == ["Bash:approved one-shot via nota approve aBcDeFg1"]
 
     after = load_stats()
     # Real patterns intact with their original counts.
@@ -198,7 +198,7 @@ def test_cleanup_removes_stale_and_preserves_real(
     assert "Edit:high risk: default risk for Edit" in after
     assert after["Edit:high risk: default risk for Edit"].fires == 100
     # Stale pattern is gone.
-    assert "Bash:approved one-shot via quill approve aBcDeFg1" not in after
+    assert "Bash:approved one-shot via nota approve aBcDeFg1" not in after
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +210,8 @@ def test_cleanup_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     _seed_stats(
         tmp_path,
         {
-            "Bash:approved one-shot via quill approve A": {
-                "pattern_id": "Bash:approved one-shot via quill approve A",
+            "Bash:approved one-shot via nota approve A": {
+                "pattern_id": "Bash:approved one-shot via nota approve A",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -222,8 +222,8 @@ def test_cleanup_is_idempotent(tmp_path: Path, monkeypatch) -> None:
                 "last_fire_ts": 0,
                 "first_fire_ts": 0,
             },
-            "Bash:approved one-shot via quill approve B": {
-                "pattern_id": "Bash:approved one-shot via quill approve B",
+            "Bash:approved one-shot via nota approve B": {
+                "pattern_id": "Bash:approved one-shot via nota approve B",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -249,7 +249,7 @@ def test_cleanup_is_idempotent(tmp_path: Path, monkeypatch) -> None:
         },
     )
 
-    from quill.learning import cleanup_stale_patterns, load_stats
+    from nota.learning import cleanup_stale_patterns, load_stats
 
     n1, _ = cleanup_stale_patterns()
     assert n1 == 2
@@ -284,8 +284,8 @@ def test_cli_cleanup_dry_run_then_real_run(
     _seed_stats(
         tmp_path,
         {
-            "Bash:approved one-shot via quill approve Q": {
-                "pattern_id": "Bash:approved one-shot via quill approve Q",
+            "Bash:approved one-shot via nota approve Q": {
+                "pattern_id": "Bash:approved one-shot via nota approve Q",
                 "fires": 1,
                 "approvals": 1,
                 "denies": 0,
@@ -312,19 +312,19 @@ def test_cli_cleanup_dry_run_then_real_run(
     )
 
     runner = CliRunner()
-    from quill.cli import app
+    from nota.cli import app
 
     # Dry-run shows the candidate but does NOT write.
     r1 = runner.invoke(app, ["suggestions", "cleanup", "--dry-run"])
     assert r1.exit_code == 0
     assert "would remove" in r1.output
-    assert "approved one-shot via quill approve Q" in r1.output
+    assert "approved one-shot via nota approve Q" in r1.output
 
     # File state unchanged after dry-run.
-    from quill.learning import load_stats
+    from nota.learning import load_stats
 
     s_after_dry = load_stats()
-    assert "Bash:approved one-shot via quill approve Q" in s_after_dry
+    assert "Bash:approved one-shot via nota approve Q" in s_after_dry
     assert "Bash:rm -rf" in s_after_dry
 
     # Real run removes the stale row.
@@ -332,7 +332,7 @@ def test_cli_cleanup_dry_run_then_real_run(
     assert r2.exit_code == 0
     assert "removed" in r2.output.lower()
     s_after_real = load_stats()
-    assert "Bash:approved one-shot via quill approve Q" not in s_after_real
+    assert "Bash:approved one-shot via nota approve Q" not in s_after_real
     assert "Bash:rm -rf" in s_after_real
     assert s_after_real["Bash:rm -rf"].fires == 5
 

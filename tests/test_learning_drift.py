@@ -21,7 +21,7 @@ import json
 import random
 from pathlib import Path
 
-from quill.learning import (
+from nota.learning import (
     PH_LAMBDA,
     PatternStats,  # noqa: F401  - import lock-in
     aggregate_observations_for_session,
@@ -36,9 +36,9 @@ from quill.learning import (
 def test_page_hinkley_detects_upward_shift(tmp_path: Path, monkeypatch) -> None:
     """50 denies followed by 50 approves is the canonical upward
     shift. Detector must fire with direction='upward'."""
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "s.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "l.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "s.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "l.log"))
     observations = [0.0] * 50 + [1.0] * 50
     result = page_hinkley(observations)
     assert result.detected, (
@@ -56,9 +56,9 @@ def test_page_hinkley_detects_upward_shift(tmp_path: Path, monkeypatch) -> None:
 def test_page_hinkley_detects_downward_shift(tmp_path: Path, monkeypatch) -> None:
     """50 approves followed by 50 denies is the symmetric downward
     case. Detector must fire with direction='downward'."""
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "s.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "l.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "s.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "l.log"))
     observations = [1.0] * 50 + [0.0] * 50
     result = page_hinkley(observations)
     assert result.detected
@@ -78,9 +78,9 @@ def test_page_hinkley_does_not_fire_on_stable_noise(
     trigger drift. Run twice with different seeds; both must stay
     below threshold. If this test ever fires, the lambda/delta
     defaults are too aggressive for the operator's normal volume."""
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "s.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "l.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "s.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "l.log"))
     for seed in (12345, 67890, 42):
         rng = random.Random(seed)
         observations = [1.0 if rng.random() < 0.30 else 0.0 for _ in range(200)]
@@ -103,9 +103,9 @@ def test_drift_check_handles_sparse_and_empty_sessions(
     """A session with < 20 outcomes returns no-detect. An empty event
     list returns no-detect. A session whose session_id is unknown
     returns no-detect. None of these crash."""
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "s.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "l.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "s.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "sug.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "l.log"))
 
     # Empty Page-Hinkley
     r0 = page_hinkley([])

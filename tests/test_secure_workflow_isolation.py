@@ -1,15 +1,15 @@
 """Control/data separation: candidate-controlled Python must not execute before
-(or during) Quill verification.
+(or during) Nota verification.
 
 The recommended workflow checks an untrusted PR out into a data-only directory,
-and the Action installs + runs Quill in isolated mode. This test proves the two
+and the Action installs + runs Nota in isolated mode. This test proves the two
 mechanisms that make that safe actually work on THIS interpreter, and asserts the
 shipped config wires them up:
 
   1. ``python -I`` (isolated) and ``PYTHONSAFEPATH=1`` both remove the current
      directory from ``sys.path``, so a candidate ``json.py`` / ``sitecustomize.py``
      dropped in the checkout cannot shadow stdlib or run at startup.
-  2. ``action.yml`` and ``scripts/quill-passport.sh`` set those flags, and the
+  2. ``action.yml`` and ``scripts/nota-passport.sh`` set those flags, and the
      init + secure-workflow templates check the PR out into ``_pr_checkout`` with
      ``persist-credentials: false`` and pass ``checkout-path`` to the Action.
 """
@@ -31,15 +31,15 @@ def _candidate_dir(tmp_path: Path) -> Path:
     d.mkdir()
     # A shadow stdlib module: importing json must NOT pick this up.
     (d / "json.py").write_text(
-        "import pathlib, os\npathlib.Path(os.environ['QUILL_MARK']).write_text('json-shadow')\n"
+        "import pathlib, os\npathlib.Path(os.environ['NOTA_MARK']).write_text('json-shadow')\n"
     )
     # sitecustomize runs automatically at interpreter startup if importable.
     (d / "sitecustomize.py").write_text(
-        "import pathlib, os\npathlib.Path(os.environ['QUILL_MARK']).write_text('sitecustomize')\n"
+        "import pathlib, os\npathlib.Path(os.environ['NOTA_MARK']).write_text('sitecustomize')\n"
     )
     # A fake pip: `python -m pip` must not run this.
     (d / "pip.py").write_text(
-        "import pathlib, os\npathlib.Path(os.environ['QUILL_MARK']).write_text('pip-shadow')\n"
+        "import pathlib, os\npathlib.Path(os.environ['NOTA_MARK']).write_text('pip-shadow')\n"
     )
     return d
 
@@ -48,7 +48,7 @@ def _run(args: list[str], cwd: Path, mark: Path, extra_env: dict[str, str] | Non
     import os
 
     env = dict(os.environ)
-    env["QUILL_MARK"] = str(mark)
+    env["NOTA_MARK"] = str(mark)
     env.pop("PYTHONSAFEPATH", None)
     env.update(extra_env or {})
     if mark.exists():
@@ -116,7 +116,7 @@ def test_action_installs_and_runs_in_isolated_mode() -> None:
 
 
 def test_wrapper_exports_safepath() -> None:
-    wrapper = (_REPO / "scripts" / "quill-passport.sh").read_text()
+    wrapper = (_REPO / "scripts" / "nota-passport.sh").read_text()
     assert "export PYTHONSAFEPATH=1" in wrapper
 
 
@@ -124,7 +124,7 @@ def test_wrapper_inline_python_is_isolated() -> None:
     """The wrapper runs with cwd inside the candidate checkout, so every inline
     python call must use isolated mode (-I, Python 3.4+) — not rely solely on
     PYTHONSAFEPATH (3.11+). (R10 MEDIUM-2)"""
-    wrapper = (_REPO / "scripts" / "quill-passport.sh").read_text()
+    wrapper = (_REPO / "scripts" / "nota-passport.sh").read_text()
     bad = [
         ln.strip()
         for ln in wrapper.splitlines()
@@ -143,7 +143,7 @@ def test_secure_workflow_is_isolated(path: str) -> None:
 
 
 def test_init_template_matches_secure_workflow() -> None:
-    from quill.cli import _CONSUMER_WORKFLOW
+    from nota.cli import _CONSUMER_WORKFLOW
 
     for needle in (
         "pull_request_target:",
@@ -155,4 +155,4 @@ def test_init_template_matches_secure_workflow() -> None:
     # SHA-pinned, not a mutable tag (readiness enforces this too).
     import re
 
-    assert re.search(r"uses:\s*[\w.-]+/quill@[0-9a-f]{40}", _CONSUMER_WORKFLOW)
+    assert re.search(r"uses:\s*[\w.-]+/nota@[0-9a-f]{40}", _CONSUMER_WORKFLOW)

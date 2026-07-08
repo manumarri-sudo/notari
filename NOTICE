@@ -1,4 +1,4 @@
-quill - vendored third-party code
+nota - vendored third-party code
 
 This product includes adapted code from the following projects.
 
@@ -9,11 +9,11 @@ sparfenyuk/mcp-proxy
   License:     MIT
   Copyright:   2024 Sergey Parfenyuk
 
-  Quill incorporates an adapted version of `src/mcp_proxy/proxy_server.py` at
-  `src/quill/_vendor/proxy_factory.py`. License terms preserved at
-  `src/quill/_vendor/sparfenyuk_LICENSE`.
+  Nota incorporates an adapted version of `src/mcp_proxy/proxy_server.py` at
+  `src/nota/_vendor/proxy_factory.py`. License terms preserved at
+  `src/nota/_vendor/sparfenyuk_LICENSE`.
 
-  Quill modifications:
+  Nota modifications:
     - Added `gate` callable injection on `_call_tool`, `_read_resource`,
       `_get_prompt` so policy decisions interpose between client and upstream.
     - Added `upstream_name` parameter for tool-name namespacing
@@ -27,11 +27,11 @@ IBM/mcp-context-forge
   License:     Apache-2.0
   Copyright:   IBM Corp. and contributors
 
-  Quill borrows the class-name-substring dispatch idiom from
+  Nota borrows the class-name-substring dispatch idiom from
   `mcpgateway/services/notification_service.py` for routing MCP
   ServerNotifications to event handlers. Specifically the pattern of
   matching `type(notification.root).__name__` against a set of class-name
-  fragments, used in `src/quill/notifications.py::_classify`. The rest of
+  fragments, used in `src/nota/notifications.py::_classify`. The rest of
   IBM's NotificationService (persistence, subscription tracking, refresh
   queues) was not adopted.
 

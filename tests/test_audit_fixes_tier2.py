@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from quill.policy import Risk, classify_command
+from nota.policy import Risk, classify_command
 
 _AT_LEAST_HIGH = (Risk.HIGH, Risk.CRITICAL)
 
@@ -161,7 +161,7 @@ def test_tier2_benign_no_regression() -> None:
         "python3 -c 'import os; print(os.getcwd())'",
         "find ~/code -name README.md",
         "export NODE_ENV=production",
-        "export QUILL_LOG_LEVEL=debug",
+        "export NOTA_LOG_LEVEL=debug",
     ]
     for cmd in benign:
         assert classify_command(cmd).risk in (Risk.LOW, Risk.MEDIUM), (

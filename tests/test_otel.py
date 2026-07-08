@@ -1,6 +1,6 @@
 """OpenTelemetry GenAI emission tests.
 
-Most users won't have `quill[otel]` installed. We verify:
+Most users won't have `nota[otel]` installed. We verify:
   - emit_span() is a no-op when OTel isn't importable (the common case)
   - The attribute mapping follows GenAI semconv when OTel IS available
   - audit.emit() never raises if OTel emission fails
@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import patch
 
-from quill import otel
+from nota import otel
 
 
 def _reset_otel_cache() -> None:
@@ -25,7 +25,7 @@ def _reset_otel_cache() -> None:
 
 
 def test_emit_span_noop_when_opentelemetry_not_installed() -> None:
-    """The 95th-percentile case: quill[otel] not installed."""
+    """The 95th-percentile case: nota[otel] not installed."""
     _reset_otel_cache()
     real_import = (
         __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
@@ -82,9 +82,9 @@ def test_span_attributes_carry_required_genai_keys() -> None:
     assert attrs["gen_ai.provider.name"] == "claude-code"
     assert attrs["gen_ai.tool.name"] == "Bash"
     assert attrs["gen_ai.agent.id"] == "claude-code"
-    assert attrs["quill.risk"] == "critical"
-    assert attrs["quill.event_type"] == "verdict.blocked"
-    assert attrs["quill.reason"] == "rm -rf"
+    assert attrs["nota.risk"] == "critical"
+    assert attrs["nota.event_type"] == "verdict.blocked"
+    assert attrs["nota.reason"] == "rm -rf"
 
 
 def test_provider_name_extracts_upstream() -> None:
@@ -95,7 +95,7 @@ def test_provider_name_extracts_upstream() -> None:
     assert otel._provider_name("upstream:github") == "github"
     assert otel._provider_name("claude-code") == "claude-code"
     assert otel._provider_name("claude-code-sub") == "claude-code"
-    assert otel._provider_name("quill.notify") == "quill"
+    assert otel._provider_name("nota.notify") == "nota"
     assert otel._provider_name("") == "unknown"
 
 
@@ -127,9 +127,9 @@ def test_span_attributes_redact_raw_args() -> None:
     # Structural: the payload-derived attributes are EXACTLY the allowlisted
     # schema fields present in the payload - nothing else leaks through.
     payload_derived = {
-        k.removeprefix("quill.")
+        k.removeprefix("nota.")
         for k in attrs
-        if k.startswith("quill.") and k not in ("quill.risk", "quill.event_type")
+        if k.startswith("nota.") and k not in ("nota.risk", "nota.event_type")
     }
     assert payload_derived == {"reason"}
     assert payload_derived <= allowlist
@@ -142,7 +142,7 @@ def test_audit_emit_does_not_raise_when_otel_emit_throws() -> None:
     import tempfile
     from pathlib import Path
 
-    from quill.audit import AuditLog
+    from nota.audit import AuditLog
 
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "audit.log.jsonl"

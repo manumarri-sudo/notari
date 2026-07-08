@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from quill import contract as contract_mod
-from quill import verify as verify_mod
-from quill.verify import ScanLimits, Verdict, VerifyError, _git_capture, git_diff
+from nota import contract as contract_mod
+from nota import verify as verify_mod
+from nota.verify import ScanLimits, Verdict, VerifyError, _git_capture, git_diff
 
 
 def _git(root: Path, *args: str) -> str:
@@ -40,11 +40,11 @@ def _repo_with_big_change(tmp_path: Path) -> tuple[Path, str]:
 
 def test_scan_limits_from_env_parses_and_defaults() -> None:
     assert ScanLimits.from_env({}) == ScanLimits()
-    lim = ScanLimits.from_env({"QUILL_MAX_DIFF_BYTES": "123", "QUILL_GIT_TIMEOUT": "9"})
+    lim = ScanLimits.from_env({"NOTA_MAX_DIFF_BYTES": "123", "NOTA_GIT_TIMEOUT": "9"})
     assert lim.max_diff_bytes == 123
     assert lim.git_timeout == 9
     # Junk / non-positive values fall back to the safe default.
-    bad = ScanLimits.from_env({"QUILL_MAX_DIFF_BYTES": "-5", "QUILL_MAX_FILES": "abc"})
+    bad = ScanLimits.from_env({"NOTA_MAX_DIFF_BYTES": "-5", "NOTA_MAX_FILES": "abc"})
     assert bad.max_diff_bytes == ScanLimits().max_diff_bytes
     assert bad.max_files == ScanLimits().max_files
 
@@ -90,7 +90,7 @@ def test_oversized_diff_is_not_a_silent_pass_cooperative(tmp_path: Path) -> None
         contract_id="oversize",
     )
     result = verify_mod.verify(
-        contract=contract, root=root, strict=False, env={"QUILL_MAX_DIFF_BYTES": "1000"}
+        contract=contract, root=root, strict=False, env={"NOTA_MAX_DIFF_BYTES": "1000"}
     )
     assert result.verdict is not Verdict.PASS
     assert result.verdict is Verdict.NEEDS_REVIEW
@@ -99,9 +99,9 @@ def test_oversized_diff_is_not_a_silent_pass_cooperative(tmp_path: Path) -> None
 
 
 def test_oversized_diff_blocks_in_strict(tmp_path: Path) -> None:
-    from quill import attest
-    from quill import perimeter as perimeter_mod
-    from quill import provenance as provenance_mod
+    from nota import attest
+    from nota import perimeter as perimeter_mod
+    from nota import provenance as provenance_mod
 
     root, base = _repo_with_big_change(tmp_path)
     priv_pem, pub_pem = attest.generate_keypair()
@@ -119,11 +119,11 @@ def test_oversized_diff_blocks_in_strict(tmp_path: Path) -> None:
         contract_id="oversize-strict",
         repo="owner/name",
     )
-    provenance_mod.sign_artifact(contract.to_dict(), priv_pem, root / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(contract.to_dict(), priv_pem, root / ".nota" / "contract.sig")
     env = {
         provenance_mod.APPROVER_ENV: pub_pem,
         "GITHUB_REPOSITORY": "owner/name",
-        "QUILL_MAX_DIFF_BYTES": "1000",
+        "NOTA_MAX_DIFF_BYTES": "1000",
     }
     result = verify_mod.verify(contract=contract, root=root, perimeter=perim, strict=True, env=env)
     assert result.verdict is Verdict.BLOCK

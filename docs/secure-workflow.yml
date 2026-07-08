@@ -1,20 +1,20 @@
-# Quill Change Control — secure workflow template.
+# Nota Change Control — secure workflow template.
 #
-# Copy this into .github/workflows/quill-check.yml in your repo.
+# Copy this into .github/workflows/nota-check.yml in your repo.
 #
 # WHY pull_request_target: the 'pull_request' event runs the PR's version of
 # the workflow, so an AI agent (or any contributor) can modify the workflow to
-# remove the Quill step and the gate never fires. 'pull_request_target' runs
+# remove the Nota step and the gate never fires. 'pull_request_target' runs
 # from the BASE branch (main), so only merged code controls the gate. This is
 # non-negotiable for base-controlled enforcement.
 #
 # SAFETY: the PR is checked out into a DATA-ONLY subdirectory (_pr_checkout).
 # No trusted Python process runs with that directory as cwd or on sys.path.
-# Quill is installed from PyPI in isolated mode (python -I), and the wrapper
+# Nota is installed from PyPI in isolated mode (python -I), and the wrapper
 # reads the checkout only via git commands. persist-credentials is false so
 # the token is not written into the candidate tree.
 #
-name: quill-change-control
+name: nota-change-control
 
 on:
   pull_request_target:
@@ -36,8 +36,8 @@ jobs:
           path: _pr_checkout
           persist-credentials: false
 
-      - name: Quill Change Control
-        uses: manumarri-sudo/quill@4a853898bb18cc806b9a868ecb77bdabdb3257d8  # v0 — SHA-pinned; bump on release
+      - name: Nota Change Control
+        uses: manumarri-sudo/nota@4a853898bb18cc806b9a868ecb77bdabdb3257d8  # v0 — SHA-pinned; bump on release
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
@@ -47,7 +47,7 @@ jobs:
           # git repo. Without it the wrapper runs from the workspace root (no repo
           # there) and fails closed. It MUST match the checkout `path:` above.
           checkout-path: _pr_checkout
-          gate-key: ${{ secrets.QUILL_GATE_KEY }}
-          gate-pubkeys: ${{ vars.QUILL_GATE_PUBKEYS }}
-          approver-pubkeys: ${{ secrets.QUILL_APPROVER_PUBKEYS }}
-          passport-dir: _pr_checkout/.quill
+          gate-key: ${{ secrets.NOTA_GATE_KEY }}
+          gate-pubkeys: ${{ vars.NOTA_GATE_PUBKEYS }}
+          approver-pubkeys: ${{ secrets.NOTA_APPROVER_PUBKEYS }}
+          passport-dir: _pr_checkout/.nota

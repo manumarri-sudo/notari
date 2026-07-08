@@ -11,12 +11,12 @@ import time
 
 import pytest
 
-from quill import session_approvals as sa
+from nota import session_approvals as sa
 
 
 @pytest.fixture
 def tmp_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("QUILL_SESSION_APPROVALS_DIR", str(tmp_path))
+    monkeypatch.setenv("NOTA_SESSION_APPROVALS_DIR", str(tmp_path))
     return tmp_path
 
 

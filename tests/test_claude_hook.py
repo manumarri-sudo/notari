@@ -11,15 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from quill.adapters.claude_code import (
+from nota.adapters.claude_code import (
     classify_event,
     decide,
     install_into_settings,
     install_snippet,
     run_hook,
 )
-from quill.audit import AuditLog
-from quill.policy import Risk
+from nota.audit import AuditLog
+from nota.policy import Risk
 
 # ---- decision matrix -----------------------------------------------------
 
@@ -136,7 +136,7 @@ def test_run_hook_asks_on_high_risk(
     # Force bypass-mode off; this test pins the DEFAULT-classifier
     # behaviour, not the bypass-mode downshift (which is exercised in
     # its own test below).
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "0")
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "0")
     log = tmp_path / "audit.jsonl"
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
         out = run_hook(
@@ -182,7 +182,7 @@ def test_run_hook_fails_closed_on_malformed_input() -> None:
     self-service bypass: a prompt-injected agent that could make the hook
     see broken JSON would get an unconditional allow. Now matches the
     classifier self-test's posture (fail-closed); the recovery hatch is
-    the bounded, audited `quill off`.
+    the bounded, audited `nota off`.
     """
     out = run_hook("not json at all", audit=None)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -235,12 +235,12 @@ def test_install_is_idempotent(tmp_path: Path) -> None:
     install_into_settings(p)
     parsed = json.loads(p.read_text())
     blocks = parsed["hooks"]["PreToolUse"]
-    quill_blocks = [
+    nota_blocks = [
         b
         for b in blocks
-        if any(h.get("command") == "quill claude-hook" for h in (b.get("hooks") or []))
+        if any(h.get("command") == "nota claude-hook" for h in (b.get("hooks") or []))
     ]
-    assert len(quill_blocks) == 1
+    assert len(nota_blocks) == 1
 
 
 def test_install_preserves_existing_unrelated_hooks(tmp_path: Path) -> None:
@@ -274,7 +274,7 @@ def test_install_snippet_shape() -> None:
     s = install_snippet()
     pre = s["hooks"]["PreToolUse"][0]
     assert pre["matcher"] == "Bash|Edit|Write|NotebookEdit"
-    assert pre["hooks"][0]["command"] == "quill claude-hook"
+    assert pre["hooks"][0]["command"] == "nota claude-hook"
     assert pre["hooks"][0]["timeout"] == 10
 
 
@@ -306,7 +306,7 @@ def test_root_session_writes_no_parent_session_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
     log = tmp_path / "audit.jsonl"
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
         run_hook(
@@ -333,8 +333,8 @@ def test_subagent_spawn_emits_handoff_out(
     """When a SECOND session_id appears under the same transcript, that's
     a Task-spawned sub-agent. The parent's hook emits agent.handoff.out and
     every subsequent sub-agent event is tagged with parent_session_id."""
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
     log = tmp_path / "audit.jsonl"
     transcript = str(tmp_path / "t.jsonl")
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
@@ -387,10 +387,10 @@ def test_trust_scope_downshifts_default_edit_to_allow(
     trusted.mkdir()
     config = tmp_path / "config.toml"
     config.write_text(f'[session]\nintent = "test"\nscope = []\n\n[trust]\npaths = ["{trusted}"]\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(config))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_CONFIG", str(config))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -429,11 +429,11 @@ def test_trust_scope_does_not_downshift_outside_trusted(
     untrusted.mkdir()
     config = tmp_path / "config.toml"
     config.write_text(f'[session]\nintent = "test"\nscope = []\n\n[trust]\npaths = ["{trusted}"]\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(config))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "0")
+    monkeypatch.setenv("NOTA_CONFIG", str(config))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "0")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -479,11 +479,11 @@ def test_trust_scope_does_not_downshift_critical_commands(
         f'[trust]\npaths = ["{trusted}"]\n\n'
         f'[policy]\nEdit = "high"\n'
     )
-    monkeypatch.setenv("QUILL_CONFIG", str(config))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "permissions.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_CONFIG", str(config))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "permissions.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -534,10 +534,10 @@ def test_trust_scope_matches_subdirectories(
     (trusted / "src" / "app").mkdir(parents=True)
     config = tmp_path / "config.toml"
     config.write_text(f'[session]\nintent = "test"\nscope = []\n\n[trust]\npaths = ["{trusted}"]\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(config))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_CONFIG", str(config))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -563,14 +563,14 @@ def test_session_end_emits_session_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SessionEnd hook must emit a `session.close` audit event so that
-    `quill receipts` can derive `closed_at` and `duration_seconds` for
+    `nota receipts` can derive `closed_at` and `duration_seconds` for
     finished sessions. Without it every receipt reports `closed_at: ""`.
     """
-    monkeypatch.setenv("QUILL_LOG", str(tmp_path / "audit.jsonl"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / "key"))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -599,7 +599,7 @@ def test_session_end_emits_session_close(
         )
 
     # Now emit session.close (what the SessionEnd hook does).
-    from quill.journal import _emit_session_close
+    from nota.journal import _emit_session_close
 
     _emit_session_close("ses-A", str(tmp_path), "user_quit")
 
@@ -620,11 +620,11 @@ def test_session_end_close_is_idempotent(
     """Second SessionEnd for the same session must NOT emit a duplicate
     close event (e.g. Claude Code firing SessionEnd twice on exit).
     """
-    monkeypatch.setenv("QUILL_LOG", str(tmp_path / "audit.jsonl"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / "key"))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -639,7 +639,7 @@ def test_session_end_close_is_idempotent(
             ),
             audit=audit,
         )
-    from quill.journal import _emit_session_close
+    from nota.journal import _emit_session_close
 
     _emit_session_close("ses-B", str(tmp_path), "user_quit")
     _emit_session_close("ses-B", str(tmp_path), "user_quit")
@@ -654,10 +654,10 @@ def test_subagent_spawn_emits_paired_handoff_in(
 ) -> None:
     """Regression: every agent.handoff.out must be paired with an
     agent.handoff.in carrying the same payload_hash and referencing
-    the out's mac via from_event_mac. Without the in, `quill bridge show`
+    the out's mac via from_event_mac. Without the in, `nota bridge show`
     reports every handoff as orphan."""
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
     log = tmp_path / "audit.jsonl"
     transcript = str(tmp_path / "t.jsonl")
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
@@ -693,7 +693,7 @@ def test_subagent_spawn_emits_paired_handoff_in(
     # The in is recorded under the sub-agent's session_id (receiver side).
     assert ins[0]["session_id"] == "ses-sub"
     # Bridge fold reports the pair as non-orphan.
-    from quill.bridge import fold_handoffs
+    from nota.bridge import fold_handoffs
 
     handoffs = fold_handoffs(lines)
     ph = outs[0]["payload"]["payload_hash"]
@@ -706,8 +706,8 @@ def test_subagent_handoff_only_fires_once_per_session(
 ) -> None:
     """Multiple calls from the same sub-agent should NOT emit repeated
     agent.handoff.out events. Handoff fires once per session_id."""
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
     log = tmp_path / "audit.jsonl"
     transcript = str(tmp_path / "t.jsonl")
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
@@ -741,55 +741,55 @@ def test_per_project_log_routing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If <cwd>/.quill/ exists, the hook routes the log there instead of
-    the global ~/.quill/audit.log.jsonl."""
-    from quill.adapters.claude_code import _resolve_project_paths
+    """If <cwd>/.nota/ exists, the hook routes the log there instead of
+    the global ~/.nota/audit.log.jsonl."""
+    from nota.adapters.claude_code import _resolve_project_paths
 
     project = tmp_path / "my-saas"
-    (project / ".quill").mkdir(parents=True)
-    monkeypatch.delenv("QUILL_LOG", raising=False)
+    (project / ".nota").mkdir(parents=True)
+    monkeypatch.delenv("NOTA_LOG", raising=False)
 
     log_path, cfg = _resolve_project_paths(str(project))
-    assert log_path == project / ".quill" / "audit.log.jsonl"
+    assert log_path == project / ".nota" / "audit.log.jsonl"
 
     # without per-project dir, falls back
     no_project = tmp_path / "plain"
     no_project.mkdir()
     log_path2, _ = _resolve_project_paths(str(no_project))
-    assert log_path2 != project / ".quill" / "audit.log.jsonl"
+    assert log_path2 != project / ".nota" / "audit.log.jsonl"
 
 
 def test_per_project_config_optional(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from quill.adapters.claude_code import _resolve_project_paths
+    from nota.adapters.claude_code import _resolve_project_paths
 
     project = tmp_path / "my-saas"
-    (project / ".quill").mkdir(parents=True)
-    monkeypatch.delenv("QUILL_LOG", raising=False)
+    (project / ".nota").mkdir(parents=True)
+    monkeypatch.delenv("NOTA_LOG", raising=False)
 
     # no config file = no per-project config
     _, cfg = _resolve_project_paths(str(project))
     assert cfg is None
 
     # config file present = path returned
-    cfg_path = project / ".quill" / "config.toml"
+    cfg_path = project / ".nota" / "config.toml"
     cfg_path.write_text('[session]\nintent = "test"\n')
     _, cfg2 = _resolve_project_paths(str(project))
     assert cfg2 == cfg_path
 
 
-def test_quill_log_env_overrides_per_project(
+def test_nota_log_env_overrides_per_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from quill.adapters.claude_code import _resolve_project_paths
+    from nota.adapters.claude_code import _resolve_project_paths
 
     project = tmp_path / "x"
-    (project / ".quill").mkdir(parents=True)
+    (project / ".nota").mkdir(parents=True)
     override = tmp_path / "override.jsonl"
-    monkeypatch.setenv("QUILL_LOG", str(override))
+    monkeypatch.setenv("NOTA_LOG", str(override))
 
     log_path, _ = _resolve_project_paths(str(project))
     assert log_path == override

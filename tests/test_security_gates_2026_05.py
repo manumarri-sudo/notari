@@ -15,13 +15,13 @@ late-April / early-May 2026:
 
 from __future__ import annotations
 
-from quill.policy import (
+from nota.policy import (
     SUBCOMMAND_CHAIN_LIMIT,
     Risk,
     Scope,
     classify_command,
 )
-from quill.tool_scan import scan
+from nota.tool_scan import scan
 
 # ---------------------------------------------------------------------------
 # Gate 1 - subcommand-chain bypass (Claude Code CVE-2025-59536 / 21852)
@@ -117,7 +117,7 @@ def test_bare_drop_table_still_critical() -> None:
 
 def test_psql_quoted_sql_is_psql_arg_not_classified_by_inner_sql() -> None:
     """An invocation of `psql -c '<sql>'` is masking the SQL as a string
-    argument; the SQL inside the quoted form is not classifiable by Quill
+    argument; the SQL inside the quoted form is not classifiable by Nota
     at the shell level. The user is invoking psql - the right gate is
     'psql is a database tool, flag it' (caller's job), not 'pretend we
     parsed the embedded SQL.'"""

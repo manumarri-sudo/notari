@@ -1,8 +1,8 @@
-name: "Quill Change Control"
+name: "Nota Change Control"
 description: >-
   Verify AI-written diffs against a human-signed perimeter. Enforces the signed
   boundary (forbidden paths and gate-tamper edits BLOCK), scans added lines for
-  secrets, checks approver provenance, and issues a Quill Change Passport as a
+  secrets, checks approver provenance, and issues a Nota Change Passport as a
   commit Status Check. The passport is gate-signed when a gate key is configured
   (gate-key + gate-pubkeys); otherwise it is unsigned.
 author: "Manu Marri"
@@ -18,7 +18,7 @@ inputs:
   passport-dir:
     description: "Directory for passport.json + passport.md."
     required: false
-    default: ".quill"
+    default: ".nota"
   fail-on-block:
     description: "Exit 1 (fail the job) when the verdict is BLOCK."
     required: false
@@ -38,15 +38,15 @@ inputs:
     description: "Commit SHA to attach the Status Check to (defaults to the PR head)."
     required: false
     default: ${{ github.event.pull_request.head.sha }}
-  quill-version:
+  nota-version:
     description: >-
-      Version spec for the quillx package. Pinned to the exact version this
-      Action release was cut from. The Change Control engine (quill begin/verify)
+      Version spec for the notari package. Pinned to the exact version this
+      Action release was cut from. The Change Control engine (nota begin/verify)
       requires >=0.3.0; earlier versions do not contain it.
     required: false
     default: "==0.3.0"
   install-from-source:
-    description: "Install quill from this checked-out repo instead of PyPI (used for dogfooding)."
+    description: "Install nota from this checked-out repo instead of PyPI (used for dogfooding)."
     required: false
     default: "false"
   strict:
@@ -58,8 +58,8 @@ inputs:
   gate-key:
     description: >-
       Gate identity PRIVATE key (PEM) used to sign the passport, so reviewers can
-      verify the verdict with `quill verify-passport`. Pass from a repo/org secret,
-      e.g. ${{ secrets.QUILL_GATE_KEY }}. Never commit this.
+      verify the verdict with `nota verify-passport`. Pass from a repo/org secret,
+      e.g. ${{ secrets.NOTA_GATE_KEY }}. Never commit this.
     required: false
     default: ""
   gate-pubkeys:
@@ -67,7 +67,7 @@ inputs:
       Trusted gate PUBLIC key(s) (PEM) matching the gate-key. When set, the wrapper
       re-verifies the passport's own signature before trusting the verdict, so a
       tampered or unsigned passport fails the job closed. Pass from a secret/variable,
-      e.g. ${{ vars.QUILL_GATE_PUBKEYS }}.
+      e.g. ${{ vars.NOTA_GATE_PUBKEYS }}.
     required: false
     default: ""
   allow-unsigned-evidence:
@@ -82,8 +82,8 @@ inputs:
     description: >-
       Trusted approver PUBLIC keys (PEM) that may sign the perimeter/contract. Pass
       INLINE from a secret/variable so a PR cannot edit the trust root, e.g.
-      ${{ secrets.QUILL_APPROVER_PUBKEYS }}. In strict mode (the default) the
-      committed .quill/approvers/*.pub set is IGNORED, and a key path resolving
+      ${{ secrets.NOTA_APPROVER_PUBKEYS }}. In strict mode (the default) the
+      committed .nota/approvers/*.pub set is IGNORED, and a key path resolving
       inside the checkout is rejected; only these externally-pinned keys are
       trusted. In cooperative mode the committed set is used in addition.
     required: false
@@ -91,7 +91,7 @@ inputs:
   allow-pull-request-trigger:
     description: >-
       In strict mode the Action refuses to run under the 'pull_request' event
-      because the PR controls the workflow and can remove Quill entirely. Set to
+      because the PR controls the workflow and can remove Nota entirely. Set to
       "true" ONLY for dogfood repos that install-from-source. Consumers MUST use
       pull_request_target instead. See docs/SECURITY-MODEL.md.
     required: false
@@ -100,7 +100,7 @@ inputs:
     description: >-
       Path to the candidate checkout (relative to $GITHUB_WORKSPACE). When the
       checkout lives in a subdirectory (recommended: path: _pr_checkout in the
-      checkout step), set this so Quill finds the git repo. Defaults to "."
+      checkout step), set this so Nota finds the git repo. Defaults to "."
       (workspace root). Using a subdirectory prevents candidate-controlled Python
       modules from shadowing trusted imports.
     required: false
@@ -122,7 +122,7 @@ runs:
       with:
         python-version: "3.12"
 
-    - name: Install Quill
+    - name: Install Nota
       shell: bash
       env:
         PYTHONSAFEPATH: "1"
@@ -134,14 +134,14 @@ runs:
         # We do NOT run `pip install --upgrade pip` here: this job holds the gate
         # signing key + approver pubkeys, so it must pull as little fresh code from
         # the network as possible. The runner's bundled pip is sufficient to install
-        # a pinned wheel. SUPPLY-CHAIN LIMITATION: this installs the exact quillx
+        # a pinned wheel. SUPPLY-CHAIN LIMITATION: this installs the exact notari
         # version but resolves its (already-pinned) dependency tree from PyPI without
         # --require-hashes; for a fully hermetic gate, install from a hash-locked
         # requirements file or a prebuilt container. See docs/SECURITY-MODEL.md.
         if [[ "${{ inputs.install-from-source }}" == "true" ]]; then
           python -I -m pip install -e "${{ github.action_path }}"
         else
-          python -I -m pip install "quillx${{ inputs.quill-version }}"
+          python -I -m pip install "notari${{ inputs.nota-version }}"
         fi
 
     - name: Verify diff against contract
@@ -149,26 +149,26 @@ runs:
       shell: bash
       env:
         PYTHONSAFEPATH: "1"
-        QUILL_HEAD: ${{ inputs.head }}
-        QUILL_PASSPORT_DIR: ${{ inputs.passport-dir }}
-        QUILL_FAIL_ON_BLOCK: ${{ inputs.fail-on-block }}
-        QUILL_BLOCK_ON_REVIEW: ${{ inputs.block-on-review }}
-        QUILL_HEAD_SHA: ${{ inputs.head-sha }}
-        QUILL_STRICT: ${{ inputs.strict }}
-        QUILL_GATE_KEY: ${{ inputs.gate-key }}
-        QUILL_GATE_PUBKEYS: ${{ inputs.gate-pubkeys }}
-        QUILL_ALLOW_UNSIGNED_EVIDENCE: ${{ inputs.allow-unsigned-evidence }}
-        QUILL_ALLOW_PULL_REQUEST_TRIGGER: ${{ inputs.allow-pull-request-trigger }}
-        QUILL_APPROVER_PUBKEYS: ${{ inputs.approver-pubkeys }}
+        NOTA_HEAD: ${{ inputs.head }}
+        NOTA_PASSPORT_DIR: ${{ inputs.passport-dir }}
+        NOTA_FAIL_ON_BLOCK: ${{ inputs.fail-on-block }}
+        NOTA_BLOCK_ON_REVIEW: ${{ inputs.block-on-review }}
+        NOTA_HEAD_SHA: ${{ inputs.head-sha }}
+        NOTA_STRICT: ${{ inputs.strict }}
+        NOTA_GATE_KEY: ${{ inputs.gate-key }}
+        NOTA_GATE_PUBKEYS: ${{ inputs.gate-pubkeys }}
+        NOTA_ALLOW_UNSIGNED_EVIDENCE: ${{ inputs.allow-unsigned-evidence }}
+        NOTA_ALLOW_PULL_REQUEST_TRIGGER: ${{ inputs.allow-pull-request-trigger }}
+        NOTA_APPROVER_PUBKEYS: ${{ inputs.approver-pubkeys }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        QUILL_CHECKOUT_PATH: ${{ inputs.checkout-path }}
+        NOTA_CHECKOUT_PATH: ${{ inputs.checkout-path }}
       run: |
         # cd into the candidate checkout so git commands find the repo. This makes
         # cwd candidate-controlled, so every trusted Python process started from here
-        # is isolated: the `quill` console script does not put cwd on sys.path, and
+        # is isolated: the `nota` console script does not put cwd on sys.path, and
         # the wrapper's inline reads use `python3 -I` (isolated mode, Python 3.4+),
         # which drops cwd from sys.path independently of PYTHONSAFEPATH (3.11+). A
         # candidate pip.py / json.py / sitecustomize.py therefore cannot execute or
         # shadow a trusted import even though cwd is the checkout.
         cd "${{ inputs.checkout-path }}"
-        bash "${{ github.action_path }}/scripts/quill-passport.sh"
+        bash "${{ github.action_path }}/scripts/nota-passport.sh"

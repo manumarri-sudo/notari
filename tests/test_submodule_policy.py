@@ -9,9 +9,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from quill import contract as contract_mod
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import contract as contract_mod
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 _OLD = "1" * 40
 _NEW = "2" * 40
@@ -86,7 +86,7 @@ def test_added_submodule_is_flagged_with_new_commit(tmp_path: Path) -> None:
 
 
 def test_submodule_evidence_lands_in_passport(tmp_path: Path) -> None:
-    from quill import passport as passport_mod
+    from nota import passport as passport_mod
 
     _init_repo(tmp_path)
     base = _add_gitlink(tmp_path, "vendor/lib", _OLD, "add submodule")

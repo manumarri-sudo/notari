@@ -12,7 +12,7 @@ The contract under test:
     but the override never actually applies (no overrides.toml write).
 
 Four detailed tests pin these one at a time. Each uses an isolated
-QUILL_HOME via monkeypatch so the operator's real pattern_stats are
+NOTA_HOME via monkeypatch so the operator's real pattern_stats are
 never touched.
 """
 
@@ -44,30 +44,30 @@ def _payload(
 
 def _isolate(monkeypatch, tmp_path: Path) -> None:
     """Point every learning-related path at tmp_path so the test never
-    touches the operator's real ~/.quill state."""
+    touches the operator's real ~/.nota state."""
     # Write a minimal config so the operator's real bash allowlist /
     # trust scopes / policy overrides don't leak in.
     cfg = tmp_path / "config.toml"
     cfg.write_text('[session]\nintent = "test"\nscope = []\n[trust]\npaths = []\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(cfg))
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTA_CONFIG", str(cfg))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / "key"))
     # Approvals store: isolate from operator's real store so tests
     # don't read or write tokens to the live approvals.json.
-    monkeypatch.setenv("QUILL_APPROVALS_FILE", str(tmp_path / "approvals.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_APPROVALS_FILE", str(tmp_path / "approvals.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
     # Force-off bypass-mode detection so test isolation matches the
     # gating semantics under test (the operator's real settings.json
     # might have skipDangerousModePermissionPrompt=true; that's not
     # what the integration tests are exercising).
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "0")
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "0")
     # Surface any learning-pipeline error instead of swallowing it,
     # so test failures are debuggable instead of silently undercounting.
-    monkeypatch.setenv("QUILL_LEARNING_STRICT", "1")
+    monkeypatch.setenv("NOTA_LEARNING_STRICT", "1")
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +80,8 @@ def test_hook_response_shape_unchanged_by_learning_integration(
     monkeypatch,
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
@@ -90,7 +90,7 @@ def test_hook_response_shape_unchanged_by_learning_integration(
     # Three different hook flows: allow, ask, deny. All must produce
     # valid JSON with hookEventName == "PreToolUse".
     # Use commands that don't match the operator's real bash allowlist
-    # (config is isolated via QUILL_CONFIG in _isolate, but stay safe).
+    # (config is isolated via NOTA_CONFIG in _isolate, but stay safe).
     cases = [
         # tool_name, tool_input, expected_permission
         ("Bash", {"command": "ls"}, "allow"),
@@ -126,13 +126,13 @@ def test_learning_exception_does_not_break_the_hook(
     # where the file should be).
     bad_dir = tmp_path / "blockage"
     bad_dir.mkdir()
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(bad_dir))  # path is a dir
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(bad_dir))  # path is a dir
     # Disable strict mode for THIS test specifically; we want the
     # production failure path (swallow + log, never raise) under test.
-    monkeypatch.delenv("QUILL_LEARNING_STRICT", raising=False)
+    monkeypatch.delenv("NOTA_LEARNING_STRICT", raising=False)
 
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
@@ -164,9 +164,9 @@ def test_repeated_denies_emit_tightening_suggestion(
     monkeypatch,
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
-    from quill.learning import TIGHTEN_DENY_STREAK, load_stats
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
+    from nota.learning import TIGHTEN_DENY_STREAK, load_stats
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
@@ -244,12 +244,12 @@ def test_loosen_candidate_surfaces_but_never_auto_applies(
 ) -> None:
     _isolate(monkeypatch, tmp_path)
     overrides_path = tmp_path / "overrides.toml"
-    monkeypatch.setenv("QUILL_OVERRIDES", str(overrides_path))
+    monkeypatch.setenv("NOTA_OVERRIDES", str(overrides_path))
 
     # Drive the learner directly: 30 approvals (operator bypasses) for
     # one pattern, then verify a loosening_candidate is suggested but
     # overrides.toml is NOT created.
-    from quill.learning import LOOSEN_MIN_FIRES, post_decision_update
+    from nota.learning import LOOSEN_MIN_FIRES, post_decision_update
 
     pattern_id = "Bash:some-noisy-pattern"
     for _ in range(LOOSEN_MIN_FIRES + 10):

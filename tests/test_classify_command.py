@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from quill.policy import Risk, classify_command
+from nota.policy import Risk, classify_command
 
 
 @pytest.mark.parametrize(
@@ -115,12 +115,12 @@ def test_package_installs_and_open_url_are_medium(cmd: str) -> None:
         "ls -la",
         "pwd",
         "cat README.md",
-        "head -50 src/quill/policy.py",
+        "head -50 src/nota/policy.py",
         "git status",
         "git log --oneline -20",
         "git diff HEAD~1",
         "git branch -vv",
-        "wc -l src/quill/*.py",
+        "wc -l src/nota/*.py",
         "node --version",
         "npm list",
         "echo hello",
@@ -152,7 +152,7 @@ def test_unknown_command_is_medium() -> None:
         # The regression case: url slugs containing `sudo` were classified
         # as `sudo invocation` because regex word-boundaries treat `-` and
         # `/` as boundary points.
-        'open "https://github.com/manumarri-sudo/quill"',
+        'open "https://github.com/manumarri-sudo/nota"',
         'open "https://github.com/some-pseudo-user/repo"',
         "curl https://api.example.com/sudo-status",
         'echo "sudo-bash-style" > note.txt',
@@ -163,7 +163,7 @@ def test_unknown_command_is_medium() -> None:
 def test_url_slugs_with_sudo_are_not_classified_as_critical(cmd: str) -> None:
     """Regression: `manumarri-sudo` in a URL must not match the sudo
     invocation pattern. Found live in the audit log when running
-    `open https://github.com/manumarri-sudo/quill`."""
+    `open https://github.com/manumarri-sudo/nota`."""
     result = classify_command(cmd)
     assert result.risk is not Risk.CRITICAL or "sudo" not in result.reason, (
         f"{cmd!r} mis-classified as critical sudo: reason={result.reason}"

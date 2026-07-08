@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
-from quill.touchid import (
+from nota.touchid import (
     DEFAULT_REASON,
     DEFAULT_TIMEOUT_S,
     TouchIDResult,
@@ -33,7 +33,7 @@ from quill.touchid import (
 def test_default_reason_is_concrete_one_sentence() -> None:
     """Apple HIG: reason should tell the user exactly what they're approving."""
     assert "tool call" in DEFAULT_REASON
-    assert "quill" in DEFAULT_REASON.lower()
+    assert "nota" in DEFAULT_REASON.lower()
     assert "." not in DEFAULT_REASON or DEFAULT_REASON.count(".") <= 1
 
 
@@ -201,14 +201,14 @@ def test_authenticate_maps_lockout_correctly() -> None:
 # REAL (un-mocked) probe. Everything above mocks LocalAuthentication; this runs
 # the actual codesign-based can_present_ui() that decides whether Touch ID is
 # even attempted. On the ad-hoc-signed uv interpreter this returns False - the
-# exact silent-failure path that broke `quill off` in production. If this code
+# exact silent-failure path that broke `nota off` in production. If this code
 # raised or stopped returning a bool, the gate-disable flow would misbehave and
 # no mocked test would catch it.
 # ---------------------------------------------------------------------------
 
 
 def test_can_present_ui_runs_real_codesign_and_returns_bool() -> None:
-    from quill import touchid
+    from nota import touchid
 
     if hasattr(touchid.can_present_ui, "cache_clear"):
         touchid.can_present_ui.cache_clear()
@@ -219,7 +219,7 @@ def test_can_present_ui_runs_real_codesign_and_returns_bool() -> None:
 def test_signature_allows_ui_logic_not_inverted() -> None:
     # Pins the decision LOGIC (not just "returns a bool") against known codesign
     # blobs, so a logic inversion - allowing UI for an ad-hoc signature - fails.
-    from quill.touchid import _signature_allows_ui
+    from nota.touchid import _signature_allows_ui
 
     adhoc = "Executable=/x/python3\nIdentifier=-\nSignature=adhoc\nTeamIdentifier=not set\n"
     assert _signature_allows_ui(adhoc) is False

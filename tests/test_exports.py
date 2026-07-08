@@ -1,7 +1,7 @@
 """Audit-export tests - the deliverable for the $2,500 AI Agent Risk Audit.
 
 We pin:
-- The control crosswalk doesn't drift silently (every Quill event_type
+- The control crosswalk doesn't drift silently (every Nota event_type
   referenced by a control still exists in events.py).
 - Markdown + HTML render without raising on empty / partial / full logs.
 - Redaction holds: raw arg values never leak into the export.
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quill import events as ev
-from quill.exports import (
+from nota import events as ev
+from nota.exports import (
     CONTROLS,
     aggregate,
     render_html,
@@ -41,7 +41,7 @@ def test_every_control_references_real_event_types() -> None:
     # for events the pivot removed - security review honesty finding.)
     real = ev.ALL_EVENT_TYPES
     for c in CONTROLS:
-        for et in c.quill_event_types:
+        for et in c.nota_event_types:
             assert et in real, (
                 f"control {c.code} references unknown event_type {et!r}; "
                 "either add it to events.py or fix the crosswalk"
@@ -52,9 +52,9 @@ def test_change_control_surface_is_covered_with_sampling() -> None:
     """The crosswalk must cover the headline Change-Control events, and every
     Change-Control control must carry auditor-sampling guidance (the explicit
     field practitioners asked for: how would an auditor test this)."""
-    cc = [c for c in CONTROLS if "verification.run" in c.quill_event_types]
+    cc = [c for c in CONTROLS if "verification.run" in c.nota_event_types]
     assert cc, "no control maps the Change-Control verification.run event"
-    assert any("contract.created" in c.quill_event_types for c in CONTROLS)
+    assert any("contract.created" in c.nota_event_types for c in CONTROLS)
     for c in cc:
         assert c.auditor_sampling, f"Change-Control control {c.code} has no auditor_sampling"
 
@@ -200,11 +200,11 @@ def test_markdown_renders_executive_summary_table() -> None:
         log_path=Path("/x"),
     )
     md = render_markdown(rep)
-    assert "# Quill Audit Evidence Pack" in md
+    assert "# Nota Audit Evidence Pack" in md
     assert "## Executive summary" in md
     assert "## Control mapping" in md
     assert "## Tamper-evidence" in md
-    assert "Quill" in md  # branded
+    assert "Nota" in md  # branded
 
 
 def test_aggregate_filters_by_selected_standard() -> None:

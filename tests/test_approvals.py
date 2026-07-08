@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from quill.approvals import (
+from nota.approvals import (
     DEFAULT_TTL_SECONDS,
     Approval,
     ApprovalStore,
@@ -36,7 +36,7 @@ def _mk_approval(
 
 
 def test_latest_pending_picks_newest_unapproved(tmp_path: Path) -> None:
-    """`quill approve --latest` resolves to the most recent block still
+    """`nota approve --latest` resolves to the most recent block still
     awaiting approval - skipping already-approved and expired ones even if
     they are newer."""
     store = ApprovalStore(path=tmp_path / "approvals.json")
@@ -62,15 +62,15 @@ def test_approve_refuses_when_touchid_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The self-approval fix: when Touch ID can't fire (the agent's own process,
-    SSH, no hardware), `quill approve` REFUSES by default instead of silently
+    SSH, no hardware), `nota approve` REFUSES by default instead of silently
     approving via the typed-token fallback. Otherwise an agent reads its own
-    token from `quill approvals list` and releases its own blocked call."""
+    token from `nota approvals list` and releases its own blocked call."""
     from typer.testing import CliRunner
 
-    import quill.touchid as touchid
-    from quill.cli import app
+    import nota.touchid as touchid
+    from nota.cli import app
 
-    monkeypatch.setenv("QUILL_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTA_HOME", str(tmp_path))
     monkeypatch.setattr(touchid, "is_available", lambda: False)
 
     store = ApprovalStore.load()
@@ -92,10 +92,10 @@ def test_approve_no_biometric_is_explicit_opt_in(
     genuine headless use, and still approves when Touch ID is unavailable."""
     from typer.testing import CliRunner
 
-    import quill.touchid as touchid
-    from quill.cli import app
+    import nota.touchid as touchid
+    from nota.cli import app
 
-    monkeypatch.setenv("QUILL_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTA_HOME", str(tmp_path))
     monkeypatch.setattr(touchid, "is_available", lambda: False)
 
     store = ApprovalStore.load()
@@ -113,9 +113,9 @@ def test_issued_token_never_starts_with_dash(
 ) -> None:
     """A leading-dash token is unpassable as a CLI argument (parsed as an
     option flag), so issue() must re-draw past base64url's '-' prefix."""
-    import quill.approvals as approvals_mod
+    import nota.approvals as approvals_mod
 
-    monkeypatch.setenv("QUILL_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTA_HOME", str(tmp_path))
     draws = iter(["-dashfirst", "-alsodash", "cleantoken"])
     monkeypatch.setattr(approvals_mod.secrets, "token_urlsafe", lambda n: next(draws))
 
@@ -149,7 +149,7 @@ def test_issue_then_approve_then_consume_flips_state(tmp_path: Path) -> None:
 
 def test_issue_without_approve_is_not_consumable(tmp_path: Path) -> None:
     """SECURITY: the gate auto-issues a token on every block so the
-    notification can offer `quill approve`. That token MUST NOT release the
+    notification can offer `nota approve`. That token MUST NOT release the
     call on its own - otherwise a denied command auto-allows its own retry,
     defeating the gate against any agent that simply tries again.
 

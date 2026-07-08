@@ -1,6 +1,6 @@
 """The GitHub Action wrapper must fail closed (security re-review P0-3).
 
-These tests drive ``scripts/quill-passport.sh`` as a black box through a real
+These tests drive ``scripts/nota-passport.sh`` as a black box through a real
 git repo, proving the two properties that matter:
 
   1. a passport committed into the PR (or left over from a prior step) can never
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-WRAPPER = Path(__file__).resolve().parent.parent / "scripts" / "quill-passport.sh"
+WRAPPER = Path(__file__).resolve().parent.parent / "scripts" / "nota-passport.sh"
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
@@ -27,7 +27,7 @@ def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
 
 
 def _git_env(home: Path) -> dict[str, str]:
-    """A git/quill env with the venv's bin on PATH so the `quill` console script
+    """A git/nota env with the venv's bin on PATH so the `nota` console script
     and `git` resolve, and a throwaway HOME so we never touch the real one."""
     venv_bin = str(Path(sys.executable).parent)
     env = dict(os.environ)
@@ -65,16 +65,16 @@ def test_committed_passport_cannot_fake_a_pass(repo: tuple[Path, dict[str, str]]
 
     # Contract: only src/** is in scope (cooperative mode keeps this test focused
     # on the wrapper's fail-closed logic, not on signing).
-    _run(["quill", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["nota", "begin", "task: tidy src", "--scope", "src/**"], root, env)
     _run(["git", "add", "-A"], root, env)
     _run(["git", "commit", "-qm", "contract"], root, env)
 
     # The PR makes an out-of-scope change -> real verify() yields BLOCK...
     (root / "PAYLOAD.txt").write_text("exfiltrate\n")
     # ...and plants a forged PASS passport in the repo-visible passport dir.
-    quill_dir = root / ".quill"
-    quill_dir.mkdir(exist_ok=True)
-    (quill_dir / "passport.json").write_text(
+    nota_dir = root / ".nota"
+    nota_dir.mkdir(exist_ok=True)
+    (nota_dir / "passport.json").write_text(
         json.dumps({"verdict": "PASS", "exit_code": 0, "reasons": ["forged"]})
     )
     _run(["git", "add", "-A"], root, env)
@@ -83,19 +83,19 @@ def test_committed_passport_cannot_fake_a_pass(repo: tuple[Path, dict[str, str]]
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "QUILL_STRICT": "false", "QUILL_PASSPORT_DIR": ".quill"},
+        env={**env, "NOTA_STRICT": "false", "NOTA_PASSPORT_DIR": ".nota"},
         capture_output=True,
         text=True,
     )
 
     # The job fails on the real BLOCK, and the published passport is the real one.
     assert proc.returncode == 1, f"expected BLOCK exit 1, got {proc.returncode}: {proc.stderr}"
-    published = json.loads((quill_dir / "passport.json").read_text())
+    published = json.loads((nota_dir / "passport.json").read_text())
     assert published["verdict"] == "BLOCK"
     assert "PAYLOAD.txt" in published["evidence"]["out_of_scope"]
 
 
-def _install_fake_quill(
+def _install_fake_nota(
     bin_dir: Path,
     *,
     rc: int,
@@ -103,11 +103,11 @@ def _install_fake_quill(
     exit_code: int,
     head_commit: str = "",
 ) -> None:
-    """A stand-in `quill` that writes a passport with the given verdict/exit_code
+    """A stand-in `nota` that writes a passport with the given verdict/exit_code
     into --passport-dir and exits with `rc`, to drive the wrapper's evidence-
     consistency check without depending on the real verifier's behavior."""
     bin_dir.mkdir(parents=True, exist_ok=True)
-    fake = bin_dir / "quill"
+    fake = bin_dir / "nota"
     hc_field = f',"head_commit":"{head_commit}"' if head_commit else ""
     fake.write_text(
         "#!/usr/bin/env bash\n"
@@ -131,15 +131,15 @@ def test_wrapper_fails_closed_on_rc_verdict_mismatch(
         pytest.skip("wrapper script not present")
     root, env = repo
     bin_dir = root.parent / "fakebin"
-    _install_fake_quill(bin_dir, rc=1, verdict="PASS", exit_code=0)
+    _install_fake_nota(bin_dir, rc=1, verdict="PASS", exit_code=0)
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
         env={
             **env,
-            "PATH": str(bin_dir) + os.pathsep + env["PATH"],  # fake quill wins
-            "QUILL_STRICT": "false",
-            "QUILL_PASSPORT_DIR": ".quill",
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],  # fake nota wins
+            "NOTA_STRICT": "false",
+            "NOTA_PASSPORT_DIR": ".nota",
         },
         capture_output=True,
         text=True,
@@ -156,7 +156,7 @@ def _wrapper(
     return subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "QUILL_PASSPORT_DIR": ".quill", **extra},
+        env={**env, "NOTA_PASSPORT_DIR": ".nota", **extra},
         capture_output=True,
         text=True,
     )
@@ -167,7 +167,7 @@ def test_strict_rejects_fail_on_block_false(repo: tuple[Path, dict[str, str]]) -
     if not WRAPPER.exists():
         pytest.skip("wrapper script not present")
     root, env = repo
-    proc = _wrapper(root, env, {"QUILL_STRICT": "true", "QUILL_FAIL_ON_BLOCK": "false"})
+    proc = _wrapper(root, env, {"NOTA_STRICT": "true", "NOTA_FAIL_ON_BLOCK": "false"})
     assert proc.returncode == 2
     assert "fail-on-block=false" in (proc.stdout + proc.stderr)
 
@@ -190,11 +190,11 @@ def test_strict_requires_gate_signature_by_default(repo: tuple[Path, dict[str, s
     root, env = repo
     head_sha = _repo_head(root, env)
     bin_dir = root.parent / "fakebin_pass"
-    _install_fake_quill(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    _install_fake_nota(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
     proc = _wrapper(
         root,
         env,
-        {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "QUILL_STRICT": "true"},
+        {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTA_STRICT": "true"},
     )
     assert proc.returncode == 2
     assert "requires a gate-signed passport" in (proc.stdout + proc.stderr)
@@ -207,14 +207,14 @@ def test_strict_unsigned_evidence_opt_out_is_explicit(repo: tuple[Path, dict[str
     root, env = repo
     head_sha = _repo_head(root, env)
     bin_dir = root.parent / "fakebin_pass2"
-    _install_fake_quill(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    _install_fake_nota(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
     proc = _wrapper(
         root,
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
-            "QUILL_STRICT": "true",
-            "QUILL_ALLOW_UNSIGNED_EVIDENCE": "true",
+            "NOTA_STRICT": "true",
+            "NOTA_ALLOW_UNSIGNED_EVIDENCE": "true",
         },
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -222,20 +222,20 @@ def test_strict_unsigned_evidence_opt_out_is_explicit(repo: tuple[Path, dict[str
 
 def test_strict_rejects_pull_request_trigger(repo: tuple[Path, dict[str, str]]) -> None:
     """Strict mode must refuse to run under the 'pull_request' event because
-    the PR controls the workflow and can remove Quill entirely (C-1)."""
+    the PR controls the workflow and can remove Nota entirely (C-1)."""
     if not WRAPPER.exists():
         pytest.skip("wrapper script not present")
     root, env = repo
     head_sha = _repo_head(root, env)
     bin_dir = root.parent / "fakebin_pr"
-    _install_fake_quill(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    _install_fake_nota(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
     proc = _wrapper(
         root,
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
-            "QUILL_STRICT": "true",
-            "QUILL_ALLOW_UNSIGNED_EVIDENCE": "true",
+            "NOTA_STRICT": "true",
+            "NOTA_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request",
         },
     )
@@ -250,14 +250,14 @@ def test_strict_allows_pull_request_target_trigger(repo: tuple[Path, dict[str, s
     root, env = repo
     head_sha = _repo_head(root, env)
     bin_dir = root.parent / "fakebin_prt"
-    _install_fake_quill(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    _install_fake_nota(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
     proc = _wrapper(
         root,
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
-            "QUILL_STRICT": "true",
-            "QUILL_ALLOW_UNSIGNED_EVIDENCE": "true",
+            "NOTA_STRICT": "true",
+            "NOTA_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request_target",
         },
     )
@@ -271,16 +271,16 @@ def test_strict_pull_request_with_opt_in(repo: tuple[Path, dict[str, str]]) -> N
     root, env = repo
     head_sha = _repo_head(root, env)
     bin_dir = root.parent / "fakebin_opt"
-    _install_fake_quill(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    _install_fake_nota(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
     proc = _wrapper(
         root,
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
-            "QUILL_STRICT": "true",
-            "QUILL_ALLOW_UNSIGNED_EVIDENCE": "true",
+            "NOTA_STRICT": "true",
+            "NOTA_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request",
-            "QUILL_ALLOW_PULL_REQUEST_TRIGGER": "true",
+            "NOTA_ALLOW_PULL_REQUEST_TRIGGER": "true",
         },
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -1,4 +1,4 @@
-"""Tests for `quill integrate` — teaching coding agents to query Quill."""
+"""Tests for `nota integrate` — teaching coding agents to query Nota."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import typer
 
-from quill.cli import app
-from quill.integrate import (
+from nota.cli import app
+from nota.integrate import (
     MARKER_BEGIN,
     MARKER_END,
     Integration,
@@ -34,14 +34,14 @@ def _registered_commands(t: typer.Typer, prefix: str = "") -> set[str]:
     return names
 
 
-def _quill_commands_in_snippet(snippet: str) -> list[str]:
-    """Pull every ``quill <subcommand ...>`` reference out of a snippet's
+def _nota_commands_in_snippet(snippet: str) -> list[str]:
+    """Pull every ``nota <subcommand ...>`` reference out of a snippet's
     inline code spans and resolve each to its registered command path
     (1- or 2-token), so a fabricated command surfaces as its raw name."""
     found: list[str] = []
     for span in re.findall(r"`([^`]+)`", snippet):
         tokens = span.split()
-        if not tokens or tokens[0] != "quill":
+        if not tokens or tokens[0] != "nota":
             continue
         # command tokens run until the first flag / placeholder / value arg
         cmd: list[str] = []
@@ -95,7 +95,7 @@ def fake_integration(tmp_path: Path) -> Integration:
         detect_paths=(),
         target_path_global=tmp_path / "global-rules.md",
         target_path_project=tmp_path / "rules.md",
-        snippet="## Test Quill\n\nRun `quill saves` for stats.",
+        snippet="## Test Nota\n\nRun `nota saves` for stats.",
     )
 
 
@@ -106,7 +106,7 @@ def test_install_fresh_creates_file_with_block(fake_integration: Integration) ->
     text = path.read_text()
     assert MARKER_BEGIN in text
     assert MARKER_END in text
-    assert "Run `quill saves`" in text
+    assert "Run `nota saves`" in text
 
 
 def test_install_idempotent_when_snippet_unchanged(fake_integration: Integration) -> None:
@@ -125,14 +125,14 @@ def test_install_refreshes_when_snippet_drifted(
     install(fake_integration)
     # corrupt the existing block with an old snippet
     text = fake_integration.target_path_project.read_text()
-    drifted = text.replace("Run `quill saves`", "Run `quill old-command`")
+    drifted = text.replace("Run `nota saves`", "Run `nota old-command`")
     fake_integration.target_path_project.write_text(drifted)
 
     path, status = install(fake_integration)
     assert status == "refreshed"
     text = path.read_text()
-    assert "Run `quill saves`" in text
-    assert "quill old-command" not in text
+    assert "Run `nota saves`" in text
+    assert "nota old-command" not in text
     # still exactly one block
     assert text.count(MARKER_BEGIN) == 1
 
@@ -155,7 +155,7 @@ def test_install_appends_at_end_when_no_prior_block(fake_integration: Integratio
     install(fake_integration)
     text = fake_integration.target_path_project.read_text()
     assert text.startswith("existing content")
-    # Quill block is after the existing content
+    # Nota block is after the existing content
     assert text.index("existing content") < text.index(MARKER_BEGIN)
 
 
@@ -222,7 +222,7 @@ def test_claude_code_snippet_includes_core_commands() -> None:
     integ = get_integration("claude-code")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["quill saves", "quill receipts", "quill audit show", "quill audit export"]:
+    for cmd in ["nota saves", "nota receipts", "nota audit show", "nota audit export"]:
         assert cmd in s, f"snippet should reference {cmd}"
 
 
@@ -230,7 +230,7 @@ def test_cursor_snippet_includes_core_commands() -> None:
     integ = get_integration("cursor")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["quill saves", "quill receipts", "quill audit"]:
+    for cmd in ["nota saves", "nota receipts", "nota audit"]:
         assert cmd in s
 
 
@@ -238,14 +238,14 @@ def test_aider_snippet_includes_core_commands() -> None:
     integ = get_integration("aider")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["quill saves", "quill receipts", "quill audit"]:
+    for cmd in ["nota saves", "nota receipts", "nota audit"]:
         assert cmd in s
 
 
 def test_snippets_never_invent_unimplemented_commands() -> None:
-    """Every ``quill <subcommand>`` a snippet tells the agent to run must be a
+    """Every ``nota <subcommand>`` a snippet tells the agent to run must be a
     REAL command registered on the CLI. A fabricated command (e.g.
-    ``quill nuke-everything``) must fail this test rather than get shipped into
+    ``nota nuke-everything``) must fail this test rather than get shipped into
     a user's agent rules file."""
     registered = _registered_commands(app)
     # sanity: introspection actually found the CLI's commands
@@ -253,12 +253,12 @@ def test_snippets_never_invent_unimplemented_commands() -> None:
 
     checked = 0
     for integ in all_integrations():
-        referenced = _quill_commands_in_snippet(integ.snippet)
-        assert referenced, f"{integ.name} snippet references no quill commands"
+        referenced = _nota_commands_in_snippet(integ.snippet)
+        assert referenced, f"{integ.name} snippet references no nota commands"
         for cmd in referenced:
             checked += 1
             assert cmd in registered, (
-                f"{integ.name} snippet references `quill {cmd}`, which is not a "
+                f"{integ.name} snippet references `nota {cmd}`, which is not a "
                 f"registered CLI command. Known commands: {sorted(registered)}"
             )
     assert checked  # we actually cross-checked at least one command

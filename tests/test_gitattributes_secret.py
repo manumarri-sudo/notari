@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from quill import contract as contract_mod
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import contract as contract_mod
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 _SECRET = "AKIA" + "IOSFODNN7" + "EXAMPLE"  # split so this file holds no live key
 

@@ -5,10 +5,10 @@ the adapter integration test for handoff.out lives in test_claude_hook.py.
 
 from __future__ import annotations
 
-from quill import events as ev
-from quill.bridge import fold_handoffs, payload_hash
-from quill.receipt import derive_from_events
-from quill.taint import (
+from nota import events as ev
+from nota.bridge import fold_handoffs, payload_hash
+from nota.receipt import derive_from_events
+from nota.taint import (
     TaintState,
     classify_call_taint,
     fold_audit_events,

@@ -1,4 +1,4 @@
-"""Tests for `quill audit summary` (morning recap subcommand).
+"""Tests for `nota audit summary` (morning recap subcommand).
 
 Covers:
   - duration parsing (`12h`, `1d`, `7d`, `30m`, `2h30m`, errors)
@@ -12,7 +12,7 @@ Covers:
   - markdown output structure is Substack-paste-ready
   - critical-blocked path surfaces blocked rows
 
-Each test runs in the conftest-isolated QUILL_HOME so the live `~/.quill/`
+Each test runs in the conftest-isolated NOTA_HOME so the live `~/.nota/`
 log is never touched.
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from quill.audit_summary import (
+from nota.audit_summary import (
     compute_summary,
     filter_events,
     load_events,
@@ -36,7 +36,7 @@ from quill.audit_summary import (
     render_markdown,
     render_table,
 )
-from quill.cli import app
+from nota.cli import app
 
 # ---------------------------------------------------------------------------
 # helpers - build a synthetic audit log without going through AuditLog so

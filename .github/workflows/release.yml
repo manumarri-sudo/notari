@@ -2,10 +2,10 @@ name: release
 
 # Auto-publishes to PyPI when a GitHub release is published. Uses PyPI
 # Trusted Publishing (OIDC) so no API token lives in repo secrets. One-time
-# setup required on the PyPI side: register manumarri-sudo/quill as a
-# trusted publisher for the `quillx` project with workflow `release.yml`
-# and environment `pypi`. The PyPI dist is `quillx` because `quill` was
-# taken; the package, CLI binary, and config dir all remain `quill`. See:
+# setup required on the PyPI side: register manumarri-sudo/nota as a
+# trusted publisher for the `notari` project with workflow `release.yml`
+# and environment `pypi`. The PyPI dist is `notari` because `nota` was
+# taken; the package, CLI binary, and config dir all remain `nota`. See:
 #   https://docs.pypi.org/trusted-publishers/
 
 on:
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/quillx
+      url: https://pypi.org/p/notari
     permissions:
       # Required for Trusted Publishing OIDC token exchange.
       id-token: write
@@ -56,7 +56,7 @@ jobs:
         run: twine check dist/*
 
       - name: Publish to PyPI via Trusted Publishing
-        # Tolerated until PyPI Trusted Publishing is registered for `quillx`.
+        # Tolerated until PyPI Trusted Publishing is registered for `notari`.
         # Without TP the OIDC handshake fails; once TP is in place this step
         # publishes cleanly and `skip-existing: true` keeps re-runs idempotent.
         continue-on-error: true

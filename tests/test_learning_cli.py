@@ -1,20 +1,20 @@
-"""Step 5 tests: `quill suggestions` CLI + `quill log` live tail.
+"""Step 5 tests: `nota suggestions` CLI + `nota log` live tail.
 
 Four invariants:
 
-  1. `quill suggestions list` shows the pending learner-surfaced items
+  1. `nota suggestions list` shows the pending learner-surfaced items
      newest-first, deduplicated by (type, pattern_id), with the
      `apply:` line only on loosening_candidate (auto-tightenings are
      already applied; surfacing the apply hint would be misleading).
-  2. `quill suggestions promote <key>` writes a versioned override
-     block to ~/.quill/overrides.toml WITH a TTL and a `promoted_at`
+  2. `nota suggestions promote <key>` writes a versioned override
+     block to ~/.nota/overrides.toml WITH a TTL and a `promoted_at`
      timestamp; the operator's promotion is itself audited as a
      `loosening_promoted` suggestion.
-  3. `quill suggestions dismiss <key>` appends a `dismissed` entry to
+  3. `nota suggestions dismiss <key>` appends a `dismissed` entry to
      suggestions.jsonl (append-only; the original is never edited),
      and follow-up `list` invocations no longer surface the dismissed
      key.
-  4. `quill log` (non-follow mode) shows recent learning.log lines
+  4. `nota log` (non-follow mode) shows recent learning.log lines
      AND tails recent suggestions; with `--no-suggestions` it omits
      the suggestion stream; gracefully prints when no log exists.
 """
@@ -38,13 +38,13 @@ def _isolate(monkeypatch, tmp_path: Path) -> None:
     """Point every learning + override path at tmp_path."""
     cfg = tmp_path / "config.toml"
     cfg.write_text('[session]\nintent = "t"\nscope = []\n[trust]\npaths = []\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(cfg))
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
-    monkeypatch.setenv("QUILL_OVERRIDES", str(tmp_path / "overrides.toml"))
-    monkeypatch.setenv("QUILL_APPROVALS_FILE", str(tmp_path / "approvals.json"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTA_CONFIG", str(cfg))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_OVERRIDES", str(tmp_path / "overrides.toml"))
+    monkeypatch.setenv("NOTA_APPROVALS_FILE", str(tmp_path / "approvals.json"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / "key"))
     monkeypatch.setenv("HOME", str(tmp_path))
 
 
@@ -103,7 +103,7 @@ def test_suggestions_list_shows_newest_first_and_dedups(
         ],
     )
 
-    from quill.cli import app
+    from nota.cli import app
 
     result = runner.invoke(app, ["suggestions", "list"])
     assert result.exit_code == 0, result.stderr
@@ -117,7 +117,7 @@ def test_suggestions_list_shows_newest_first_and_dedups(
     assert "Bash:rm -rf" in out
     # apply hint shows on loosening_candidate (which is the only
     # surface that operator must promote).
-    assert "quill suggestions promote" in out
+    assert "nota suggestions promote" in out
 
 
 # ---------------------------------------------------------------------------
@@ -138,13 +138,13 @@ def test_suggestions_promote_writes_override_block_with_ttl(
                 "type": "loosening_candidate",
                 "pattern_id": "Bash:curl-sh",
                 "evidence": "approval 75% (Wilson 95% lower 0.65, n=22)",
-                "proposal": "Review; promote with quill suggestions promote",
+                "proposal": "Review; promote with nota suggestions promote",
                 "ts": base_ts,
             },
         ],
     )
 
-    from quill.cli import app
+    from nota.cli import app
 
     # Promote with explicit TTL.
     result = runner.invoke(
@@ -200,7 +200,7 @@ def test_suggestions_dismiss_is_append_only_and_hides_the_suggestion(
     sug_path = tmp_path / "suggestions.jsonl"
     original = sug_path.read_text()
 
-    from quill.cli import app
+    from nota.cli import app
 
     key = "loosening_candidate:Bash:noisy"
     result = runner.invoke(app, ["suggestions", "dismiss", key])
@@ -230,7 +230,7 @@ def test_log_streams_recent_activity_and_handles_empty_state(
     monkeypatch,
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    from quill.cli import app
+    from nota.cli import app
 
     # Empty state: friendly message, exit 0.
     result = runner.invoke(app, ["log"])

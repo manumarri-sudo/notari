@@ -1,4 +1,4 @@
-"""Tests for Quill Change Control: contract, diff evaluation, verify, passport."""
+"""Tests for Nota Change Control: contract, diff evaluation, verify, passport."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from quill import contract as contract_mod
-from quill import passport as passport_mod
-from quill import policy
-from quill import verify as verify_mod
+from nota import contract as contract_mod
+from nota import passport as passport_mod
+from nota import policy
+from nota import verify as verify_mod
 
 # --------------------------------------------------------------------------
 # policy.evaluate_diff and its primitives
@@ -135,10 +135,10 @@ def test_dot_prefixed_paths_not_mangled() -> None:
     assert ".github/workflows/ci.yml" in ev.changed_paths
 
 
-def test_quill_metadata_excluded() -> None:
+def test_nota_metadata_excluded() -> None:
     diff = (
-        "diff --git a/.quill/contract.json b/.quill/contract.json\n"
-        "--- a/.quill/contract.json\n+++ b/.quill/contract.json\n"
+        "diff --git a/.nota/contract.json b/.nota/contract.json\n"
+        "--- a/.nota/contract.json\n+++ b/.nota/contract.json\n"
         "@@ -1 +1,2 @@\n {}\n+more\n"
     )
     ev = policy.evaluate_diff(diff, allowed_paths=["src/"])
@@ -174,7 +174,7 @@ def repo(tmp_path: Path) -> Path:
 
 def test_begin_writes_contract(repo: Path) -> None:
     contract, path = contract_mod.begin("Fix the bug", allowed_paths=["src/"], root=repo)
-    assert path == repo / ".quill" / "contract.json"
+    assert path == repo / ".nota" / "contract.json"
     data = json.loads(path.read_text())
     assert data["task"] == "Fix the bug"
     assert data["allowed_paths"] == ["src/"]
@@ -224,7 +224,7 @@ def test_exceptions_waive_findings(repo: Path) -> None:
     # Without exception: BLOCK.
     assert verify_mod.verify(contract=contract, root=repo).verdict is verify_mod.Verdict.BLOCK
     # With a scope exception: the out-of-scope path is waived.
-    exc = repo / ".quill" / "exceptions.json"
+    exc = repo / ".nota" / "exceptions.json"
     exc.write_text(
         json.dumps({"exceptions": [{"type": "scope", "path": "infra.tf", "reason": "approved"}]})
     )
@@ -234,7 +234,7 @@ def test_exceptions_waive_findings(repo: Path) -> None:
 
 
 def test_verify_emits_audit_events(repo: Path, tmp_path: Path) -> None:
-    from quill.audit import AuditLog
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     key = b"k" * 32
@@ -265,17 +265,17 @@ def test_passport_json_and_markdown(repo: Path) -> None:
     assert data["verdict"] == "BLOCK"
     assert data["exit_code"] == 1
     assert "outside.py" in data["evidence"]["out_of_scope"]
-    assert data["schema"] == "quill.change-passport/v1.1"
+    assert data["schema"] == "nota.change-passport/v1.1"
 
     md = passport_mod.render_markdown(result, generated_at="2026-06-17T00:00:00+00:00")
-    assert "# Quill Change Passport" in md
+    assert "# Nota Change Passport" in md
     assert "BLOCK" in md
     assert "outside.py" in md
     # Action block leads the document (P0-1): what to do, a paste-ready agent
     # prompt, and the honesty footer — before the raw evidence detail.
     assert "## What to do next" in md
     assert "## Prompt to give Claude Code" in md
-    assert "What Quill does not prove" in md
+    assert "What Nota does not prove" in md
     assert "## Evidence trust" in md
     assert md.index("## What to do next") < md.index("## Evidence")
     # Unsigned markdown must NOT imply gate-signed evidence.
@@ -291,7 +291,7 @@ def test_passport_json_and_markdown(repo: Path) -> None:
     for banned in ("proves the code is correct", "proves security", "guarantees no backdoor"):
         assert banned not in md.lower()
 
-    json_path, md_path = passport_mod.write_passport(result, out_dir=repo / ".quill")
+    json_path, md_path = passport_mod.write_passport(result, out_dir=repo / ".nota")
     assert json_path.exists() and md_path.exists()
     assert json.loads(json_path.read_text())["verdict"] == "BLOCK"
 

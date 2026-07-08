@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from quill import perimeter as perim
+from nota import perimeter as perim
 
 FORBID = "src/auth/**"
 
@@ -46,7 +46,7 @@ def test_forbidden_variants_all_block(p: perim.Perimeter, path: str) -> None:
         ".github/workflows/ci.yml",  # exact (control)
         ".github/Workflows/ci.yml",  # capital W
         ".GitHub/workflows/ci.yml",  # capital GitHub
-        ".quill/Approvers/human.pub",  # capital A on approvers
+        ".nota/Approvers/human.pub",  # capital A on approvers
         "Action.yml",  # capital A on the action file
     ],
 )

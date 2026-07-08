@@ -1,4 +1,4 @@
-"""Tests for `quill insights` — per-pattern analysis + recommendations."""
+"""Tests for `nota insights` — per-pattern analysis + recommendations."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from quill import events as ev
-from quill.insights import (
+from nota import events as ev
+from nota.insights import (
     PatternStat,
     _extract_trust_path,
     compute_insights,

@@ -1,42 +1,42 @@
 """Tests for Claude Code --dangerously-skip-permissions bypass-mode awareness.
 
 When the user explicitly opts out of friction via Claude Code's bypass flag,
-Quill should respect that intent: silently log high-risk events instead of
+Nota should respect that intent: silently log high-risk events instead of
 asking, but never soften the critical class. The bright line never moves.
 """
 
 from __future__ import annotations
 
-from quill.adapters.claude_code import _detect_bypass_mode, classify_event
-from quill.policy import Risk
+from nota.adapters.claude_code import _detect_bypass_mode, classify_event
+from nota.policy import Risk
 
 # ---------------------------------------------------------------------------
 # detection precedence
 
 
 def test_bypass_via_hook_payload_permission_mode(monkeypatch):
-    monkeypatch.delenv("QUILL_BYPASS_MODE", raising=False)
+    monkeypatch.delenv("NOTA_BYPASS_MODE", raising=False)
     monkeypatch.delenv("CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS", raising=False)
     assert _detect_bypass_mode({"permission_mode": "bypass"})
     assert _detect_bypass_mode({"bypass_mode": True})
     assert _detect_bypass_mode({"dangerously_skip_permissions": True})
 
 
-def test_bypass_via_quill_env(monkeypatch):
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "1")
+def test_bypass_via_nota_env(monkeypatch):
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "1")
     assert _detect_bypass_mode()
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "true")
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "true")
     assert _detect_bypass_mode()
 
 
 def test_bypass_via_claude_env(monkeypatch):
-    monkeypatch.delenv("QUILL_BYPASS_MODE", raising=False)
+    monkeypatch.delenv("NOTA_BYPASS_MODE", raising=False)
     monkeypatch.setenv("CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS", "1")
     assert _detect_bypass_mode()
 
 
 def test_no_bypass_by_default(monkeypatch):
-    monkeypatch.delenv("QUILL_BYPASS_MODE", raising=False)
+    monkeypatch.delenv("NOTA_BYPASS_MODE", raising=False)
     monkeypatch.delenv("CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS", raising=False)
     assert not _detect_bypass_mode()
     assert not _detect_bypass_mode({})

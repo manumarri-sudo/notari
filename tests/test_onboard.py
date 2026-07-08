@@ -1,4 +1,4 @@
-"""Tests for `quill onboard` interactive setup.
+"""Tests for `nota onboard` interactive setup.
 
 The interactive prompts themselves can't be tested without a TTY harness;
 these tests cover the pure functions (detection, TOML rendering, install
@@ -11,7 +11,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from quill.onboard import (
+from nota.onboard import (
     PRESET_DESCRIPTIONS,
     build_config_toml,
     detect_coding_tools,
@@ -53,7 +53,7 @@ def test_boring_preset_renders_and_parses():
     cfg = build_config_toml(
         intent="exploratory development",
         scope=[],
-        audit_path=Path("/tmp/quill/audit.log.jsonl"),
+        audit_path=Path("/tmp/nota/audit.log.jsonl"),
         notify={},
         preset="boring",
         trust_paths=["/tmp/myrepo"],
@@ -61,7 +61,7 @@ def test_boring_preset_renders_and_parses():
     parsed = tomllib.loads(cfg)
     assert parsed["session"]["intent"] == "exploratory development"
     assert parsed["session"]["scope"] == []
-    assert parsed["audit"]["path"] == "/tmp/quill/audit.log.jsonl"
+    assert parsed["audit"]["path"] == "/tmp/nota/audit.log.jsonl"
     assert parsed["trust"]["paths"] == ["/tmp/myrepo"]
     assert parsed["telemetry"]["enabled"] is False
     # boring preset writes only the comment, no real overrides
@@ -72,7 +72,7 @@ def test_paranoid_preset_upgrades_edit_write():
     cfg = build_config_toml(
         intent="paranoid session",
         scope=["fs:write:src/"],
-        audit_path=Path("/tmp/quill/audit.log.jsonl"),
+        audit_path=Path("/tmp/nota/audit.log.jsonl"),
         notify={},
         preset="paranoid",
         trust_paths=[],
@@ -127,8 +127,8 @@ def test_notify_section_omitted_when_empty():
 
 
 def test_generated_boring_config_loads_via_load_config(tmp_path):
-    """The rendered boring-preset TOML must round-trip through quill.config.load_config."""
-    from quill.config import load_config
+    """The rendered boring-preset TOML must round-trip through nota.config.load_config."""
+    from nota.config import load_config
 
     cfg_text = build_config_toml(
         intent="exploratory development",
@@ -148,8 +148,8 @@ def test_generated_boring_config_loads_via_load_config(tmp_path):
 
 def test_generated_paranoid_config_loads_with_policy_overrides(tmp_path):
     """Paranoid preset writes [policy] string values; the field_validator must coerce them."""
-    from quill.config import load_config
-    from quill.policy import Risk
+    from nota.config import load_config
+    from nota.policy import Risk
 
     cfg_text = build_config_toml(
         intent="paranoid session",
@@ -198,7 +198,7 @@ def test_claude_code_installer_signature():
     Verify the adapter's function accepts that signature."""
     import inspect
 
-    from quill.adapters import claude_code as cc
+    from nota.adapters import claude_code as cc
 
     sig = inspect.signature(cc.install_into_settings)
     params = sig.parameters
@@ -210,7 +210,7 @@ def test_claude_code_installer_signature():
 def test_cursor_installer_signature():
     import inspect
 
-    from quill.adapters import cursor as cu
+    from nota.adapters import cursor as cu
 
     sig = inspect.signature(cu.install_into_settings)
     # accepts at least one positional argument

@@ -31,9 +31,9 @@ from pathlib import Path
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ def _isolate(monkeypatch, tmp_path: Path) -> None:
 
 def test_single_writer_still_works(tmp_path: Path, monkeypatch) -> None:
     _isolate(monkeypatch, tmp_path)
-    from quill.learning import load_stats, post_decision_update
+    from nota.learning import load_stats, post_decision_update
 
     for _ in range(20):
         post_decision_update("Bash:rm -rf", "deny")
@@ -67,17 +67,17 @@ def _worker_record(stats_path: str, n: int, pattern_id: str, decision: str) -> N
     """Subprocess entry: hammer post_decision_update n times."""
     import os as _os
 
-    _os.environ["QUILL_PATTERN_STATS"] = stats_path
-    _os.environ["QUILL_SUGGESTIONS"] = stats_path + ".sug"
-    _os.environ["QUILL_LEARNING_LOG"] = stats_path + ".log"
+    _os.environ["NOTA_PATTERN_STATS"] = stats_path
+    _os.environ["NOTA_SUGGESTIONS"] = stats_path + ".sug"
+    _os.environ["NOTA_LEARNING_LOG"] = stats_path + ".log"
     import importlib
 
     # Subprocess workers don't inherit pytest's import path; point at this
     # repo's src/ relative to the test file, never an absolute machine path.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    if "quill.learning" in sys.modules:
-        importlib.reload(sys.modules["quill.learning"])
-    from quill.learning import post_decision_update
+    if "nota.learning" in sys.modules:
+        importlib.reload(sys.modules["nota.learning"])
+    from nota.learning import post_decision_update
 
     for _ in range(n):
         post_decision_update(pattern_id, decision)
@@ -111,7 +111,7 @@ def test_8_concurrent_writers_lose_no_updates(
     for pid in pids:
         os.waitpid(pid, 0)
 
-    from quill.learning import load_stats
+    from nota.learning import load_stats
 
     stats = load_stats()
     assert pattern_id in stats, f"pattern missing; stats keys: {list(stats)}"
@@ -160,7 +160,7 @@ def test_mixed_concurrent_approves_and_denies_balance(
     for pid in pids:
         os.waitpid(pid, 0)
 
-    from quill.learning import load_stats
+    from nota.learning import load_stats
 
     stats = load_stats()
     p = stats[pattern_id]
@@ -186,7 +186,7 @@ def test_reader_does_not_block_indefinitely(
     are active proves the lock semantics work. We just verify no
     deadlock: read after one writer finishes, before next starts."""
     _isolate(monkeypatch, tmp_path)
-    from quill.learning import load_stats, post_decision_update
+    from nota.learning import load_stats, post_decision_update
 
     # Seed: a few writes.
     for _ in range(5):

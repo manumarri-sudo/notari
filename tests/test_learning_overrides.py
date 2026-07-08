@@ -16,7 +16,7 @@ Four invariants under test:
      "loosening never widens beyond default-HIGH; CRITICAL stays
      critical regardless of TTL'd overrides."
   4. Override persistence: writing a new override via the same TOML
-     format the `quill suggestions promote` CLI uses is read by the
+     format the `nota suggestions promote` CLI uses is read by the
      hook on the next invocation (no caching/staleness bug between
      write and read).
 """
@@ -31,18 +31,18 @@ from pathlib import Path
 def _isolate(monkeypatch, tmp_path: Path) -> None:
     cfg = tmp_path / "config.toml"
     cfg.write_text('[session]\nintent = "t"\nscope = []\n[trust]\npaths = []\n')
-    monkeypatch.setenv("QUILL_CONFIG", str(cfg))
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
-    monkeypatch.setenv("QUILL_OVERRIDES", str(tmp_path / "overrides.toml"))
-    monkeypatch.setenv("QUILL_SESSIONS", str(tmp_path / "sessions.json"))
-    monkeypatch.setenv("QUILL_TAINT_FILE", str(tmp_path / "taint.json"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / "key"))
-    monkeypatch.setenv("QUILL_APPROVALS_FILE", str(tmp_path / "approvals.json"))
-    monkeypatch.setenv("QUILL_NO_AUTO_WATCH", "1")
-    monkeypatch.setenv("QUILL_BYPASS_MODE", "0")
-    monkeypatch.setenv("QUILL_LEARNING_STRICT", "1")
+    monkeypatch.setenv("NOTA_CONFIG", str(cfg))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_OVERRIDES", str(tmp_path / "overrides.toml"))
+    monkeypatch.setenv("NOTA_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTA_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTA_APPROVALS_FILE", str(tmp_path / "approvals.json"))
+    monkeypatch.setenv("NOTA_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NOTA_BYPASS_MODE", "0")
+    monkeypatch.setenv("NOTA_LEARNING_STRICT", "1")
 
 
 def _write_override(
@@ -53,7 +53,7 @@ def _write_override(
     ttl_days: int,
     evidence: str = "manual test",
 ) -> None:
-    """Format-compatible with what `quill suggestions promote` writes."""
+    """Format-compatible with what `nota suggestions promote` writes."""
     section = "".join(c if c.isalnum() or c in "_-" else "_" for c in pattern_id)[:60]
     block = (
         f"\n[overrides.{section}]\n"
@@ -98,8 +98,8 @@ def test_non_expired_override_downshifts_default_high_edit(
         ttl_days=14,
     )
 
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
@@ -143,8 +143,8 @@ def test_expired_override_does_not_apply(
         ttl_days=7,
     )
 
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"
@@ -197,9 +197,9 @@ def test_critical_pattern_not_downshifted_by_override(
     # the `permission == "ask" and classified_by == "default"` guard.
     # A CRITICAL event is permission="deny"/classified_by="pattern", so
     # the guard must keep the block from ever firing.
-    from quill.adapters.claude_code import decide, run_hook
-    from quill.audit import AuditLog
-    from quill.learn import _normalize_block_reason
+    from nota.adapters.claude_code import decide, run_hook
+    from nota.audit import AuditLog
+    from nota.learn import _normalize_block_reason
 
     critical = decide("Bash", {"command": "DROP TABLE users"})
     assert critical.permission == "deny"
@@ -215,7 +215,7 @@ def test_critical_pattern_not_downshifted_by_override(
     )
     # The override IS active and DOES key on this event's pattern_id, so
     # only the guard prevents a downshift.
-    from quill.learning import load_active_overrides
+    from nota.learning import load_active_overrides
 
     assert critical_pattern_id in load_active_overrides()
 
@@ -279,7 +279,7 @@ def test_override_written_via_promote_format_is_read_by_hook(
     )
     overrides_path.write_text(block)
     # Same-instant read must surface the override.
-    from quill.learning import load_active_overrides
+    from nota.learning import load_active_overrides
 
     active = load_active_overrides()
     assert pattern_id in active
@@ -288,8 +288,8 @@ def test_override_written_via_promote_format_is_read_by_hook(
 
     # Now exercise the full hook path - hook reads the file fresh on
     # each invocation, no daemon-cached state interferes.
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     transcript = tmp_path / "t.jsonl"

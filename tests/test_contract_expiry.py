@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from quill import attest
-from quill import contract as contract_mod
-from quill import perimeter as perimeter_mod
-from quill import provenance as provenance_mod
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import attest
+from nota import contract as contract_mod
+from nota import perimeter as perimeter_mod
+from nota import provenance as provenance_mod
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 _PAST = "2020-01-01T00:00:00+00:00"
 
@@ -82,7 +82,7 @@ def test_expired_contract_blocks_in_strict(repo: Path) -> None:
     c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/name")
     expired = dataclasses.replace(c, expires_at=_PAST)
     expired.write(repo)
-    provenance_mod.sign_artifact(expired.to_dict(), priv_pem, repo / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(expired.to_dict(), priv_pem, repo / ".nota" / "contract.sig")
     # pin the human key off-box and bind the repo so expiry is the gate that fires
     env = {provenance_mod.APPROVER_ENV: pub_pem, "GITHUB_REPOSITORY": "owner/name"}
     result = verify_mod.verify(contract=expired, root=repo, perimeter=perim, strict=True, env=env)
@@ -101,7 +101,7 @@ def test_malformed_expiry_blocks_in_strict(repo: Path) -> None:
     c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/name")
     bad = dataclasses.replace(c, expires_at="not-a-date")
     bad.write(repo)
-    provenance_mod.sign_artifact(bad.to_dict(), priv_pem, repo / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(bad.to_dict(), priv_pem, repo / ".nota" / "contract.sig")
     env = {provenance_mod.APPROVER_ENV: pub_pem, "GITHUB_REPOSITORY": "owner/name"}
     result = verify_mod.verify(contract=bad, root=repo, perimeter=perim, strict=True, env=env)
     assert result.verdict is Verdict.BLOCK
@@ -122,8 +122,8 @@ def test_contract_bound_to_other_repo_blocks_in_strict(repo: Path) -> None:
     priv_pem, pub_pem = attest.generate_keypair()
     perim = _sign_perimeter_and_commit(repo, priv_pem)
     c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/A")
-    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".quill" / "contract.sig")
-    env = {provenance_mod.APPROVER_ENV: pub_pem, "QUILL_REPO_ID": "owner/B"}
+    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".nota" / "contract.sig")
+    env = {provenance_mod.APPROVER_ENV: pub_pem, "NOTA_REPO_ID": "owner/B"}
     result = verify_mod.verify(contract=c, root=repo, perimeter=perim, strict=True, env=env)
     assert result.verdict is Verdict.BLOCK
     assert any("bound to repo" in r for r in result.reasons), result.reasons
@@ -133,11 +133,11 @@ def test_contract_bound_to_matching_repo_passes_strict(repo: Path) -> None:
     priv_pem, pub_pem = attest.generate_keypair()
     perim = _sign_perimeter_and_commit(repo, priv_pem)
     c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/A")
-    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".nota" / "contract.sig")
     (repo / "src" / "app.py").write_text("x = 2\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "edit")
-    env = {provenance_mod.APPROVER_ENV: pub_pem, "QUILL_REPO_ID": "owner/A"}
+    env = {provenance_mod.APPROVER_ENV: pub_pem, "NOTA_REPO_ID": "owner/A"}
     result = verify_mod.verify(contract=c, root=repo, perimeter=perim, strict=True, env=env)
     assert result.verdict is Verdict.PASS, result.reasons
 
@@ -152,7 +152,7 @@ def test_unexpired_signed_contract_passes_strict(repo: Path) -> None:
     c, _ = contract_mod.begin(
         "task", allowed_paths=["src/**"], root=repo, expires_in_days=7, repo="owner/name"
     )
-    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".nota" / "contract.sig")
     (repo / "src" / "app.py").write_text("x = 2\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "in-scope edit")

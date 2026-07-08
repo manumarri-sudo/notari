@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from quill.learning import (
+from nota.learning import (
     AUTOPROMOTE_MIN_APPROVALS,
     AUTOPROMOTE_WINDOW_SEC,
     PatternStats,

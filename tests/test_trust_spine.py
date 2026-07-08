@@ -20,12 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from quill import attest
-from quill import contract as contract_mod
-from quill import perimeter as perimeter_mod
-from quill import provenance as provenance_mod
-from quill import verify as verify_mod
-from quill.verify import Verdict
+from nota import attest
+from nota import contract as contract_mod
+from nota import perimeter as perimeter_mod
+from nota import provenance as provenance_mod
+from nota import verify as verify_mod
+from nota.verify import Verdict
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -75,7 +75,7 @@ def _begin(repo: Path, priv: str | None = None) -> contract_mod.Contract:
         "standing perimeter task", allowed_paths=(), root=repo, repo="owner/name"
     )
     if priv is not None:
-        provenance_mod.sign_artifact(c.to_dict(), priv, repo / ".quill" / "contract.sig")
+        provenance_mod.sign_artifact(c.to_dict(), priv, repo / ".nota" / "contract.sig")
     return c
 
 
@@ -97,11 +97,11 @@ def _verify(
     # In strict mode only env-pinned keys are trusted (committed keys are
     # ignored), so simulate the human pinning their approver key as a CI secret.
     if env is None and strict:
-        human = repo / ".quill" / "approvers" / "human.pub"
+        human = repo / ".nota" / "approvers" / "human.pub"
         env = {provenance_mod.APPROVER_ENV: human.read_text()} if human.exists() else {}
     # Contracts from _begin are bound to owner/name; strict now requires a matching
     # current-repo identity, so supply one unless the caller pinned its own.
-    if isinstance(env, dict) and "GITHUB_REPOSITORY" not in env and "QUILL_REPO_ID" not in env:
+    if isinstance(env, dict) and "GITHUB_REPOSITORY" not in env and "NOTA_REPO_ID" not in env:
         env = {**env, "GITHUB_REPOSITORY": "owner/name"}
     return verify_mod.verify(
         contract=contract,
@@ -160,16 +160,16 @@ def test_gate_tamper_workflow_edit_blocks(repo: Path) -> None:
 
 def test_agent_cannot_bootstrap_trust_by_committing_its_own_key(repo: Path) -> None:
     """The key adversarial property: an agent that adds its own approver key to
-    self-sign the perimeter trips the gate-tamper rule on `.quill/approvers/**`,
+    self-sign the perimeter trips the gate-tamper rule on `.nota/approvers/**`,
     so it can never authorize itself."""
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
     contract = _begin(repo, priv)
     _, rogue_pub = attest.generate_keypair()
-    _commit_change(repo, ".quill/approvers/rogue.pub", rogue_pub)
+    _commit_change(repo, ".nota/approvers/rogue.pub", rogue_pub)
     result = _verify(repo, contract)
     assert result.verdict is Verdict.BLOCK
-    assert any(".quill/approvers/rogue.pub" in h for h in result.gate_tamper_hits)
+    assert any(".nota/approvers/rogue.pub" in h for h in result.gate_tamper_hits)
 
 
 def test_strict_unsigned_perimeter_blocks(repo: Path) -> None:
@@ -252,7 +252,7 @@ def test_secret_on_added_line_blocks(repo: Path) -> None:
 
 
 def test_signed_passport_roundtrips(repo: Path) -> None:
-    from quill import passport as passport_mod
+    from nota import passport as passport_mod
 
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
@@ -269,7 +269,7 @@ def test_signed_passport_roundtrips(repo: Path) -> None:
 
 def test_forged_passport_verdict_is_rejected(repo: Path) -> None:
     """The dangerous twin: flip a BLOCK passport to PASS -> signature invalid."""
-    from quill import passport as passport_mod
+    from nota import passport as passport_mod
 
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
@@ -288,7 +288,7 @@ def test_forged_passport_verdict_is_rejected(repo: Path) -> None:
 
 
 def test_passport_signed_by_untrusted_gate_key_rejected(repo: Path) -> None:
-    from quill import passport as passport_mod
+    from nota import passport as passport_mod
 
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
@@ -317,7 +317,7 @@ def test_p0_1_contract_rebase_after_malicious_commit_blocks(repo: Path) -> None:
 
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
-    _begin(repo, priv)  # human-signs the contract at begin (writes .quill/contract.sig)
+    _begin(repo, priv)  # human-signs the contract at begin (writes .nota/contract.sig)
 
     _commit_change(repo, "src/evil.py", "backdoor = 1\n")  # malicious commit M
     m_sha = subprocess.run(
@@ -325,7 +325,7 @@ def test_p0_1_contract_rebase_after_malicious_commit_blocks(repo: Path) -> None:
     ).stdout.strip()
 
     # Forge: rewrite the contract to base=M and a wildcard scope, keep the old sig.
-    cpath = repo / ".quill" / "contract.json"
+    cpath = repo / ".nota" / "contract.json"
     data = _json.loads(cpath.read_text())
     data["base_commit"] = m_sha
     data["allowed_paths"] = ["**"]
@@ -356,7 +356,7 @@ def test_p0_2_unsigned_exceptions_do_not_waive_in_strict(repo: Path) -> None:
     priv = _approver(repo)
     _sign_perimeter(repo, priv)
     # Wildcard 'secret' exception (no path) would waive every secret in cooperative mode.
-    (repo / ".quill" / "exceptions.json").write_text(
+    (repo / ".nota" / "exceptions.json").write_text(
         _json.dumps({"exceptions": [{"type": "secret", "reason": "approved"}]})
     )
     contract = _begin(repo, priv)
@@ -383,7 +383,7 @@ def test_p0_1_composite_rogue_key_plus_base_move_blocks(repo: Path) -> None:
     # The attacker's own key, committed into the repo checkout.
     rogue_priv, rogue_pub = attest.generate_keypair()
 
-    d = repo / ".quill" / "approvers"
+    d = repo / ".nota" / "approvers"
     d.mkdir(parents=True, exist_ok=True)
     (d / "rogue.pub").write_text(rogue_pub)
     rogue_per = perimeter_mod.default_perimeter()
@@ -402,9 +402,9 @@ def test_p0_1_composite_rogue_key_plus_base_move_blocks(repo: Path) -> None:
     contract, _ = contract_mod.begin("anything", allowed_paths=("**",), root=repo)
     data = contract.to_dict()
     data["base_commit"] = m_sha
-    (repo / ".quill" / "contract.json").write_text(_json.dumps(data))
+    (repo / ".nota" / "contract.json").write_text(_json.dumps(data))
     forged = contract_mod.Contract.from_dict(data)
-    provenance_mod.sign_artifact(forged.to_dict(), rogue_priv, repo / ".quill" / "contract.sig")
+    provenance_mod.sign_artifact(forged.to_dict(), rogue_priv, repo / ".nota" / "contract.sig")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "C: rogue contract base=M")
 

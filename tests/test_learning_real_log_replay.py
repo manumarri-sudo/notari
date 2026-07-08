@@ -1,7 +1,7 @@
 """Step C test: replay-against-real-log integration.
 
 Feed every learning-signal event from the user's actual
-~/.quill/audit.log.jsonl through post_decision_update, then assert
+~/.nota/audit.log.jsonl through post_decision_update, then assert
 the resulting pattern_stats match a hand-derived expectation.
 
 This is the test the rc5 honest audit was missing - end-to-end
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-REAL_LOG = Path.home() / ".quill" / "audit.log.jsonl"
+REAL_LOG = Path.home() / ".nota" / "audit.log.jsonl"
 
 
 def _classify_event_to_learning_signal(evt: dict) -> tuple[str | None, str | None]:
@@ -39,7 +39,7 @@ def _classify_event_to_learning_signal(evt: dict) -> tuple[str | None, str | Non
 
     The pattern_id is derived the same way the adapter derives it.
     """
-    from quill.learn import _normalize_block_reason
+    from nota.learn import _normalize_block_reason
 
     etype = evt.get("type")
     payload = evt.get("payload") or {}
@@ -77,9 +77,9 @@ def test_replay_against_real_audit_log_matches_hand_derived_counts(
     a bug the unit tests didn't catch.
     """
     # Isolate so the test never touches the operator's REAL stats file.
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
-    monkeypatch.setenv("QUILL_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
-    monkeypatch.setenv("QUILL_LEARNING_LOG", str(tmp_path / "learning.log"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_SUGGESTIONS", str(tmp_path / "suggestions.jsonl"))
+    monkeypatch.setenv("NOTA_LEARNING_LOG", str(tmp_path / "learning.log"))
 
     # 1. Load the real audit log.
     events: list[dict] = []
@@ -93,9 +93,9 @@ def test_replay_against_real_audit_log_matches_hand_derived_counts(
                 continue
     # This is a dogfooding integration test: it only means something against
     # a real, high-volume operator log. A small log (e.g. the 2-entry log a
-    # fresh `quill` run leaves in ~/.quill on any machine) satisfies the
+    # fresh `nota` run leaves in ~/.nota on any machine) satisfies the
     # skipif-exists guard above but is not the dogfooded distribution this
-    # test targets, so skip rather than fail. On CI, where no ~/.quill log
+    # test targets, so skip rather than fail. On CI, where no ~/.nota log
     # exists at all, the skipif already handles it.
     if len(events) < 1000:
         pytest.skip(
@@ -124,7 +124,7 @@ def test_replay_against_real_audit_log_matches_hand_derived_counts(
     )
 
     # 3. Replay every event through post_decision_update.
-    from quill.learning import load_stats, post_decision_update
+    from nota.learning import load_stats, post_decision_update
 
     for evt in events:
         pattern_id, decision = _classify_event_to_learning_signal(evt)

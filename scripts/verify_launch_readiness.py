@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic launch-readiness harness for Quill's anti-manipulation pass.
+"""Deterministic launch-readiness harness for Nota's anti-manipulation pass.
 
 Inspects files and exercises real behavior — no LLM, no trust of commit
 messages, generated scorecards, or local lesson counts. Emits a machine-readable
@@ -24,12 +24,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCHEMA = "quill.launch-readiness/v1"
+SCHEMA = "nota.launch-readiness/v1"
 
 COMMANDS_REQUIRED = [
     "uv run ruff check src tests",
     "uv run ruff format --check src tests",
-    "uv run mypy src/quill",
+    "uv run mypy src/nota",
     "uv run pytest tests/",
     "python -m build",
 ]
@@ -89,11 +89,11 @@ def check_lessons_advisory() -> tuple[bool, str]:
 def check_loop_visible() -> tuple[bool, str]:
     blob = _read("README.md") + _read("docs/QUICKSTART.md")
     needed = [
-        "quill verify",
-        "quill explain",
-        "quill explain --fix-prompt",
-        "quill lessons",
-        "quill teach",
+        "nota verify",
+        "nota explain",
+        "nota explain --fix-prompt",
+        "nota lessons",
+        "nota teach",
     ]
     missing = [n for n in needed if n not in blob]
     return (not missing), (
@@ -122,7 +122,7 @@ def check_docs_agree_surfaces() -> tuple[bool, str]:
 
 def _sample_block_passport() -> dict:
     return {
-        "schema": "quill.change-passport/v1.1",
+        "schema": "nota.change-passport/v1.1",
         "verdict": "BLOCK",
         "contract": {"task": "add rate limiting", "allowed_paths": ["src/api/**"]},
         "evidence": {
@@ -142,23 +142,23 @@ def _sample_block_passport() -> dict:
 
 
 def check_fix_prompt_safe() -> tuple[bool, str]:
-    from quill.teach import fix_prompt
+    from nota.teach import fix_prompt
 
     prompt = fix_prompt(_sample_block_passport()).lower()
     bypass = [
-        "disable quill",
-        "weaken quill",
+        "disable nota",
+        "weaken nota",
         "turn off strict",
         "delete the workflow",
         "delete approver",
         "change the perimeter",
-        "ignore quill",
+        "ignore nota",
         "bypass the gate",
     ]
     hit = next((b for b in bypass if b in prompt), None)
     if hit:
         return False, f"fix prompt contains bypass instruction: {hit!r}"
-    if "do not weaken, bypass, or edit quill" not in prompt:
+    if "do not weaken, bypass, or edit nota" not in prompt:
         return False, "fix prompt does not tell the agent NOT to weaken the gate"
     # The pattern NAME may appear; a value-shaped token must not.
     if re.search(r"akia[0-9a-z]{12,}", prompt):
@@ -167,7 +167,7 @@ def check_fix_prompt_safe() -> tuple[bool, str]:
 
 
 def check_explain_shell_safe() -> tuple[bool, str]:
-    from quill.explain import build_remediations
+    from nota.explain import build_remediations
 
     p = _sample_block_passport()
     p["evidence"]["out_of_scope"] = ["-rf weird name.py", "a:b.py"]
@@ -178,9 +178,9 @@ def check_explain_shell_safe() -> tuple[bool, str]:
 
 
 def check_passport_remediation_and_trust() -> tuple[bool, str]:
-    from quill import passport as pp
-    from quill.policy import DiffEvaluation
-    from quill.verify import Contract, Verdict, VerifyResult
+    from nota import passport as pp
+    from nota.policy import DiffEvaluation
+    from nota.verify import Contract, Verdict, VerifyResult
 
     ev = DiffEvaluation(
         files=(),
@@ -214,7 +214,7 @@ def check_passport_remediation_and_trust() -> tuple[bool, str]:
     needed = [
         "## What to do next",
         "## Prompt to give Claude Code",
-        "What Quill does not prove",
+        "What Nota does not prove",
         "## Evidence trust",
     ]
     missing = [s for s in needed if s not in md]
@@ -226,21 +226,21 @@ def check_passport_remediation_and_trust() -> tuple[bool, str]:
 
 
 def check_sensitive_surfaces() -> tuple[bool, str]:
-    from quill.policy import classify_sensitive_surface as cs
+    from nota.policy import classify_sensitive_surface as cs
 
     expect = {
         "CLAUDE.md": "agent_instructions",
         "AGENTS.md": "agent_instructions",
         ".cursorrules": "agent_instructions",
-        ".cursor/rules/quill-scope.mdc": "agent_instructions",
-        ".quill/lessons.json": "quill_learning_state",
-        ".quill/mistakes.jsonl": "quill_learning_state",
+        ".cursor/rules/nota-scope.mdc": "agent_instructions",
+        ".nota/lessons.json": "nota_learning_state",
+        ".nota/mistakes.jsonl": "nota_learning_state",
     }
     for path, want in expect.items():
         got = cs(path)
         if got != want:
             return False, f"{path} classified {got!r}, expected {want!r}"
-    if cs(".quill/contract.json") is not None or cs("src/app.py") is not None:
+    if cs(".nota/contract.json") is not None or cs("src/app.py") is not None:
         return False, "a non-sensitive path was classified as a surface"
     return True, "agent-instruction and learning-state paths are sensitive surfaces"
 
@@ -248,7 +248,7 @@ def check_sensitive_surfaces() -> tuple[bool, str]:
 def check_lessons_do_not_decide_verdict() -> tuple[bool, str]:
     # verify's decision path must not read the lesson stores. Prove structurally:
     # the verify module never imports or references lessons/teach for its verdict.
-    src = _read("src/quill/verify.py")
+    src = _read("src/nota/verify.py")
     if "lessons" in src or "mistakes.jsonl" in src or "lessons.json" in src:
         return False, "verify.py references the learning store in its decision path"
     return True, "verify.py never reads lesson/mistake state (verdict is independent)"
@@ -328,7 +328,7 @@ def run() -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Deterministic Quill launch-readiness harness.")
+    ap = argparse.ArgumentParser(description="Deterministic Nota launch-readiness harness.")
     ap.add_argument("--json", action="store_true", help="emit the JSON report to stdout")
     args = ap.parse_args()
     report = run()

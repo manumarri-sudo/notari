@@ -1,6 +1,6 @@
 """Determinism contract tests.
 
-Quill is a security gate. Operators must be able to reason about it
+Nota is a security gate. Operators must be able to reason about it
 predictably: same inputs -> same outputs, every time. These tests pin
 the contract for every derive/fold/classify entry point that
 production code calls more than once.
@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import json
 
-from quill import events as ev
-from quill.bridge import fold_handoffs, payload_hash
-from quill.pinning import fingerprint
-from quill.policy import Risk, classify, classify_command
-from quill.receipt import derive_from_events
-from quill.taint import fold_audit_events
+from nota import events as ev
+from nota.bridge import fold_handoffs, payload_hash
+from nota.pinning import fingerprint
+from nota.policy import Risk, classify, classify_command
+from nota.receipt import derive_from_events
+from nota.taint import fold_audit_events
 
 
 def _sample_audit_events() -> list[dict[str, object]]:
@@ -126,7 +126,7 @@ def test_classify_command_is_deterministic() -> None:
 
 def test_derive_from_events_is_deterministic() -> None:
     """Repeated runs over the same audit log must produce byte-identical
-    receipt dicts. This is the heart of `quill receipts` reproducibility."""
+    receipt dicts. This is the heart of `nota receipts` reproducibility."""
     events = _sample_audit_events()
     r1 = derive_from_events(list(events))
     r2 = derive_from_events(list(events))

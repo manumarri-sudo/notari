@@ -3,9 +3,9 @@ requires = ["hatchling>=1.30.1"]
 build-backend = "hatchling.build"
 
 [project]
-name = "quillx"
+name = "notari"
 version = "0.3.0"
-description = "Quill Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
+description = "Nota Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -52,7 +52,7 @@ dependencies = [
     # binding ships in the BASE install on macOS rather than an opt-in extra -
     # the platform marker makes it a no-op on Linux/Windows. Keeping it optional
     # silently degraded every Mac install to "Touch ID unavailable", which after
-    # the self-disable hardening meant `quill off` refused outright. (audit #1/#2)
+    # the self-disable hardening meant `nota off` refused outright. (audit #1/#2)
     "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
 ]
 
@@ -61,7 +61,7 @@ keyring = ["keyring>=25.7.0"]
 postgres = ["asyncpg>=0.31.0"]
 # Touch-ID-gated approvals on macOS. Optional because the binding is
 # Apple-platform-only; on Linux/Windows the typed-token flow remains
-# the only option. Quill auto-detects availability at runtime.
+# the only option. Nota auto-detects availability at runtime.
 touchid = [
     "pyobjc-framework-LocalAuthentication>=12.0,<13; sys_platform == 'darwin'",
 ]
@@ -73,12 +73,12 @@ otel = [
     "opentelemetry-sdk>=1.27,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
 ]
-# Cross-platform PDF rendering for `quill audit export --pack` when no
+# Cross-platform PDF rendering for `nota audit export --pack` when no
 # system browser (Chrome / Brave / Edge / Chromium) is available.
 # Optional because weasyprint pulls in pango / cairo / harfbuzz at runtime
 # on Linux; the browser path is preferred when present (faster, fewer deps).
 pdf = ["weasyprint>=62"]
-all = ["quillx[keyring,postgres,touchid,otel,pdf]"]
+all = ["notari[keyring,postgres,touchid,otel,pdf]"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -93,21 +93,21 @@ dev = [
 ]
 
 [project.scripts]
-quill = "quill.cli:app"
-# Mirror entry point so `uvx quillx start` resolves: uvx runs the executable
-# named after the package, and the dist name is `quillx`. Installed users still
-# get the canonical `quill` binary; both point at the same CLI.
-quillx = "quill.cli:app"
+nota = "nota.cli:app"
+# Mirror entry point so `uvx notari start` resolves: uvx runs the executable
+# named after the package, and the dist name is `notari`. Installed users still
+# get the canonical `nota` binary; both point at the same CLI.
+notari = "nota.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/manumarri-sudo/quill"
-Documentation = "https://github.com/manumarri-sudo/quill#readme"
-Source = "https://github.com/manumarri-sudo/quill"
-Changelog = "https://github.com/manumarri-sudo/quill/blob/main/CHANGELOG.md"
-Issues = "https://github.com/manumarri-sudo/quill/issues"
+Homepage = "https://github.com/manumarri-sudo/nota"
+Documentation = "https://github.com/manumarri-sudo/nota#readme"
+Source = "https://github.com/manumarri-sudo/nota"
+Changelog = "https://github.com/manumarri-sudo/nota/blob/main/CHANGELOG.md"
+Issues = "https://github.com/manumarri-sudo/nota/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/quill"]
+packages = ["src/nota"]
 
 [tool.ruff]
 line-length = 100
@@ -177,7 +177,7 @@ warn_return_any = true
 # whose boundaries (arbitrary hook JSON, MCP tool args) are correctly typed
 # `Any`. Forbidding explicit Any there produced ~180 false-positive errors that
 # buried the real ones and forced CI to `|| true`. (audit 2026-06-12, #47)
-files = ["src/quill"]
+files = ["src/nota"]
 python_version = "3.11"
 
 # LocalAuthentication is the Apple Touch ID / Secure Enclave framework, vendored
@@ -196,7 +196,7 @@ module = ["opentelemetry.*"]
 ignore_missing_imports = true
 
 [tool.pyright]
-include = ["src/quill"]
+include = ["src/nota"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
 
@@ -207,7 +207,7 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",
-    "--cov=quill",
+    "--cov=nota",
     "--cov-report=term-missing",
     # Threshold covers the kernel (audit/policy/decay/telemetry/config/proxy/
     # adapters/errors). Presentation layer (cli/tui/watch/tree/doctor/journal/
@@ -221,19 +221,19 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/quill"]
+source = ["src/nota"]
 branch = true
 omit = [
-    "src/quill/_version.py",
+    "src/nota/_version.py",
     # Presentation layer: needs integration / TUI tests, not unit tests.
-    "src/quill/cli.py",
-    "src/quill/tui.py",
-    "src/quill/watch.py",
-    "src/quill/tree.py",
-    "src/quill/doctor.py",
-    "src/quill/journal.py",
-    "src/quill/session.py",
-    "src/quill/prompt.py",
+    "src/nota/cli.py",
+    "src/nota/tui.py",
+    "src/nota/watch.py",
+    "src/nota/tree.py",
+    "src/nota/doctor.py",
+    "src/nota/journal.py",
+    "src/nota/session.py",
+    "src/nota/prompt.py",
 ]
 
 [tool.coverage.report]

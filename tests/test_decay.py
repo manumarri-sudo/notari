@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from quill.decay import (
+from nota.decay import (
     DEFAULT_WINDOWS,
     DecayStore,
     _default_window,
@@ -33,7 +33,7 @@ def test_default_window_uses_specific_first_then_fallback() -> None:
 
 
 def test_record_use_creates_then_bumps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     p, was_decayed = store.record_use("policy.high_to_low", "fs.delete")
     assert was_decayed is False
@@ -51,7 +51,7 @@ def test_record_use_creates_then_bumps(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_decayed_when_age_exceeds_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     store.record_use("policy.high_to_low", "fs.delete")
 
@@ -69,7 +69,7 @@ def test_decayed_when_age_exceeds_window(tmp_path: Path, monkeypatch: pytest.Mon
 def test_record_use_returns_was_decayed_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     store.record_use("policy.high_to_low", "fs.delete")
     p = store.permissions["policy.high_to_low:fs.delete"]
@@ -86,7 +86,7 @@ def test_record_use_returns_was_decayed_flag(
 
 
 def test_reaffirm_bumps_without_use(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     store.record_use("policy.high_to_low", "fs.delete")
     use_count_before = store.permissions["policy.high_to_low:fs.delete"].use_count
@@ -97,7 +97,7 @@ def test_reaffirm_bumps_without_use(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_forget_removes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     store.record_use("policy.high_to_low", "fs.delete")
     assert store.forget("policy.high_to_low", "fs.delete") is True
@@ -105,7 +105,7 @@ def test_forget_removes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_decayed_and_approaching_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(tmp_path / "perm.json"))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(tmp_path / "perm.json"))
     store = DecayStore.load()
     # one decayed, one approaching, one healthy
     store.record_use("policy.high_to_low", "decayed.tool")
@@ -128,7 +128,7 @@ def test_decayed_and_approaching_helpers(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_permission_file_is_chmod_600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     p = tmp_path / "perm.json"
-    monkeypatch.setenv("QUILL_DECAY_FILE", str(p))
+    monkeypatch.setenv("NOTA_DECAY_FILE", str(p))
     store = DecayStore.load()
     store.record_use("policy.high_to_low", "fs.delete")
     import stat

@@ -7,7 +7,7 @@ or revoked; they exist to exercise the regex set, not to leak anything.
 
 from __future__ import annotations
 
-from quill.secrets import (
+from nota.secrets import (
     hit_summary,
     patterns,
     scan,
@@ -211,7 +211,7 @@ def test_hit_summary_handles_multiple_pattern_types():
 
 
 def test_hit_carries_line_number():
-    from quill.secrets import scan
+    from nota.secrets import scan
 
     text = "first line, clean\nsecond line: ghp_" + "A" * 36 + "\nthird line\n"
     hits = scan(text)
@@ -220,14 +220,14 @@ def test_hit_carries_line_number():
 
 
 def test_hit_line_one_when_no_newline():
-    from quill.secrets import scan
+    from nota.secrets import scan
 
     hits = scan("ghp_" + "A" * 36)
     assert hits[0].line == 1
 
 
 def test_hit_summary_groups_lines_when_same_pattern_fires_multiple():
-    from quill.secrets import scan
+    from nota.secrets import scan
 
     text = "ghp_" + "A" * 36 + "\nghp_" + "B" * 36 + "\nghp_" + "C" * 36 + "\n"
     hits = scan(text)
@@ -277,8 +277,8 @@ def test_notion_integration_secret_detected():
 
 
 def test_classify_event_escalates_to_critical_on_secret_write():
-    from quill.adapters.claude_code import classify_event
-    from quill.policy import Risk
+    from nota.adapters.claude_code import classify_event
+    from nota.policy import Risk
 
     args = {
         "file_path": "/x/config.py",
@@ -291,7 +291,7 @@ def test_classify_event_escalates_to_critical_on_secret_write():
 
 
 def test_classify_event_normal_write_unaffected():
-    from quill.adapters.claude_code import classify_event
+    from nota.adapters.claude_code import classify_event
 
     args = {"file_path": "/x/f.py", "content": "def add(a,b): return a+b"}
     risk, reason, suggestion = classify_event("Write", args)
@@ -305,7 +305,7 @@ def test_classify_event_normal_write_unaffected():
 
 
 def test_redact_vendor_token_value_gone():
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     tok = "ghp_" + "A" * 36
     out = redact(f"echo {tok} >> ~/.netrc")
@@ -314,7 +314,7 @@ def test_redact_vendor_token_value_gone():
 
 
 def test_redact_inline_credential_shapes():
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     assert "hunter2x" not in redact("mysql -u root -phunter2x")
     assert "Bearer sk-live-abc123" not in redact("curl -H 'Authorization: Bearer sk-live-abc123'")
@@ -323,7 +323,7 @@ def test_redact_inline_credential_shapes():
 
 
 def test_redact_keeps_command_shape_legible():
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     out = redact("mysql -u root -phunter2x")
     # Command stays readable: only the password value is removed.
@@ -331,7 +331,7 @@ def test_redact_keeps_command_shape_legible():
 
 
 def test_redact_idempotent_and_noop_on_clean_text():
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     clean = "rm -rf node_modules && git status"
     assert redact(clean) == clean
@@ -340,7 +340,7 @@ def test_redact_idempotent_and_noop_on_clean_text():
 
 
 def test_redact_does_not_corrupt_plain_short_flags():
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     # `-print` / `-parse` look like the mysql `-p<pw>` shape but are plain
     # lowercase flags; they must survive untouched.
@@ -349,7 +349,7 @@ def test_redact_does_not_corrupt_plain_short_flags():
 
 def test_audit_what_field_is_redacted_end_to_end():
     """The `what` summary that lands in the audit log must carry no secret."""
-    from quill.adapters.claude_code import _summarize_call
+    from nota.adapters.claude_code import _summarize_call
 
     what = _summarize_call("Bash", {"command": "deploy --token=ghp_" + "C" * 36})
     assert "ghp_" not in what
@@ -359,7 +359,7 @@ def test_audit_what_field_is_redacted_end_to_end():
 def test_redact_userless_dsn_password() -> None:
     # 2nd-review gap #4: the userless connection-string form (no user before the
     # colon) was passing through un-redacted.
-    from quill.secrets import redact
+    from nota.secrets import redact
 
     out = redact("redis://:authpass123@cache:6379/0")
     assert "authpass123" not in out

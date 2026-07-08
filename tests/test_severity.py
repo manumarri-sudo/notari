@@ -9,8 +9,8 @@ Two invariants:
 
 from __future__ import annotations
 
-from quill.policy import Risk
-from quill.severity import (
+from nota.policy import Risk
+from nota.severity import (
     color,
     from_risk,
     icon,

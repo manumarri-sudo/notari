@@ -33,13 +33,13 @@ jobs:
         run: ruff format --check src tests
 
       - name: Type-check (mypy)
-        run: mypy src/quill   # blocking: strict is green and the py.typed marker promises it
+        run: mypy src/nota   # blocking: strict is green and the py.typed marker promises it
 
       - name: Test
         run: pytest tests/   # enforces --cov-fail-under=75 from pyproject (currently ~82%)
 
       - name: Audit dependencies
-        # Audit a frozen list that excludes the editable quillx itself: its
+        # Audit a frozen list that excludes the editable notari itself: its
         # working version may not exist on PyPI yet (e.g. unreleased 0.3.0),
         # which --strict treats as a hard error whether skipped or not.
         # Every real dependency stays under --strict: a CVE fails the build.

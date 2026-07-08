@@ -13,7 +13,7 @@ failure mode the gate exists to prevent.
 
 from __future__ import annotations
 
-from quill.policy import Risk, classify_command
+from nota.policy import Risk, classify_command
 
 _SAFE = (Risk.LOW, Risk.MEDIUM)
 _BLOCKED = (Risk.HIGH, Risk.CRITICAL)

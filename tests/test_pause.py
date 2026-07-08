@@ -1,6 +1,6 @@
 """Gate pause / resume - the bounded, audited off switch.
 
-Covers the state module (quill.pause) and the hook integration (a paused
+Covers the state module (nota.pause) and the hook integration (a paused
 gate lets calls through but logs them with gate_paused=true, and the pause
 check runs BEFORE self_test so it works as a recovery hatch when the
 classifier is broken).
@@ -12,8 +12,8 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-import quill.pause as pause_mod
-from quill.pause import (
+import nota.pause as pause_mod
+from nota.pause import (
     DEFAULT_PAUSE_HOURS,
     MAX_PAUSE_HOURS,
     PauseState,
@@ -120,7 +120,7 @@ def test_paused_hook_allows_critical_and_logs_marker(monkeypatch, tmp_path: Path
     """While paused, a command that would otherwise be CRITICAL-denied is
     allowed - and the let-through is written to the audit log with
     gate_paused=true. The classifier is never consulted on this path."""
-    from quill.adapters.claude_code import _handle_paused
+    from nota.adapters.claude_code import _handle_paused
 
     _isolate(monkeypatch, tmp_path)
     log_path = tmp_path / "audit.jsonl"

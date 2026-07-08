@@ -14,7 +14,7 @@ that re-opens one shows up immediately. References to the audit reports:
   and replay them. Fix: store only a sha256 prefix in the log; the raw
   token only goes out-of-band via the notification.
 - Fail-closed: malformed input / internal error returned allow. Fix: deny.
-- QUILL_SKIP_DISABLE_AUTH: was a live bypass var. Fix: removed.
+- NOTA_SKIP_DISABLE_AUTH: was a live bypass var. Fix: removed.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 from rich.console import Console
 
-from quill.policy import Risk, classify_command
+from nota.policy import Risk, classify_command
 
 
 def test_cat_dotenv_quoted_is_at_least_high() -> None:
@@ -74,11 +74,11 @@ def test_audit_log_never_contains_raw_approve_token(tmp_path) -> None:
     """The whole self-approval vector. The audit log records only a token
     ID (sha256 prefix), not the value. The agent must not be able to
     `cat audit.log.jsonl | grep approve_token` and recover anything that
-    `quill approve <X>` would consume."""
+    `nota approve <X>` would consume."""
     import json
 
-    from quill.adapters.claude_code import run_hook
-    from quill.audit import AuditLog
+    from nota.adapters.claude_code import run_hook
+    from nota.audit import AuditLog
 
     log = tmp_path / "audit.jsonl"
     with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
@@ -104,16 +104,16 @@ def test_audit_log_never_contains_raw_approve_token(tmp_path) -> None:
 
 def test_run_hook_fails_closed_on_malformed_input() -> None:
     """Malformed input must DENY, not allow. Used to be a free-pass path."""
-    from quill.adapters.claude_code import run_hook
+    from nota.adapters.claude_code import run_hook
 
     out = run_hook("not json", audit=None)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_no_quill_skip_disable_auth_runtime_check(monkeypatch) -> None:
+def test_no_nota_skip_disable_auth_runtime_check(monkeypatch) -> None:
     """The bypass env var must NOT gate disable-auth at runtime.
 
-    Behavioral, not structural: with QUILL_SKIP_DISABLE_AUTH set (which the
+    Behavioral, not structural: with NOTA_SKIP_DISABLE_AUTH set (which the
     agent fully controls) and no live human available - Touch ID cannot
     present, the TTY challenge fails, and --no-biometric was not passed -
     `_require_disable_auth` must still REFUSE (raise typer.Exit). No matter
@@ -123,7 +123,7 @@ def test_no_quill_skip_disable_auth_runtime_check(monkeypatch) -> None:
     """
     import typer
 
-    from quill import cli, touchid
+    from nota import cli, touchid
 
     # Force the "no live human" state: Touch ID can't present, and the TTY
     # typed-phrase challenge fails (piped / headless / agent-redirected).
@@ -134,9 +134,9 @@ def test_no_quill_skip_disable_auth_runtime_check(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_emit_gate_event", lambda *a, **k: None)
 
     # The agent sets the var it owns, hoping to skip the gate.
-    monkeypatch.setenv("QUILL_SKIP_DISABLE_AUTH", "1")
+    monkeypatch.setenv("NOTA_SKIP_DISABLE_AUTH", "1")
 
     # no_biometric defaults to False, so Tier 3 must refuse regardless of env.
     with pytest.raises(typer.Exit) as exc_info:
-        cli._require_disable_auth(Console(), action="turn the Quill gate OFF")
+        cli._require_disable_auth(Console(), action="turn the Nota gate OFF")
     assert exc_info.value.exit_code == 1

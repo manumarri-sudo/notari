@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from quill.policy import Risk, Scope, SessionIntent, classify
+from nota.policy import Risk, Scope, SessionIntent, classify
 
 
 @pytest.mark.parametrize(

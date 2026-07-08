@@ -1,4 +1,4 @@
-"""Tests for the remediation layer (`quill explain`).
+"""Tests for the remediation layer (`nota explain`).
 
 Every finding type maps to a three-field record (plain / self_fix /
 cc_prompt), duplicates collapse to the most specific reason, PASS and
@@ -14,13 +14,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from quill.explain import (
+from nota.explain import (
     build_remediations,
     explain_dict,
     render_github_annotations,
     render_text,
 )
-from quill.explain_html import render_html
+from nota.explain_html import render_html
 
 JARGON = ("perimeter", "provenance", "MAC", "surface")
 
@@ -39,7 +39,7 @@ def _passport(verdict: str = "BLOCK", **evidence) -> dict:
     }
     ev.update(evidence)
     return {
-        "schema": "quill.change-passport/v1.1",
+        "schema": "nota.change-passport/v1.1",
         "verdict": verdict,
         "contract": {"task": "add coupons to checkout", "allowed_paths": ["src/checkout/**"]},
         "evidence": ev,
@@ -95,7 +95,7 @@ def test_self_fix_commands_are_shell_safe():
 
 
 def test_gate_tamper_maps():
-    p = _passport(gate_tamper_hits=[".quill/perimeter.json"])
+    p = _passport(gate_tamper_hits=[".nota/perimeter.json"])
     (r,) = build_remediations(p)
     _assert_record(r)
     assert r["kind"] == "gate_tamper"
@@ -138,17 +138,17 @@ def test_sensitive_surface_framed_as_review_not_failure():
 
 def test_dedup_prefers_most_specific_reason():
     p = _passport(
-        out_of_scope=["src/auth/login.py", ".quill/perimeter.json"],
-        forbidden_hits=["src/auth/login.py", ".quill/perimeter.json"],
-        gate_tamper_hits=[".quill/perimeter.json"],
+        out_of_scope=["src/auth/login.py", ".nota/perimeter.json"],
+        forbidden_hits=["src/auth/login.py", ".nota/perimeter.json"],
+        gate_tamper_hits=[".nota/perimeter.json"],
     )
     recs = build_remediations(p)
     wheres = [r["where"] for r in recs]
     assert wheres.count("src/auth/login.py") == 1
-    assert wheres.count(".quill/perimeter.json") == 1
+    assert wheres.count(".nota/perimeter.json") == 1
     by_where = {r["where"]: r["kind"] for r in recs}
     assert by_where["src/auth/login.py"] == "forbidden"
-    assert by_where[".quill/perimeter.json"] == "gate_tamper"
+    assert by_where[".nota/perimeter.json"] == "gate_tamper"
 
 
 def test_pass_is_one_friendly_line():
@@ -164,7 +164,7 @@ def test_text_render_numbers_issues_and_closes():
     )
     text = render_text(p)
     assert "Issue 1" in text and "Issue 2" in text
-    assert "re-run: quill verify" in text
+    assert "re-run: nota verify" in text
     # Scannable rollup line names the volume + kinds up top.
     assert "2 issues" in text
 
@@ -179,9 +179,9 @@ def test_explain_dict_shape():
     assert "does not check whether the code is" in d["does_not_prove"]
 
 
-def test_explain_states_what_quill_does_not_prove():
+def test_explain_states_what_nota_does_not_prove():
     text = render_text(_passport(out_of_scope=["b.py"]))
-    assert "What Quill does not prove" in text
+    assert "What Nota does not prove" in text
     assert "Reviewer should inspect first: b.py" in text
     # PASS is still a single clean line, no disclaimer noise.
     assert render_text(_passport(verdict="PASS")).strip().count("\n") == 0
@@ -228,11 +228,11 @@ def test_html_render_is_self_contained_and_honest():
 
 
 def test_passport_carries_matching_remediation_block(tmp_path: Path) -> None:
-    """quill verify on a BLOCK produces a passport whose remediation array
+    """nota verify on a BLOCK produces a passport whose remediation array
     matches what explain derives from that same passport."""
-    from quill import contract as contract_mod
-    from quill import passport as passport_mod
-    from quill import verify as verify_mod
+    from nota import contract as contract_mod
+    from nota import passport as passport_mod
+    from nota import verify as verify_mod
 
     def _git(*args: str) -> str:
         return subprocess.run(
@@ -269,7 +269,7 @@ def test_passport_carries_matching_remediation_block(tmp_path: Path) -> None:
 
 
 def test_cli_explain_reads_passport_and_formats(tmp_path: Path, monkeypatch) -> None:
-    from quill.cli import app
+    from nota.cli import app
 
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")

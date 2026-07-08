@@ -25,7 +25,7 @@ import time
 
 def _reset_self_test_cache(monkeypatch) -> None:
     """Each test starts with a fresh cache flag."""
-    import quill.adapters.claude_code as cc
+    import nota.adapters.claude_code as cc
 
     monkeypatch.setattr(cc, "_SELF_TEST_DONE", False, raising=False)
 
@@ -37,8 +37,8 @@ def _reset_self_test_cache(monkeypatch) -> None:
 def test_self_test_passes_default_classifier(monkeypatch) -> None:
     _reset_self_test_cache(monkeypatch)
     # Make sure the test isn't sandbagged by env flags.
-    monkeypatch.delenv("QUILL_NO_SELF_TEST", raising=False)
-    from quill.adapters.claude_code import self_test
+    monkeypatch.delenv("NOTA_NO_SELF_TEST", raising=False)
+    from nota.adapters.claude_code import self_test
 
     ok, reason = self_test()
     assert ok, f"default classifier should pass self-test; got: {reason}"
@@ -59,12 +59,12 @@ def test_self_test_detects_misconfigured_classifier_that_fails_open(
     monkeypatch,
 ) -> None:
     _reset_self_test_cache(monkeypatch)
-    monkeypatch.delenv("QUILL_NO_SELF_TEST", raising=False)
+    monkeypatch.delenv("NOTA_NO_SELF_TEST", raising=False)
     # Stub `decide` so the known-CRITICAL payload returns 'allow'
     # (simulating a corrupted policy table).
-    import quill.adapters.claude_code as cc
-    from quill.adapters.claude_code import HookDecision
-    from quill.policy import Risk
+    import nota.adapters.claude_code as cc
+    from nota.adapters.claude_code import HookDecision
+    from nota.policy import Risk
 
     def broken_decide(tool_name, tool_input):
         return HookDecision(
@@ -90,10 +90,10 @@ def test_self_test_detects_classifier_that_denies_everything(
     monkeypatch,
 ) -> None:
     _reset_self_test_cache(monkeypatch)
-    monkeypatch.delenv("QUILL_NO_SELF_TEST", raising=False)
-    import quill.adapters.claude_code as cc
-    from quill.adapters.claude_code import HookDecision
-    from quill.policy import Risk
+    monkeypatch.delenv("NOTA_NO_SELF_TEST", raising=False)
+    import nota.adapters.claude_code as cc
+    from nota.adapters.claude_code import HookDecision
+    from nota.policy import Risk
 
     def deny_everything(tool_name, tool_input):
         return HookDecision(
@@ -116,8 +116,8 @@ def test_self_test_detects_classifier_that_denies_everything(
 
 def test_self_test_is_fast_and_cached(monkeypatch) -> None:
     _reset_self_test_cache(monkeypatch)
-    monkeypatch.delenv("QUILL_NO_SELF_TEST", raising=False)
-    from quill.adapters.claude_code import self_test
+    monkeypatch.delenv("NOTA_NO_SELF_TEST", raising=False)
+    from nota.adapters.claude_code import self_test
 
     # First call: real work. < 10 ms even on slow CI.
     t0 = time.perf_counter()
@@ -140,10 +140,10 @@ def test_self_test_is_fast_and_cached(monkeypatch) -> None:
         f"100 cached self-tests took {total_ms:.2f}ms; expected <5ms. Cache hit path is too slow."
     )
 
-    # QUILL_NO_SELF_TEST env override returns the skip reason without
+    # NOTA_NO_SELF_TEST env override returns the skip reason without
     # running the checks.
     _reset_self_test_cache(monkeypatch)
-    monkeypatch.setenv("QUILL_NO_SELF_TEST", "1")
+    monkeypatch.setenv("NOTA_NO_SELF_TEST", "1")
     ok, reason = self_test()
     assert ok
     assert "skipped" in reason.lower()

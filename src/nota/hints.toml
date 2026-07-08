@@ -1,0 +1,99 @@
+# Nota block-message hints.
+#
+# Every Nota block message ends with one of these hints. The selector
+# picks based on (a) the pattern that fired, (b) the user's never-used-
+# this-feature state, (c) per-hint cooldown so the same one doesn't
+# repeat within 24h.
+#
+# Schema per hint:
+#   name        unique id; cooldown is tracked per name in
+#               ~/.nota/hints_seen.json
+#   text        the line shown to the user under the block message
+#   triggers    list of conditions; ANY match qualifies the hint to
+#               surface. Empty triggers = "generic" hint that rotates in
+#               when no specific match. Recognized triggers:
+#                 pattern:<canonical>   the canonical pattern that fired
+#                                       (rm -rf, git push --force, etc.)
+#                 reason_contains:<sub>  substring match on block reason
+#                 risk:<level>           critical / high / medium / low
+#                 first_block             this is the first block ever
+#                 generic                 always eligible
+#   cooldown_h  hours between re-shows. Default 24.
+
+[[hints]]
+name = "try_saves"
+text = "type `nota saves` to see what Nota caught for you this week"
+triggers = ["generic"]
+
+[[hints]]
+name = "try_insights"
+text = "type `nota insights` to see top patterns + suggested config overrides"
+triggers = ["generic"]
+
+[[hints]]
+name = "try_export_pack"
+text = "type `nota audit export --pack` for a SOC 2 / EU AI Act PDF in 3 seconds"
+triggers = ["generic"]
+
+[[hints]]
+name = "try_integrate"
+text = "type `nota integrate auto` to teach your coding agent how to read this audit log"
+triggers = ["first_block", "generic"]
+cooldown_h = 72
+
+[[hints]]
+name = "try_receipts_show"
+text = "type `nota receipts list` to see all your sessions and what each one did"
+triggers = ["generic"]
+
+[[hints]]
+name = "trifecta_show"
+text = "type `nota trifecta show` to see which web fetch and which private read flipped the flags"
+triggers = ["reason_contains:trifecta", "pattern:trifecta close"]
+
+[[hints]]
+name = "scan_secrets_now"
+text = "type `nota scan-secrets .` to audit your current repo for the same secret class"
+triggers = ["reason_contains:secret detected", "pattern:secret in write"]
+
+[[hints]]
+name = "audit_verify_after_block"
+text = "type `nota audit verify` to confirm the chain is still intact"
+triggers = ["risk:critical"]
+cooldown_h = 48
+
+[[hints]]
+name = "trust_add_for_edit"
+text = "if this is a repo you're working in, type `nota trust add .` so Edit/Write stop asking"
+triggers = ["pattern:Edit (default)", "pattern:Write (default)"]
+
+[[hints]]
+name = "rm_rf_repeat"
+text = "you've hit this gate before. type `nota insights` to see if you should add a per-tool override"
+triggers = ["pattern:rm -rf"]
+cooldown_h = 12
+
+[[hints]]
+name = "force_push_recovery"
+text = "if a force-push got through somewhere, try `git reflog` and `nota audit show --last 30` to see what happened"
+triggers = ["pattern:git push --force"]
+
+[[hints]]
+name = "publish_dry_run"
+text = "try `npm publish --dry-run` first to confirm the package contents before letting Nota approve"
+triggers = ["pattern:npm publish"]
+
+[[hints]]
+name = "vercel_preview_first"
+text = "try `vercel deploy` (without --prod) first; promote to prod only after smoke-test"
+triggers = ["pattern:vercel --prod"]
+
+[[hints]]
+name = "subcommand_chain_split"
+text = "this is the CVE-2025-59536 class; put the script in a file (`bash /tmp/work.sh`) instead of chaining"
+triggers = ["reason_contains:subcommand", "reason_contains:CVE-2025-59536"]
+
+[[hints]]
+name = "chain_repaired"
+text = "chain repairs are themselves audit events. type `nota audit verify` to confirm clean state"
+triggers = ["reason_contains:chain.repaired"]

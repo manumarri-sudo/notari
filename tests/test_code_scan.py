@@ -1,8 +1,8 @@
-"""Tests for the pre-execution AST scanner (quill.code_scan)."""
+"""Tests for the pre-execution AST scanner (nota.code_scan)."""
 
 from __future__ import annotations
 
-from quill import code_scan as cs
+from nota import code_scan as cs
 
 
 def _rules(source: str) -> set[str]:

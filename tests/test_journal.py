@@ -1,4 +1,4 @@
-"""Tests for quill.journal.
+"""Tests for nota.journal.
 
 Pinned because the parser silently produced zero-turn stubs for ~3 weeks
 when the on-disk Claude Code transcript schema diverged from what
@@ -8,7 +8,7 @@ regression cannot recur unnoticed.
 
 from __future__ import annotations
 
-from quill.journal import (
+from nota.journal import (
     JournalSummary,
     save_from_transcript,
     slugify,
@@ -18,7 +18,7 @@ from quill.journal import (
 
 
 def test_slugify_basic():
-    assert slugify("Quill Public Launch") == "quill-public-launch"
+    assert slugify("Nota Public Launch") == "nota-public-launch"
     assert slugify("") == "session"
     assert slugify("!!! ???") == "session"
     assert slugify("one two three four five six seven") == "one-two-three-four-five"
@@ -56,7 +56,7 @@ def test_claude_code_shape_user_string_content():
             "type": "user",
             "timestamp": "2026-05-11T10:00:00Z",
             "cwd": "/Users/m/repo",
-            "message": {"role": "user", "content": "have we been running quill?"},
+            "message": {"role": "user", "content": "have we been running nota?"},
         },
         {
             "type": "assistant",
@@ -73,7 +73,7 @@ def test_claude_code_shape_user_string_content():
     s = summarize_transcript(events)
     assert s.n_user_turns == 1
     assert s.n_assistant_turns == 1
-    assert s.headline == "have we been running quill?"
+    assert s.headline == "have we been running nota?"
     assert s.tool_use_counts["Bash"] == 1
     assert s.bash_commands_seen == 1
     assert s.cwd == "/Users/m/repo"
@@ -117,7 +117,7 @@ def test_path_namespacing_strips_home(tmp_path, monkeypatch):
                     {
                         "type": "tool_use",
                         "name": "Edit",
-                        "input": {"file_path": "/Users/m/quill/src/quill/journal.py"},
+                        "input": {"file_path": "/Users/m/nota/src/nota/journal.py"},
                     },
                     {
                         "type": "tool_use",
@@ -134,7 +134,7 @@ def test_path_namespacing_strips_home(tmp_path, monkeypatch):
         }
     ]
     s = summarize_transcript(events)
-    assert "quill/src" in s.files_touched
+    assert "nota/src" in s.files_touched
     assert "agentbrain/AgentOS-Vault" in s.files_touched
     assert "tmp/scratch.py" in s.files_touched
     # The pathological "//Users" collapse must be gone.

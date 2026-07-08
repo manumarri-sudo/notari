@@ -1,0 +1,57 @@
+name: nota-change-control
+
+# Gate every pull request: verify the diff against the human-approved contract
+# (.nota/contract.json) and publish a Change Passport as a Status Check.
+#
+# ⚠ DOGFOOD CONFIGURATION: This workflow uses `uses: ./` and `install-from-source`
+# because this repo IS the Nota source — we verify with HEAD's own code. A
+# CONSUMER of Nota should NEVER do this; pin the release commit SHA instead
+# (docs/secure-workflow.yml carries the current pin):
+#
+#   uses: manumarri-sudo/nota@<full-release-commit-sha>  # vX.Y.Z
+#
+# See README.md and docs/SECURITY-MODEL.md for the secure deployment checklist.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  statuses: write # publish the commit Status Check
+  pull-requests: write # (reserved) post the passport as a PR comment
+
+jobs:
+  change-control:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history so the base commit is available)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+        with:
+          fetch-depth: 0
+
+      # No skip-on-missing-contract: the Action itself fails closed (exit 2)
+      # when no contract exists. Skipping was a fail-open: GitHub reports
+      # skipped jobs as successful, so a PR that deletes the contract would
+      # pass the required check.
+      - name: Nota Change Control
+        id: nota
+        # install-from-source: ONLY safe for the repo that owns the Action.
+        # Consumers pin a published tag so a PR cannot modify the gate.
+        uses: ./
+        with:
+          install-from-source: "true"
+          head: ${{ github.event.pull_request.head.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          fail-on-block: "true"
+          strict: "true"
+          gate-key: ${{ secrets.NOTA_GATE_KEY }}
+          gate-pubkeys: ${{ vars.NOTA_GATE_PUBKEYS }}
+          approver-pubkeys: ${{ secrets.NOTA_APPROVER_PUBKEYS }}
+          # Dogfood without a gate key: accept report-grade unsigned evidence.
+          allow-unsigned-evidence: "true"
+          # Dogfood: this repo uses pull_request + install-from-source because it
+          # IS the Nota source. Consumers MUST use pull_request_target instead.
+          allow-pull-request-trigger: "true"
+
+      - name: Report verdict
+        run: echo "Nota verdict was ${{ steps.nota.outputs.verdict }}"

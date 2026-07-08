@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Quill Change Control — drop it in front of an agent that knows NOTHING about it.
+# Nota Change Control — drop it in front of an agent that knows NOTHING about it.
 #
 # A human does setup ONCE (sign the perimeter). After that the "agent" only ever
-# writes files and commits — it never runs a quill command — and Quill judges
+# writes files and commits — it never runs a nota command — and Nota judges
 # each diff. Run it and watch the verdicts:
 #
-#   QUILL=/path/to/.venv/bin/quill ./examples/change_control_demo.sh
-#   (defaults to `quill` on PATH)
+#   NOTA=/path/to/.venv/bin/nota ./examples/change_control_demo.sh
+#   (defaults to `nota` on PATH)
 #
 set -uo pipefail
-Q="${QUILL:-quill}"
+Q="${NOTA:-nota}"
 W="$(mktemp -d)"
 OUT="$(mktemp -d)"
 FAKE_KEY="AKIA""IOSFODNN7EXAMPLE"   # assembled so this file holds no real secret
@@ -31,28 +31,28 @@ git add -A && git commit -qm "app: initial state"
 line "HUMAN setup, done ONCE (the agent never sees this)"
 "$Q" keygen --out "$W/approver.pem" >/dev/null   # human key — keep the private half off the box
 "$Q" keygen --out "$W/gate.pem"     >/dev/null   # CI key that signs the verdict
-mkdir -p .quill/approvers && cp "$W/approver.pem.pub" .quill/approvers/human.pub
+mkdir -p .nota/approvers && cp "$W/approver.pem.pub" .nota/approvers/human.pub
 # Agents may work in src/** but NEVER touch auth, migrations, or CI; secrets always blocked.
 "$Q" guard --key "$W/approver.pem" \
   --allow 'src/**' --allow 'README.md' \
   --forbid 'src/auth/**' --forbid 'migrations/**' --approved-by alice | sed 's/^/  /'
-git add -A && git commit -qm "quill: sign perimeter"
+git add -A && git commit -qm "nota: sign perimeter"
 # Sign the contract with the approver key so `verify --strict` can prove a human
 # (not the agent) authored the base commit and scope.
 "$Q" begin "sprint: ship the checkout flow" --scope 'src/**' --scope 'README.md' \
   --key "$W/approver.pem" --repo demo/app >/dev/null
-git add -A && git commit -qm "quill: open contract"
+git add -A && git commit -qm "nota: open contract"
 MAIN="$(git rev-parse HEAD)"
 # The three things that make strict mode a real boundary, exactly as a CI setup
 # would provide them (see docs/SECURITY-MODEL.md "Deployment checklist"):
 #   1. the gate signing key,
 #   2. the approver PUBLIC key as the EXTERNAL trust root — strict mode ignores
-#      the committed .quill/approvers/*.pub on purpose (an agent could plant one),
+#      the committed .nota/approvers/*.pub on purpose (an agent could plant one),
 #      so without this every verdict fails closed with "provenance not established",
 #   3. the repo identity the contract is bound to (here via --repo above +
 #      GITHUB_REPOSITORY, which CI sets for you).
-export QUILL_GATE_KEY="$(cat "$W/gate.pem")"
-export QUILL_APPROVER_PUBKEYS="$(cat "$W/approver.pem.pub")"
+export NOTA_GATE_KEY="$(cat "$W/gate.pem")"
+export NOTA_APPROVER_PUBKEYS="$(cat "$W/approver.pem.pub")"
 export GITHUB_REPOSITORY="demo/app"
 
 agent_pr(){
@@ -95,7 +95,7 @@ python3 -c "import json,pathlib; p=pathlib.Path('$OUT/passport.json'); d=json.lo
 
 # --- The action loop: explain the block, hand the agent a fix, learn the lesson ---
 line "explain the block in plain English (+ a paste-ready fix prompt)"
-git checkout -q -- . 2>/dev/null; git clean -fdq .quill 2>/dev/null || true
+git checkout -q -- . 2>/dev/null; git clean -fdq .nota 2>/dev/null || true
 git checkout -q pr/disable-the-gate
 "$Q" verify --passport-dir "$OUT" >/dev/null 2>&1 || true
 "$Q" explain --passport "$OUT/passport.json" | sed 's/^/  /' | head -12
@@ -108,6 +108,6 @@ line "repeated mistakes become a lesson; promote it; teach future agents"
 LID="$("$Q" lessons --json | python3 -c 'import json,sys; p=json.load(sys.stdin)["patterns"]; print(p[0]["lesson_id"] if p else "")')"
 [ -n "$LID" ] && "$Q" lessons promote "$LID" | sed 's/^/  /' | head -2
 "$Q" teach --agents claude,codex | sed 's/^/  /'
-grep -q "quill-lessons:start" "$W/CLAUDE.md" 2>/dev/null && echo "  ✓ lesson written into CLAUDE.md (managed block)"
+grep -q "nota-lessons:start" "$W/CLAUDE.md" 2>/dev/null && echo "  ✓ lesson written into CLAUDE.md (managed block)"
 
 echo; echo "demo repo: $W"

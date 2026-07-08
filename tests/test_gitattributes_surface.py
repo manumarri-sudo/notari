@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from quill.policy import classify_sensitive_surface
+from nota.policy import classify_sensitive_surface
 
 
 def test_gitattributes_is_sensitive() -> None:
@@ -55,10 +55,10 @@ def repo(tmp_path: Path) -> Path:
 
 def test_gitattributes_triggers_needs_review(repo: Path) -> None:
     """A PR that changes .gitattributes gets NEEDS_REVIEW (not silent PASS)."""
-    from quill import contract as contract_mod
-    from quill import perimeter as perimeter_mod
-    from quill import verify as verify_mod
-    from quill.verify import Verdict
+    from nota import contract as contract_mod
+    from nota import perimeter as perimeter_mod
+    from nota import verify as verify_mod
+    from nota.verify import Verdict
 
     contract, _ = contract_mod.begin("task", allowed_paths=["**"], root=repo)
     perim = perimeter_mod.default_perimeter(allowed_paths=("**",), approved_by="human")

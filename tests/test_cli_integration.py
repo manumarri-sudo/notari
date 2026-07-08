@@ -6,7 +6,7 @@ exercise the full CLI command path so typer-wiring bugs (signature
 mismatch, default propagation, exit-code routing) get caught.
 
 Each test isolates HOME / config / audit-log via monkeypatch.setenv
-so the test suite can't see or mutate the developer's live Quill
+so the test suite can't see or mutate the developer's live Nota
 state.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from quill.cli import app
+from nota.cli import app
 
 
 @pytest.fixture
@@ -35,12 +35,12 @@ def runner(monkeypatch: pytest.MonkeyPatch) -> CliRunner:
 
 
 def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Point every Quill env var at tmp_path so tests don't touch live state."""
+    """Point every Nota env var at tmp_path so tests don't touch live state."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("QUILL_HOME", str(tmp_path / ".quill"))
-    monkeypatch.setenv("QUILL_CONFIG", str(tmp_path / ".quill" / "config.toml"))
-    monkeypatch.setenv("QUILL_LOG", str(tmp_path / ".quill" / "audit.log.jsonl"))
-    monkeypatch.setenv("QUILL_KEY", str(tmp_path / ".quill" / "key"))
+    monkeypatch.setenv("NOTA_HOME", str(tmp_path / ".nota"))
+    monkeypatch.setenv("NOTA_CONFIG", str(tmp_path / ".nota" / "config.toml"))
+    monkeypatch.setenv("NOTA_LOG", str(tmp_path / ".nota" / "audit.log.jsonl"))
+    monkeypatch.setenv("NOTA_KEY", str(tmp_path / ".nota" / "key"))
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ def test_scan_secrets_no_gitignore_flag_includes_ignored(
 
 def _seed_audit_log(path: Path) -> None:
     """Write a small audit log with one tool attempt + one allowed verdict."""
-    from quill import events as ev
+    from nota import events as ev
 
     path.parent.mkdir(parents=True, exist_ok=True)
     events = [
@@ -280,7 +280,7 @@ def test_audit_export_md_only(
     tmp_path: Path,
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    log = tmp_path / ".quill" / "audit.log.jsonl"
+    log = tmp_path / ".nota" / "audit.log.jsonl"
     _seed_audit_log(log)
     out_dir = tmp_path / "pack-md"
     result = runner.invoke(
@@ -298,7 +298,7 @@ def test_audit_export_no_standards_selected_fails(
     tmp_path: Path,
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    log = tmp_path / ".quill" / "audit.log.jsonl"
+    log = tmp_path / ".nota" / "audit.log.jsonl"
     _seed_audit_log(log)
     result = runner.invoke(
         app,
@@ -329,7 +329,7 @@ def test_audit_export_iso_42001_only(
 ) -> None:
     """Verify ISO 42001 can be selected independently of other standards."""
     _isolate(monkeypatch, tmp_path)
-    log = tmp_path / ".quill" / "audit.log.jsonl"
+    log = tmp_path / ".nota" / "audit.log.jsonl"
     _seed_audit_log(log)
     out_dir = tmp_path / "pack-iso"
     result = runner.invoke(
@@ -374,7 +374,7 @@ def test_commit_hook_install_in_temp_repo(
     assert result.exit_code == 0
     hook = repo / ".git" / "hooks" / "prepare-commit-msg"
     assert hook.exists()
-    assert "quill git-hook" in hook.read_text()
+    assert "nota git-hook" in hook.read_text()
     # Hook script must be executable
     assert os.access(hook, os.X_OK)
 
@@ -426,7 +426,7 @@ def test_commit_hook_uninstall_reverses_install(
     assert not hook.exists()
 
 
-def test_commit_hook_uninstall_refuses_non_quill_hook(
+def test_commit_hook_uninstall_refuses_non_nota_hook(
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -438,7 +438,7 @@ def test_commit_hook_uninstall_refuses_non_quill_hook(
     hook.write_text("#!/bin/sh\necho 'someone else hook'\n")
     result = runner.invoke(app, ["commit-hook-uninstall", "--repo", str(repo)])
     assert result.exit_code == 1
-    assert "not a quill hook" in result.output.lower()
+    assert "not a nota hook" in result.output.lower()
     assert hook.exists()
 
 
@@ -465,7 +465,7 @@ def test_git_hook_shim_noop_when_no_log(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The internal `quill git-hook` shim is invoked by the installed
+    """The internal `nota git-hook` shim is invoked by the installed
     prepare-commit-msg script. With no audit log present, it should
     exit 0 and leave the commit message untouched."""
     _isolate(monkeypatch, tmp_path)
@@ -478,9 +478,9 @@ def test_git_hook_shim_noop_when_no_log(
 
 
 def test_version_flag_prints_version_and_exits(runner: CliRunner) -> None:
-    """`quill --version` (and -V) must print the version and exit 0, not error.
+    """`nota --version` (and -V) must print the version and exit 0, not error.
     Regression: the flag was missing and printed a usage error instead."""
-    from quill._version import __version__
+    from nota._version import __version__
 
     for flag in ("--version", "-V"):
         result = runner.invoke(app, [flag])

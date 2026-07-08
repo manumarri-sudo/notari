@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from quill.telemetry import (
+from nota.telemetry import (
     DEFAULT_ENDPOINT,
     SCHEMA_VERSION,
     TelemetryState,
@@ -30,7 +30,7 @@ from quill.telemetry import (
 def test_load_creates_install_id_when_no_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = TelemetryState.load()
     assert s.install_id  # uuid4 string
     assert s.opted_in is False
@@ -38,7 +38,7 @@ def test_load_creates_install_id_when_no_state(
 
 
 def test_opt_in_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = opt_in()
     assert s.opted_in is True
     again = TelemetryState.load()
@@ -47,7 +47,7 @@ def test_opt_in_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_opt_out_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     opt_in()
     s = opt_out()
     assert s.opted_in is False
@@ -56,7 +56,7 @@ def test_opt_out_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_state_file_is_chmod_600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     p = tmp_path / "tel.json"
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(p))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(p))
     opt_in()
     import stat
 
@@ -150,12 +150,12 @@ def test_aggregate_top_namespaces_capped_at_5() -> None:
 
 
 def test_build_event_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = TelemetryState.load()
     body = build_event(s, {"n_attempts": 5})
     assert body["schema_version"] == SCHEMA_VERSION
     assert body["install_id"] == s.install_id
-    assert "quill_version" in body
+    assert "nota_version" in body
     assert "py_version" in body
     assert "os" in body
     assert body["event"] == "session.summary"
@@ -163,7 +163,7 @@ def test_build_event_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_preview_is_pretty_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = TelemetryState.load()
     out = preview_event_for_user(s, {"n_attempts": 3})
     parsed = json.loads(out)
@@ -175,7 +175,7 @@ def test_preview_is_pretty_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_emit_skipped_when_opted_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = TelemetryState.load()
     assert s.opted_in is False
     assert emit_session_summary({"n_attempts": 1}, state=s) is False
@@ -184,7 +184,7 @@ def test_emit_skipped_when_opted_out(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_emit_swallows_network_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Telemetry must NEVER raise. We point it at an unreachable host and
     assert it returns False rather than blowing up."""
-    monkeypatch.setenv("QUILL_TELEMETRY_PATH", str(tmp_path / "tel.json"))
+    monkeypatch.setenv("NOTA_TELEMETRY_PATH", str(tmp_path / "tel.json"))
     s = opt_in()
     s.endpoint = "http://127.0.0.1:1/" + "x" * 10  # nothing listening
     s.save()
@@ -192,6 +192,6 @@ def test_emit_swallows_network_errors(tmp_path: Path, monkeypatch: pytest.Monkey
     assert emit_session_summary({"n_attempts": 1}, state=s, timeout_s=0.1) is False
 
 
-def test_default_endpoint_is_quill_dev() -> None:
+def test_default_endpoint_is_nota_dev() -> None:
     """Catch accidental endpoint changes in code review."""
-    assert DEFAULT_ENDPOINT == "https://telemetry.quill.dev/v1/events"
+    assert DEFAULT_ENDPOINT == "https://telemetry.nota.dev/v1/events"

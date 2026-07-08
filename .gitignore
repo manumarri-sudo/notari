@@ -41,10 +41,10 @@ coverage.xml
 *.swo
 .DS_Store
 
-# --- Quill runtime artifacts (NEVER commit) ---
+# --- Nota runtime artifacts (NEVER commit) ---
 # The signing key is per-installation and must never be checked in.
-.quill/
-~/.quill/
+.nota/
+~/.nota/
 
 # Audit logs are user data with timestamps; keep out of source control.
 *.audit.log.jsonl
@@ -88,7 +88,7 @@ docs/marketing/future-loomiq-saas/
 docs/marketing/outreach/
 
 # Internal experiment harness and backend infra (telemetry/analysis).
-# The client-side telemetry code stays public at src/quill/telemetry.py.
+# The client-side telemetry code stays public at src/nota/telemetry.py.
 experiments/
 infra/
 

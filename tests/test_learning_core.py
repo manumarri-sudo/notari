@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from quill.learning import (
+from nota.learning import (
     EWMA_ALPHA,
     PRIOR_ALPHA,
     PRIOR_BETA,
@@ -44,10 +44,10 @@ def test_beta_binomial_matches_hand_calculation(tmp_path: Path, monkeypatch) -> 
     (alpha_0 + k) / (alpha_0 + beta_0 + n). Hand-verify across the
     boundary cases that drive the auto-tighten / loosen decisions.
     """
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
 
     # In this codebase the "approve" event is an operator-BYPASS of a
-    # block (operator used `quill approve` to release a one-shot block).
+    # block (operator used `nota approve` to release a one-shot block).
     # The "deny" event is the block standing (the default outcome).
     # We want the prior to encode "default to LOW approval / bypass
     # rate" so a single early bypass doesn't flip a pattern toward
@@ -102,7 +102,7 @@ def test_wilson_interval_is_correct_at_known_points(tmp_path: Path, monkeypatch)
 
     with z = 1.959964 (95%). Cross-check at a few representative n,k.
     """
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
 
     # n=0: maximum uncertainty (0.0, 1.0).
     p = PatternStats(pattern_id="empty")
@@ -158,7 +158,7 @@ def test_ewma_decays_at_expected_rate(tmp_path: Path, monkeypatch) -> None:
     Recurrence: e[n] = alpha*x[n] + (1-alpha)*e[n-1]. With x always 1,
     e[n] = 1 - (1-alpha)^n. At n=10, alpha=0.1: 1 - 0.9^10 = 0.6513.
     """
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(tmp_path / "stats.json"))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(tmp_path / "stats.json"))
     p = PatternStats(pattern_id="ewma")
     for _ in range(10):
         p.record("approve", now=time.time())
@@ -198,7 +198,7 @@ def test_atomic_save_survives_mid_write_interruption(
     poisoned-tmp + good-canonical state should succeed.
     """
     stats_path = tmp_path / "stats.json"
-    monkeypatch.setenv("QUILL_PATTERN_STATS", str(stats_path))
+    monkeypatch.setenv("NOTA_PATTERN_STATS", str(stats_path))
 
     # Write one round.
     p = PatternStats(

@@ -1,23 +1,23 @@
-# Quill security model and threat model
+# Nota security model and threat model
 
-This document states plainly what Quill is, what it defends against well, and
+This document states plainly what Nota is, what it defends against well, and
 where its limits are. It exists because a security tool that overstates its
 guarantees is worse than one that is honest about them: an operator who
 believes the walls are thicker than they are takes risks they would not
 otherwise take.
 
-The short version: **Quill is a deterministic, application-layer gate and
+The short version: **Nota is a deterministic, application-layer gate and
 evidence recorder. It is a strong defense-in-depth layer and an excellent
 audit trail. It is not a hard security boundary against a determined,
 adversarial agent that is actively trying to escape it.** Both of those
 sentences are true at the same time, and the rest of this document explains
 why.
 
-## Where Quill sits (the trust boundary)
+## Where Nota sits (the trust boundary)
 
-Quill currently runs in two relevant places:
+Nota currently runs in two relevant places:
 
-1. The **CI Change Control gate** (`quill verify`), which runs in CI — outside
+1. The **CI Change Control gate** (`nota verify`), which runs in CI — outside
    the agent's reach — and verifies a PR diff against a human-signed boundary.
    This is the provable boundary and the product's headline surface; the rest
    of this document's "hard boundary" honesty is about the *local* layer below.
@@ -30,12 +30,12 @@ Quill currently runs in two relevant places:
 > is **not** part of the current launch surface. Mentions of "the proxy"
 > elsewhere in older notes refer to that removed component.
 
-The local hook is at the **application layer**. Quill sees the *tool calls the
+The local hook is at the **application layer**. Nota sees the *tool calls the
 agent chooses to make through the framework*. It classifies them with a
 compiled regex/policy set (no LLM in the decision path) and returns allow /
 ask / deny, writing every decision to an HMAC-chained audit log.
 
-What Quill does **not** see, by construction:
+What Nota does **not** see, by construction:
 
 - System calls (the actual `unlink`, `connect`, `execve` the kernel runs).
 - Actions taken in-process by an interpreter it already allowed to start
@@ -48,26 +48,26 @@ Everything in the "what it does well" list below is *within* that boundary;
 everything in the "known limits" list is a consequence of *where the boundary
 is drawn*.
 
-## What Quill defends against well
+## What Nota defends against well
 
 For the common case (a capable but non-adversarial agent, or a careless one,
 or a single-shot prompt injection that is not specifically tuned to evade
-Quill), the gate is genuinely effective:
+Nota), the gate is genuinely effective:
 
 - **Irreversible destructive commands** in their direct and common-obfuscated
   forms: `rm -rf`, `DROP TABLE`, `git push --force`, `vercel --prod`,
   `mkfs`, `dd`, fork bombs, and the documented bypass shapes
   (`bash -c "$(curl | sh)"`, base64-decode-to-shell, interpreter heredocs,
   `python -c "...rmtree..."`, `$(which rm) -rf`, variable-assembled
-  `$a$b -rf`). See `src/quill/policy.py` and `tests/test_kill_test_2026_06.py`.
+  `$a$b -rf`). See `src/nota/policy.py` and `tests/test_kill_test_2026_06.py`.
 - **Credential reads and the exfiltration shape**: `cat ~/.aws/credentials |
   curl ...`, `env`/`printenv` dumps, reads of `~/.ssh`, `~/.npmrc`, and
   friends, and the lethal-trifecta third edge (untrusted input + private
   data + exfil path in one session).
 - **Gate self-tamper through a gated tool**: an Edit/Write or shell
   redirection aimed at `~/.claude/settings.json`, `~/.cursor/hooks.json`, or
-  `~/.quill/config.toml` is classified CRITICAL, so an agent cannot quietly
-  rewrite the gate's own config to disable it *through the tools Quill gates*.
+  `~/.nota/config.toml` is classified CRITICAL, so an agent cannot quietly
+  rewrite the gate's own config to disable it *through the tools Nota gates*.
 - **Tool-description poisoning / rug-pulls** at the MCP layer (invisible
   Unicode, injection-shaped phrases, schema drift after first trust).
 - **A complete, tamper-evident record** of everything attempted, allowed, and
@@ -98,13 +98,13 @@ real. We do not close them with more regex.
    *looks like*" needs a shell AST parser or a syscall-level view, not a
    pattern list.
 
-2. **Application-layer hooks can be bypassed by the layer below them.** Quill
+2. **Application-layer hooks can be bypassed by the layer below them.** Nota
    relies on the agent framework to call the hook. If the framework has a bug
    (for example, a subagent dispatched with bypass-permissions that skips
    PreToolUse hooks), or if an attacker writes to the hook config *without
-   going through a gated tool*, Quill never fires. The gate self-tamper
+   going through a gated tool*, Nota never fires. The gate self-tamper
    detection above only covers tampering that flows through a gated tool.
-   Relatedly, `QUILL_BYPASS_MODE` / `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` in the
+   Relatedly, `NOTA_BYPASS_MODE` / `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` in the
    *inherited* environment downshift HIGH verdicts to a silent allow (the
    operator opted out of HIGH prompts); the CRITICAL class never softens. An
    agent that *sets* those vars through a gated tool is classified self-tamper
@@ -118,7 +118,7 @@ real. We do not close them with more regex.
    inside it, and then run `python3 deploy.py`, which looks like a MEDIUM
    command. The destructive action happens inside the interpreter, invisible
    to a command classifier. Scanning file *writes* for destructive payloads
-   is a partial mitigation (Quill already scans writes for secrets); it does
+   is a partial mitigation (Nota already scans writes for secrets); it does
    not close the loophole.
 
 4. **Network egress is not gated.** Blocking `curl` does nothing against a
@@ -128,7 +128,7 @@ real. We do not close them with more regex.
    one-liners that read a file/env and POST it - so the cheap exfil patterns
    are now caught at the command layer. This is a partial mitigation, not
    egress gating: a novel script, an already-running interpreter, or any
-   channel the classifier does not enumerate still exfiltrates freely. Quill
+   channel the classifier does not enumerate still exfiltrates freely. Nota
    tracks the lethal trifecta heuristically but does not inspect or block the
    outbound connection itself; only a network-egress proxy (roadmap) closes
    this.
@@ -140,7 +140,7 @@ real. We do not close them with more regex.
 
 6. **Trailing truncation is not detected by the chain alone.** Deleting the
    last N lines of the log leaves a shorter but *valid* chain - each remaining
-   entry still links to its predecessor - so `quill audit verify` passes on a
+   entry still links to its predecessor - so `nota audit verify` passes on a
    truncated log. This is a weaker prerequisite than the limit-5 case: it needs
    only write access to the log file, not the HMAC key. Mitigation: `seal_head`
    records a high-water-mark (entry count + last mac) to a `<log>.head` sidecar,
@@ -157,7 +157,7 @@ real. We do not close them with more regex.
   Auditor acceptance depends on scope, sampling, key custody, and retention,
   none of which a tool can decide for you. A cryptographically signed log of
   the gate failing to stop an attack is a high-quality *record of a breach*,
-  not a mitigating control. Quill maps to evidence requests (SOC 2 CC6/CC7/CC8,
+  not a mitigating control. Nota maps to evidence requests (SOC 2 CC6/CC7/CC8,
   EU AI Act Article 12-shaped logging, ISO/IEC 42001 A.6.2.8); it does not
   certify compliance by itself.
 - "The gate cannot be jailbroken" (true: no LLM in it) is **not** "the gate
@@ -176,24 +176,24 @@ A launch-gate for any README or marketing copy. If a claim is not at least
 | Blocks the irreversible class | **Supported** | rm -rf / DROP TABLE / force-push / npm publish / .env reads etc. are default-critical via inspectable regex. |
 | Prevents prompt injection | **Partial / reframe** | It cannot be prompt-injected (no LLM) and refuses some injection *consequences* (lethal-trifecta deny); it does not *prevent* injection. Say "refuses the consequence, not detects the cause." |
 | Secure by default | **Partial** | The local hook fails closed, but `off`/`--no-biometric` exist and the app layer is bypassable (limits 1-4). Say "defense-in-depth by default." The provable boundary is the CI gate (next row), not the local hook. |
-| CI gate runs outside the agent | **Supported, deployment-gated** | `quill verify` runs in CI where the agent can't disable it, enforces a **human-signed perimeter** (Ed25519: forging needs the approver's private key, which lives off the box), BLOCKs any edit to its own trust surfaces (perimeter, approver keys, workflow), and emits a **gate-signed passport** anyone re-verifies with `quill verify-passport`. The agent cannot forge approval (no private key), bootstrap trust (editing `.quill/approvers/**` is a gate-tamper BLOCK), or forge the verdict (asymmetric). This is a real boundary **iff** the trust root is deployed off the PR's reach — see the deployment checklist below. Absent that (no signed perimeter, keys committed in-repo, action run from the PR's own checkout), it degrades to honest review automation for a cooperative agent, and `--strict` BLOCKs rather than pretending. |
+| CI gate runs outside the agent | **Supported, deployment-gated** | `nota verify` runs in CI where the agent can't disable it, enforces a **human-signed perimeter** (Ed25519: forging needs the approver's private key, which lives off the box), BLOCKs any edit to its own trust surfaces (perimeter, approver keys, workflow), and emits a **gate-signed passport** anyone re-verifies with `nota verify-passport`. The agent cannot forge approval (no private key), bootstrap trust (editing `.nota/approvers/**` is a gate-tamper BLOCK), or forge the verdict (asymmetric). This is a real boundary **iff** the trust root is deployed off the PR's reach — see the deployment checklist below. Absent that (no signed perimeter, keys committed in-repo, action run from the PR's own checkout), it degrades to honest review automation for a cooperative agent, and `--strict` BLOCKs rather than pretending. |
 
 ### Deployment checklist (what makes the CI gate a real boundary)
 
 All four are required; any one missing drops it back to cooperative-only:
 
 1. **Keys off the build machine.** The approver/gate **private** keys never live
-   in the repo. Publish the approver **public** key as `QUILL_APPROVER_PUBKEYS`
+   in the repo. Publish the approver **public** key as `NOTA_APPROVER_PUBKEYS`
    (INLINE PEM, not a path inside the checkout — strict mode rejects an in-repo
-   key path) and the gate signing key as `QUILL_GATE_KEY` — repo/org **secrets** a
-   PR cannot read or edit. (A committed `.quill/approvers/*.pub` set is a
+   key path) and the gate signing key as `NOTA_GATE_KEY` — repo/org **secrets** a
+   PR cannot read or edit. (A committed `.nota/approvers/*.pub` set is a
    convenience layer used only in cooperative mode; strict ignores it entirely.)
-2. **Pin the Action to a published tag** (`uses: manumarri-sudo/quill@v0`), not
+2. **Pin the Action to a published tag** (`uses: manumarri-sudo/nota@v0`), not
    the PR's own checkout (`uses: ./` + `install-from-source`), so a PR can't ship
    a modified gate that judges itself.
 3. **Make the Status Check required** in branch protection, with admin-bypass and
    force-push disabled — otherwise a `BLOCK` is merely advisory.
-4. **Sign the contract** with the approver key (`quill begin --key`). The contract
+4. **Sign the contract** with the approver key (`nota begin --key`). The contract
    supplies the base commit and allowed scope, so an unsigned one is forgeable by
    the agent (it could move the base to hide commits, or widen scope). In strict
    mode an unsigned/forged contract is a BLOCK.
@@ -213,9 +213,9 @@ regression test:
 - **Composite rogue-key-in-base attack (closed).** An attacker who plants a
   public key in the base commit (where the gate-tamper scan can't see it, since
   the diff starts *after* it) and signs their own perimeter + contract with it.
-  Strict mode now trusts **only** externally-pinned `QUILL_APPROVER_PUBKEYS`, so
+  Strict mode now trusts **only** externally-pinned `NOTA_APPROVER_PUBKEYS`, so
   a committed key is never a trust root (`test_p0_1_composite_rogue_key_plus_base_move_blocks`).
-- **Action-wrapper fail-open (closed).** `scripts/quill-passport.sh` now runs the
+- **Action-wrapper fail-open (closed).** `scripts/nota-passport.sh` now runs the
   verifier into a fresh `mktemp` dir and reads the verdict only from there (a
   committed/stale passport can't be read), fails closed on any non-`0/1` exit or
   unrecognised verdict, and re-verifies the passport's gate signature when a gate
@@ -262,7 +262,7 @@ the remaining inventory and evidence bugs to closure:
   process rc, passport verdict, and exit_code to agree, failing closed otherwise
   (`tests/test_action_wrapper.py`).
 - **Trust-root path indirection (High, closed).** Strict mode rejects a
-  `QUILL_APPROVER_PUBKEYS` file path that resolves inside the checkout, so the
+  `NOTA_APPROVER_PUBKEYS` file path that resolves inside the checkout, so the
   "external" trust root can't be redirected to a PR-controlled file
   (`tests/test_trust_root_path.py`).
 - **block_secrets honored (closed).** The signed perimeter's block_secrets now
@@ -272,7 +272,7 @@ A fifth pass closed the remaining context-binding gaps from earlier reviews and
 added `.gitattributes` surface detection:
 
 - **Contract context-binding: repo, expiry, candidate SHA (closed).** The signed
-  contract now binds the repository (`quill begin --repo`, strict BLOCKs on
+  contract now binds the repository (`nota begin --repo`, strict BLOCKs on
   mismatch), an expiry deadline (`--expires-in`, strict BLOCKs on expired or
   malformed), and the candidate SHA is resolved once and used for the diff,
   the inventory, and the recorded head. These close the cross-repo replay,
@@ -329,7 +329,7 @@ A seventh pre-flight pass (2026-06-26, self-review before round-7 external) clos
   `--output=/tmp/evil`) is blocked rather than passed through to git commands.
 - **Wrapper status-SHA binding (R7-H2, closed).** The wrapper now always
   compares the passport's `head_commit` against the SHA used for the Status
-  Check, regardless of whether `QUILL_HEAD_SHA` was explicitly set. Eliminates
+  Check, regardless of whether `NOTA_HEAD_SHA` was explicitly set. Eliminates
   the window where two independent `git rev-parse HEAD` calls could diverge.
 - **Wrapper REASONS sanitization (R7-H3, closed).** `REASONS` from the passport
   is sanitized (CR/LF stripped, leading `::` removed) before echoing, preventing
@@ -337,9 +337,9 @@ A seventh pre-flight pass (2026-06-26, self-review before round-7 external) clos
 - **UTF-8 BOM handling (R7-M1, closed).** `_decode_blob` now strips the UTF-8
   BOM (EF BB BF) and handles truncated BOM-prefixed files gracefully.
 - **_waived_secret crash guard (R7-M2, closed).** Non-numeric `line` values in
-  `.quill/exceptions.json` no longer crash the gate with ValueError.
-- **QUILL_HEAD_SHA validation (R7-M3, closed).** The wrapper validates
-  `QUILL_HEAD_SHA` against `^[0-9a-fA-F]{40}$` to prevent option injection.
+  `.nota/exceptions.json` no longer crash the gate with ValueError.
+- **NOTA_HEAD_SHA validation (R7-M3, closed).** The wrapper validates
+  `NOTA_HEAD_SHA` against `^[0-9a-fA-F]{40}$` to prevent option injection.
 - **python → python3 (R7-L1, closed).** Wrapper uses `python3` throughout.
 
 A round-8 hardening pass added:
@@ -355,11 +355,11 @@ A round-8 hardening pass added:
   audit MAC (first 12 hex chars) in the Status Check description as `[mac:...]`.
   A spoofed status posted by an attacker-injected workflow cannot reproduce a MAC
   it never computed, so fake checks are detectable post-hoc. A
-  `status-fingerprint` file records `sha/mac/context/state` for `quill
+  `status-fingerprint` file records `sha/mac/context/state` for `nota
   verify-passport` cross-checks. Full closure requires a GitHub App as the check
   source; the fingerprint is defense-in-depth.
 - **NEEDS_REVIEW blocking (R8-M2, closed).** `block-on-review` input / env
-  `QUILL_BLOCK_ON_REVIEW=true` promotes NEEDS_REVIEW to failure state + exit 1.
+  `NOTA_BLOCK_ON_REVIEW=true` promotes NEEDS_REVIEW to failure state + exit 1.
 - **Supply-chain SHA pinning (R8-L1, closed).** `actions/setup-python` and
   `actions/checkout` pinned to commit SHAs in `action.yml` and
   `docs/secure-workflow.yml`.
@@ -372,16 +372,16 @@ until these land:
 
 - **Caller workflow impersonation (round-6 C-1: MITIGATED).** The GitHub Action
   runs inside a caller workflow that lives in the candidate repository. Under the
-  `pull_request` event, a PR can modify that workflow to remove Quill entirely.
+  `pull_request` event, a PR can modify that workflow to remove Nota entirely.
   **Mitigation (shipped):** strict mode now **refuses to run** under the
   `pull_request` event (exit 2) unless explicitly opted out with
-  `QUILL_ALLOW_PULL_REQUEST_TRIGGER=true`. The secure setup uses
+  `NOTA_ALLOW_PULL_REQUEST_TRIGGER=true`. The secure setup uses
   `pull_request_target`, which runs the workflow from the base branch — immune
   to PR modifications. A secure workflow template is shipped at
   `docs/secure-workflow.yml`. The opt-out exists only for the dogfood repo
   (which uses `install-from-source` and intentionally runs from the PR branch).
   **Residual risk:** `pull_request_target` + `actions/checkout@v4` with
-  `ref: PR-head` checks out untrusted code, but Quill does not execute it — it
+  `ref: PR-head` checks out untrusted code, but Nota does not execute it — it
   only reads the git tree for `git diff`. The remaining escalation paths are:
   1. A GitHub App as the status check source (strongest, eliminates even the
      `statuses: write` fake-check vector).
@@ -392,20 +392,20 @@ until these land:
   approver key across repos, the repo binding closes cross-repo replay; within a
   single repo, expiry is the time-bound.
 - **NEEDS_REVIEW blocking (MITIGATED).** The `block-on-review` input (env
-  `QUILL_BLOCK_ON_REVIEW=true`) promotes NEEDS_REVIEW to a blocking state: the
+  `NOTA_BLOCK_ON_REVIEW=true`) promotes NEEDS_REVIEW to a blocking state: the
   Status Check reports `failure` and the job exits 1 — the same as BLOCK. The
   passport verdict itself stays `NEEDS_REVIEW` for the audit trail; only the gate
   behavior changes. Operators that need a hard stop on sensitive surfaces set this
   rather than wiring up a separate approval gate. Without it, NEEDS_REVIEW still
   exits 0 (soft signal) and depends on branch protection.
 - **Action supply chain (MITIGATED).** `actions/setup-python` is SHA-pinned in
-  `action.yml`, `actions/checkout` and `manumarri-sudo/quill` are SHA-pinned in
+  `action.yml`, `actions/checkout` and `manumarri-sudo/nota` are SHA-pinned in
   `docs/secure-workflow.yml`. All `pip install` commands use `python -I`
   (isolated mode) and `PYTHONSAFEPATH=1` to prevent candidate-controlled Python
   modules (pip.py, json.py, sitecustomize.py) from shadowing trusted imports.
   The secure template checks out the PR into an isolated subdirectory
   (`_pr_checkout`) with `persist-credentials: false`.
-  **Residual:** Quill's own PyPI dependencies are version-ranged, not
+  **Residual:** Nota's own PyPI dependencies are version-ranged, not
   hash-locked; a compromised transitive dependency could still execute. Use
   `--require-hashes` in hardened deployments.
 
@@ -425,12 +425,12 @@ until these land:
   human while being a distinct codepoint. The strict allow-list mitigates it (an
   unrecognised variant falls out of scope), and the homoglyph only bites if the
   protected code actually lives under the look-alike path.
-- **Non-trust `.quill/` files in a PR.** `verify` strips `.quill/` from the
+- **Non-trust `.nota/` files in a PR.** `verify` strips `.nota/` from the
   scope/secret evaluation (so committing the contract it describes is not
-  self-flagged), and gate-tamper covers `.quill/perimeter.*` and
-  `.quill/approvers/**`. A *different* `.quill/` file in a PR (e.g. a local-hook
+  self-flagged), and gate-tamper covers `.nota/perimeter.*` and
+  `.nota/approvers/**`. A *different* `.nota/` file in a PR (e.g. a local-hook
   config) does not change the CI verdict, but could alter the optional local
-  runtime hook's behavior on a machine that re-reads it; treat `.quill/` as
+  runtime hook's behavior on a machine that re-reads it; treat `.nota/` as
   trusted only to the extent its trust-bearing files are signed.
 
 | Claim | Status | Honest form |
@@ -447,19 +447,19 @@ The fixes for the limits above are architectural, not pattern additions:
   a lightweight intent classifier or a real bash parser, not an LLM in the
   hot path).
 - **Move the enforced boundary into CI, not the kernel.** An earlier preview
-  shipped an opt-in macOS Seatbelt floor (`quill shell`); it was **removed** in
+  shipped an opt-in macOS Seatbelt floor (`nota shell`); it was **removed** in
   the Change Control pivot because a local kernel floor still runs on the
   machine the agent controls. The chosen direction is the opposite: enforce in
-  CI, where `quill verify` gates the diff in a process the agent cannot reach.
+  CI, where `nota verify` gates the diff in a process the agent cannot reach.
   A kernel-layer local control (eBPF / Landlock / Endpoint Security) remains a
   possible future addition for the local-gate surface, but it is not what makes
-  Quill a boundary today — the CI gate is.
+  Nota a boundary today — the CI gate is.
 - **Network-egress proxy** for limits 3 and 4: catch unauthorized outbound
   connections regardless of the language or script that opened them.
 - **Config-file integrity monitoring** for limit 2: detect changes to the
   hook config even when they do not flow through a gated tool.
 
-Until those land, position Quill honestly: the gate that refuses the
+Until those land, position Nota honestly: the gate that refuses the
 irreversible thing and records what was attempted, on the developer-laptop
 tool-dispatch layer, as one layer of defense-in-depth. Pair it with
 model-level guardrails and (for real adversaries) a kernel-layer control.
@@ -479,11 +479,11 @@ How the shipped Action enforces this:
   write token is never written into the tree a candidate controls. The Action is
   told where the candidate lives via `checkout-path`; it reads it only through
   `git` subcommands.
-- **Isolated interpreter.** Quill is **installed** with `python -I` (isolated: the
+- **Isolated interpreter.** Nota is **installed** with `python -I` (isolated: the
   current directory and user site are off `sys.path`). At **verify** time the
   wrapper `cd`s into the candidate checkout so `git` finds the repo, which makes
   cwd candidate-controlled — so every trusted Python process it starts is isolated:
-  the installed `quill` console script does not place cwd on `sys.path`, and the
+  the installed `nota` console script does not place cwd on `sys.path`, and the
   wrapper's inline `python3 -I` reads use isolated mode (available since Python 3.4,
   so this does **not** depend on the interpreter version), with `PYTHONSAFEPATH=1`
   (Python 3.11+) exported as defense-in-depth. A candidate `pip.py`,
@@ -493,8 +493,8 @@ How the shipped Action enforces this:
   `tests/test_secure_workflow_isolation.py`: the shadow fires *without* isolation
   and does **not** fire with it.
 - **Minimal network in the privileged job.** The secret-bearing job installs a
-  pinned Quill and does **not** run `pip install --upgrade pip`. Remaining
-  supply-chain limitation: the pinned Quill's dependency tree is resolved from
+  pinned Nota and does **not** run `pip install --upgrade pip`. Remaining
+  supply-chain limitation: the pinned Nota's dependency tree is resolved from
   PyPI without `--require-hashes`; a fully hermetic gate installs from a
   hash-locked lockfile or a prebuilt container.
 
@@ -505,26 +505,26 @@ How the shipped Action enforces this:
   identifies the repo, **and** — the newly closed hole — when *both* the contract
   binding and the current repo identity are absent, so a signed contract can never
   be replayed against an arbitrary repo.
-- **Resource ceilings + scan dispositions.** `QUILL_MAX_DIFF_BYTES`,
-  `QUILL_MAX_FILES`, and `QUILL_GIT_TIMEOUT` bound what the gate reads; a capped
+- **Resource ceilings + scan dispositions.** `NOTA_MAX_DIFF_BYTES`,
+  `NOTA_MAX_FILES`, and `NOTA_GIT_TIMEOUT` bound what the gate reads; a capped
   streaming git reader keeps memory bounded on a candidate-crafted giant diff.
   Incomplete scan coverage is recorded as a disposition and **BLOCKs in strict /
   NEEDS_REVIEW in cooperative — never a silent PASS.**
 - **Submodule opacity evidence.** A gitlink (mode `160000`) pointer move is
   NEEDS_REVIEW and the passport records the old/new nested commit IDs, so a
   reviewer can audit exactly which opaque commit was pulled in.
-- **init / status parity.** `quill init` emits a SHA-pinned Action (not a mutable
-  tag) that `quill status` accepts, and the secure-workflow template passes
+- **init / status parity.** `nota init` emits a SHA-pinned Action (not a mutable
+  tag) that `nota status` accepts, and the secure-workflow template passes
   `checkout-path` so the wrapper finds the candidate repo instead of failing
   closed at the workspace root.
 
 ### What this still does NOT do
 
 - It does not make a bare commit **status** unspoofable: any workflow with
-  `statuses: write` can POST the `quill/change-control` context. The passport
+  `statuses: write` can POST the `nota/change-control` context. The passport
   fingerprint MAC makes a spoofed success *detectable* post-hoc, but binding the
   *source* of the check requires a GitHub App check-run (a paid/roadmap item).
-- It does not hash-lock Quill's transitive dependencies (see above).
-- It does not read GitHub branch protection; `quill status` reports what it can
+- It does not hash-lock Nota's transitive dependencies (see above).
+- It does not read GitHub branch protection; `nota status` reports what it can
   observe locally and says when required-check enforcement is UNKNOWN rather than
   claiming it.

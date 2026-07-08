@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from quill import secrets
+from nota import secrets
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

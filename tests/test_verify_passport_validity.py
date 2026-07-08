@@ -1,4 +1,4 @@
-"""`quill verify-passport` checks validity, not just authenticity (review M-5).
+"""`nota verify-passport` checks validity, not just authenticity (review M-5).
 
 A correctly gate-signed passport can still be the wrong candidate, stale, or have
 an expired contract. The command now binds those with --head-sha / --max-age-days
@@ -14,10 +14,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from quill import attest
-from quill import passport as passport_mod
+from nota import attest
+from nota import passport as passport_mod
 
-_QUILL = str(Path(sys.executable).parent / "quill")
+_NOTA = str(Path(sys.executable).parent / "nota")
 
 
 def _signed_passport(tmp_path: Path, **overrides: object) -> tuple[Path, Path]:
@@ -39,10 +39,10 @@ def _signed_passport(tmp_path: Path, **overrides: object) -> tuple[Path, Path]:
 
 def _run(pj: Path, pub: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [_QUILL, "verify-passport", str(pj), "--gate-key", str(pub), *args],
+        [_NOTA, "verify-passport", str(pj), "--gate-key", str(pub), *args],
         capture_output=True,
         text=True,
-        env={**os.environ, "QUILL_GATE_PUBKEYS": ""},
+        env={**os.environ, "NOTA_GATE_PUBKEYS": ""},
     )
 
 
@@ -80,7 +80,7 @@ def test_status_fingerprint_match(tmp_path: Path) -> None:
     mac = "deadbeef" * 8
     pj, pub = _signed_passport(tmp_path, audit={"verification_run_mac": mac})
     fp = tmp_path / "status-fingerprint"
-    fp.write_text(f"sha={'a' * 40}\nmac={mac}\ncontext=quill/change-control\nstate=success\n")
+    fp.write_text(f"sha={'a' * 40}\nmac={mac}\ncontext=nota/change-control\nstate=success\n")
     r = _run(pj, pub, "--status-fingerprint", str(fp))
     assert r.returncode == 0
 
@@ -89,7 +89,7 @@ def test_status_fingerprint_mismatch(tmp_path: Path) -> None:
     mac = "deadbeef" * 8
     pj, pub = _signed_passport(tmp_path, audit={"verification_run_mac": mac})
     fp = tmp_path / "status-fingerprint"
-    fp.write_text(f"sha={'a' * 40}\nmac={'f' * 64}\ncontext=quill/change-control\nstate=success\n")
+    fp.write_text(f"sha={'a' * 40}\nmac={'f' * 64}\ncontext=nota/change-control\nstate=success\n")
     r = _run(pj, pub, "--status-fingerprint", str(fp))
     assert r.returncode == 1
     assert "fingerprint mismatch" in (r.stdout + r.stderr)

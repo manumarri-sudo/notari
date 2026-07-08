@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from quill import attest
+from nota import attest
 
 
 def test_roundtrip_sign_verify() -> None:

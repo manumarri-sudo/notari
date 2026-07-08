@@ -1,18 +1,18 @@
 ---
 name: Feature request
-about: A capability Quill should have
+about: A capability Nota should have
 title: "feat: "
 labels: ["enhancement"]
 ---
 
 ## The problem this solves
 
-Describe the situation where Quill falls short today. Focus on the
+Describe the situation where Nota falls short today. Focus on the
 workflow, not the implementation.
 
 ## The proposed feature
 
-What should Quill do? Be specific about the user-facing surface (new
+What should Nota do? Be specific about the user-facing surface (new
 CLI command, new policy override, new event type, etc.).
 
 ## Why this matters

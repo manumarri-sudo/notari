@@ -1,13 +1,13 @@
 cff-version: 1.2.0
-title: "Quill Change Control: signed change control for AI-authored pull requests"
+title: "Nota Change Control: signed change control for AI-authored pull requests"
 message: "If you use this software in research or commentary, please cite it."
 type: software
 authors:
   - family-names: Marri
     given-names: Manu
     affiliation: Loomiq LLC
-repository-code: https://github.com/manumarri-sudo/quill
-url: https://github.com/manumarri-sudo/quill
+repository-code: https://github.com/manumarri-sudo/nota
+url: https://github.com/manumarri-sudo/nota
 license: MIT
 version: 0.3.0
 date-released: "2026-05-27"

@@ -22,15 +22,15 @@ import pytest
 # Every module on or adjacent to the gate hot path. If any of these fails to
 # import, the gate is at risk of failing closed in production.
 GATE_CRITICAL_MODULES = [
-    "quill.adapters.claude_code",
-    "quill.adapters.cursor",
-    "quill.audit",
-    "quill.policy",
-    "quill.secrets",
-    "quill.pause",
-    "quill.taint",
-    "quill.exports",
-    "quill.cli",
+    "nota.adapters.claude_code",
+    "nota.adapters.cursor",
+    "nota.audit",
+    "nota.policy",
+    "nota.secrets",
+    "nota.pause",
+    "nota.taint",
+    "nota.exports",
+    "nota.cli",
 ]
 
 
@@ -44,7 +44,7 @@ def test_claude_code_hook_self_test_passes() -> None:
     """self_test() is what the live hook runs before every decision; if it
     raises (e.g. a missing import surfaced on first call), the gate fails
     closed and locks the operator out. Assert it returns cleanly."""
-    mod = importlib.import_module("quill.adapters.claude_code")
+    mod = importlib.import_module("nota.adapters.claude_code")
     ok, reason = mod.self_test()
     assert ok, f"claude_code self_test failed: {reason}"
 
@@ -52,6 +52,6 @@ def test_claude_code_hook_self_test_passes() -> None:
 def test_summarize_call_runs_without_nameerror() -> None:
     """The exact path that broke: _summarize_call references the secrets
     module for redaction; a missing import only blows up when called."""
-    mod = importlib.import_module("quill.adapters.claude_code")
+    mod = importlib.import_module("nota.adapters.claude_code")
     out = mod._summarize_call("Bash", {"command": "echo hello"})
     assert "echo hello" in out
