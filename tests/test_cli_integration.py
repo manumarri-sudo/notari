@@ -48,12 +48,20 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_app_help_lists_new_commands(runner: CliRunner) -> None:
+def test_app_help_shows_grouped_core_and_hides_advanced(runner: CliRunner) -> None:
+    """DX 0.3.3: the top-level help shows Core/Safety/Health panels only; the
+    advanced surface stays callable but unlisted (progressive disclosure)."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "onboard" in result.output
-    assert "scan-secrets" in result.output
-    assert "commit-hook-install" in result.output
+    for visible in ("Core", "Safety", "begin", "verify", "explain", "init", "status", "off"):
+        assert visible in result.output
+    # (trifecta/lessons/etc. appear as prose in the preamble, so assert on
+    # command names that never occur outside their own listing rows.)
+    for hidden in ("onboard", "scan-secrets", "commit-hook-install", "keygen"):
+        assert hidden not in result.output
+    # Hidden commands still work by name.
+    assert runner.invoke(app, ["onboard", "--help"]).exit_code == 0
+    assert runner.invoke(app, ["scan-secrets", "--help"]).exit_code == 0
 
 
 def test_onboard_help(runner: CliRunner) -> None:

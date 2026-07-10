@@ -44,7 +44,7 @@ inputs:
       Action release was cut from. The Change Control engine (notari begin/verify)
       requires >=0.3.0; earlier versions do not contain it.
     required: false
-    default: "==0.3.2"
+    default: "==0.3.3"
   install-from-source:
     description: "Install notari from this checked-out repo instead of PyPI (used for dogfooding)."
     required: false

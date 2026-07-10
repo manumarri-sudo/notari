@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "notari"
-version = "0.3.2"
+version = "0.3.3"
 description = "Notari Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
 readme = "README.md"
 license = "MIT"

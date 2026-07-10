@@ -49,18 +49,10 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help="notari change control: verify AI-written diffs against the human-approved task.\n\n"
-    "  notari begin      capture the approved task into .notari/contract.json\n"
-    "  notari verify     compare the diff to the contract, emit PASS / NEEDS_REVIEW / BLOCK\n"
-    "  notari onboard    first-run interactive setup (detects agents, installs hooks)\n"
-    "  notari approve    go-ahead a blocked call (run from a notification)\n"
-    "  notari audit      review what got blocked / allowed / asked\n"
-    "  notari receipts   per-session did / changed / uncertain / to-verify\n"
-    "  notari bridge     A2A handoff edges between agents\n"
-    "  notari trifecta   exposure tracking (untrusted input + private data + exfil)\n"
-    "  notari pins       tool description pins (anti-poisoning, anti-rug-pull)\n"
-    "  notari approvals  list / revoke pending approval tokens\n"
-    "  notari decay      permissions that erode without reinforcement\n"
-    "  notari doctor     diagnose the install\n",
+    "Day one: notari init (guided setup), then notari begin / verify / explain.\n"
+    "Pause anytime: notari off (bounded + logged); notari on resumes.\n\n"
+    "Advanced commands (lessons, teach, receipts, trifecta, pins, hooks, ...) stay\n"
+    "available by name; `notari <command> --help` works for all of them.",
 )
 
 
@@ -90,17 +82,17 @@ audit_app = typer.Typer(
     no_args_is_help=True,
     help="see what got blocked / allowed / asked.",
 )
-app.add_typer(audit_app, name="audit")
+app.add_typer(audit_app, name="audit", rich_help_panel="Health & evidence")
 lessons_app = typer.Typer(
     invoke_without_command=True,
     help="turn repeated agent mistakes into lessons future agents learn from.",
 )
-app.add_typer(lessons_app, name="lessons")
+app.add_typer(lessons_app, name="lessons", hidden=True)
 decay_app = typer.Typer(
     no_args_is_help=True,
     help="track permissions that erode without reinforcement (Permission Decay framework).",
 )
-app.add_typer(decay_app, name="decay")
+app.add_typer(decay_app, name="decay", hidden=True)
 journal_app = typer.Typer(no_args_is_help=True, help="session-journal subcommands.")
 app.add_typer(journal_app, name="journal", hidden=True)
 telemetry_app = typer.Typer(
@@ -113,43 +105,43 @@ receipts_app = typer.Typer(
     no_args_is_help=True,
     help="agent receipts: did / changed / uncertain / to-verify per session.",
 )
-app.add_typer(receipts_app, name="receipts")
+app.add_typer(receipts_app, name="receipts", hidden=True)
 
 bridge_app = typer.Typer(
     no_args_is_help=True,
     help="A2A bridge: handoff edges between agents (sub-agent spawns).",
 )
-app.add_typer(bridge_app, name="bridge")
+app.add_typer(bridge_app, name="bridge", hidden=True)
 
 trifecta_app = typer.Typer(
     no_args_is_help=True,
     help="exposure tracking: did this session see untrusted input + private data + an exfil vector?",
 )
-app.add_typer(trifecta_app, name="trifecta")
+app.add_typer(trifecta_app, name="trifecta", hidden=True)
 
 pins_app = typer.Typer(
     no_args_is_help=True,
     help="tool description pins: detect rug-pulls and tool-poisoning attacks.",
 )
-app.add_typer(pins_app, name="pins")
+app.add_typer(pins_app, name="pins", hidden=True)
 
 approvals_app = typer.Typer(
     no_args_is_help=True,
     help="one-shot approvals - list / revoke pending tokens.",
 )
-app.add_typer(approvals_app, name="approvals")
+app.add_typer(approvals_app, name="approvals", hidden=True)
 
 trust_app = typer.Typer(
     no_args_is_help=True,
     help="trusted directories - downshift default Edit/Write risk to auto-allow inside listed paths. The fix for approval fatigue.",
 )
-app.add_typer(trust_app, name="trust")
+app.add_typer(trust_app, name="trust", hidden=True)
 
 suggestions_app = typer.Typer(
     no_args_is_help=True,
     help="review and promote learner-surfaced suggestions. Auto-tightenings already applied; loosenings stay pending until the operator promotes.",
 )
-app.add_typer(suggestions_app, name="suggestions")
+app.add_typer(suggestions_app, name="suggestions", hidden=True)
 
 
 # --------------------------------------------------------------------------
@@ -157,7 +149,7 @@ app.add_typer(suggestions_app, name="suggestions")
 # --------------------------------------------------------------------------
 
 
-@app.command("begin")
+@app.command("begin", rich_help_panel="Core")
 def begin_cmd(
     task: Annotated[
         str,
@@ -295,7 +287,7 @@ def _uncommitted_setup_files(root: Path) -> list[str]:
     return dirty
 
 
-@app.command("verify")
+@app.command("verify", rich_help_panel="Core")
 def verify_cmd(
     head: Annotated[
         str,
@@ -330,6 +322,15 @@ def verify_cmd(
             "--sign-key",
             help="gate private key (PEM) to sign the passport with; off-box CI secret. "
             "Falls back to the NOTARI_GATE_KEY env value.",
+        ),
+    ] = None,
+    open_report: Annotated[
+        bool | None,
+        typer.Option(
+            "--open/--no-open",
+            help="open the HTML fix-it page in your browser. Default: on failure "
+            "only, in an interactive terminal, never in CI (NOTARI_OPEN="
+            "always|never|on-failure overrides).",
         ),
     ] = None,
 ) -> None:
@@ -407,10 +408,41 @@ def verify_cmd(
     else:
         out.print(passport_mod.render_markdown(result))
 
+    # Terminal-to-browser handoff (0.3.3, Playwright semantics): people who
+    # don't read terminals get the click-to-copy fix-it page. Defaults: open on
+    # failure only, only in an interactive terminal, never in CI. An explicit
+    # --open/--no-open wins; NOTARI_OPEN=always|never|on-failure overrides the
+    # default. Never on PASS unless explicitly asked. Best-effort: a browser
+    # failure must never change the verdict or the exit code.
+    try:
+        _open_policy = (os.environ.get("NOTARI_OPEN") or "on-failure").strip().lower()
+        _in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+        _failed = result.verdict is not verify_mod.Verdict.PASS
+        if open_report is not None:
+            _should_open = open_report
+        elif _open_policy == "always":
+            _should_open = not _in_ci
+        elif _open_policy == "never":
+            _should_open = False
+        else:
+            _should_open = _failed and sys.stdout.isatty() and not _in_ci
+        if _should_open:
+            import webbrowser
+
+            from notari.explain_html import render_html
+
+            _html_dir = passport_dir or (root / ".notari")
+            _html_path = _html_dir / "explain.html"
+            _html_path.write_text(render_html(passport_mod.build_passport(result)))
+            webbrowser.open(_html_path.resolve().as_uri())
+            console.print(f"[dim]fix-it page: {_html_path} (opened in browser)[/dim]")
+    except Exception:
+        pass
+
     raise typer.Exit(code=result.verdict.exit_code)
 
 
-@app.command("keygen")
+@app.command("keygen", hidden=True)
 def keygen_cmd(
     out: Annotated[
         Path | None,
@@ -493,7 +525,7 @@ def keygen_cmd(
         )
 
 
-@app.command("guard")
+@app.command("guard", hidden=True)
 def guard_cmd(
     key: Annotated[
         Path,
@@ -555,7 +587,7 @@ def guard_cmd(
     )
 
 
-@app.command("verify-passport")
+@app.command("verify-passport", hidden=True)
 def verify_passport_cmd(
     passport_file: Annotated[
         Path,
@@ -716,7 +748,7 @@ def verify_passport_cmd(
     )
 
 
-@app.command("explain")
+@app.command("explain", rich_help_panel="Core")
 def explain_cmd(
     passport_file: Annotated[
         Path | None,
@@ -892,7 +924,7 @@ def lessons_promote_cmd(
     out.print("  now run [cyan]notari teach[/cyan] to write it into agent instruction files.")
 
 
-@app.command("teach")
+@app.command("teach", hidden=True)
 def teach_cmd(
     agents: Annotated[
         str,
@@ -969,7 +1001,7 @@ def _emit_agent_brief() -> None:
     )
 
 
-@app.command("fix-prompt")
+@app.command("fix-prompt", hidden=True)
 def fix_prompt_cmd(
     passport_file: Annotated[
         Path | None,
@@ -986,7 +1018,7 @@ def fix_prompt_cmd(
     _emit_fix_prompt(passport_file)
 
 
-@app.command("agent-brief")
+@app.command("agent-brief", hidden=True)
 def agent_brief_cmd() -> None:
     """Emit the compact brief an agent should read before starting work.
 
@@ -997,7 +1029,7 @@ def agent_brief_cmd() -> None:
     _emit_agent_brief()
 
 
-@app.command("check-approval")
+@app.command("check-approval", hidden=True)
 def check_approval_cmd(
     pr: Annotated[int, typer.Option("--pr", help="pull request number.")],
     head_sha: Annotated[str, typer.Option("--head-sha", help="current head commit SHA.")],
@@ -1102,7 +1134,7 @@ jobs:
 """
 
 
-@app.command("init")
+@app.command("init", rich_help_panel="Core")
 def init_cmd(
     allow: Annotated[
         list[str] | None,
@@ -1219,7 +1251,7 @@ def _posture_badge(posture: Posture) -> str:
     }[posture]
 
 
-@app.command("status")
+@app.command("status", rich_help_panel="Core")
 def status_cmd() -> None:
     """One glance: is the gate a real boundary, or still cooperative? Says what's missing."""
     from notari import contract as contract_mod
@@ -1244,7 +1276,7 @@ def status_cmd() -> None:
         )
 
 
-@app.command("frameworks")
+@app.command("frameworks", hidden=True)
 def frameworks_cmd(
     standard: Annotated[
         str | None,
@@ -1309,7 +1341,7 @@ def frameworks_cmd(
     )
 
 
-@app.command("roster")
+@app.command("roster", hidden=True)
 def roster_cmd(
     log_path: Annotated[
         Path | None, typer.Option("--log", "-l", help="audit log to read (default: ~/.notari).")
@@ -1376,7 +1408,7 @@ def git_hook_cmd(ctx: typer.Context) -> None:
     raise typer.Exit(code=prepare_commit_msg(msg_path, source_type=source_type))
 
 
-@app.command("commit-hook-install")
+@app.command("commit-hook-install", hidden=True)
 def commit_hook_install(
     repo: Annotated[
         Path | None,
@@ -1416,7 +1448,7 @@ def commit_hook_install(
         )
 
 
-@app.command("commit-hook-uninstall")
+@app.command("commit-hook-uninstall", hidden=True)
 def commit_hook_uninstall(
     repo: Annotated[
         Path | None,
@@ -1441,7 +1473,7 @@ def commit_hook_uninstall(
         console.print(f"[dim]no hook to remove at[/dim] {p}")
 
 
-@app.command("insights")
+@app.command("insights", hidden=True)
 def insights_cmd(
     window_today: Annotated[bool, typer.Option("--today")] = False,
     window_week: Annotated[bool, typer.Option("--week")] = False,
@@ -1474,7 +1506,7 @@ def insights_cmd(
     Console().print(format_insights(insights, plain=plain))
 
 
-@app.command("integrate")
+@app.command("integrate", hidden=True)
 def integrate_cmd(
     agent: Annotated[
         str,
@@ -1579,7 +1611,7 @@ def integrate_cmd(
         )
 
 
-@app.command("saves")
+@app.command("saves", hidden=True)
 def saves_cmd(
     window_today: Annotated[
         bool,
@@ -1637,7 +1669,7 @@ def saves_cmd(
     Console().print(format_saves(saves, plain=plain))
 
 
-@app.command("scan-prompts")
+@app.command("scan-prompts", hidden=True)
 def scan_prompts_cmd(
     paths: Annotated[
         list[Path],
@@ -1700,7 +1732,7 @@ def scan_prompts_cmd(
         )
 
 
-@app.command("scan-secrets")
+@app.command("scan-secrets", hidden=True)
 def scan_secrets_cmd(
     paths: Annotated[
         list[Path],
@@ -1828,7 +1860,7 @@ def _git_ls_files(path: Path) -> list[Path] | None:
     return files
 
 
-@app.command("onboard")
+@app.command("onboard", hidden=True)
 def onboard_cmd(
     force: Annotated[
         bool,
@@ -1853,7 +1885,7 @@ def onboard_cmd(
     raise typer.Exit(code=run_onboard(force=force))
 
 
-@app.command("learn")
+@app.command("learn", hidden=True)
 def learn_cmd(
     since_days: Annotated[
         int,
@@ -1929,7 +1961,7 @@ def learn_cmd(
         console.print()
 
 
-@app.command("kpis")
+@app.command("kpis", hidden=True)
 def kpis_cmd(
     since_days: Annotated[
         int,
@@ -2085,7 +2117,7 @@ def _hmac_key() -> bytes:
 # --------------------------------------------------------------------------
 
 
-@app.command("night")
+@app.command("night", hidden=True)
 def night_cmd(
     state_arg: Annotated[
         str,
@@ -2198,7 +2230,7 @@ def night_cmd(
     raise typer.Exit(2)
 
 
-@app.command("day")
+@app.command("day", hidden=True)
 def day_cmd() -> None:
     """flip overnight mode off. alias for `notari night off`."""
     from notari import overnight as ovn
@@ -2373,7 +2405,7 @@ def _require_disable_auth(
     raise typer.Exit(1)
 
 
-@app.command("off")
+@app.command("off", rich_help_panel="Safety")
 def off_cmd(
     action: Annotated[
         str,
@@ -2460,7 +2492,7 @@ def off_cmd(
     )
 
 
-@app.command("on")
+@app.command("on", rich_help_panel="Safety")
 def on_cmd() -> None:
     """resume the gate - turn notari back ON. Logs a gate.resumed event with a
     recap of how many calls were let through while it was off."""
@@ -2489,7 +2521,7 @@ def on_cmd() -> None:
 
 
 # Memorable aliases: `notari pause` / `notari resume` do the same as off / on.
-@app.command("pause")
+@app.command("pause", hidden=True)
 def pause_cmd(
     for_: Annotated[
         str,
@@ -2504,7 +2536,7 @@ def pause_cmd(
     off_cmd(for_=for_, reason=reason)
 
 
-@app.command("resume")
+@app.command("resume", hidden=True)
 def resume_cmd() -> None:
     """alias for `notari on` - resume the gate."""
     on_cmd()
@@ -3592,7 +3624,7 @@ def audit_summary(
 # --------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel="Health & evidence")
 def doctor(
     config_path: Annotated[
         Path | None,
@@ -4005,7 +4037,7 @@ def decay_forget(
 # --------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel="Health & evidence")
 def version() -> None:
     """Print the notari version."""
     console.print(f"notari {__version__}")
@@ -4354,7 +4386,7 @@ def pins_revoke(
 # approve - the "go ahead" path, called from a notification
 
 
-@app.command("approve")
+@app.command("approve", rich_help_panel="Safety")
 def approve_token(
     token: Annotated[
         str | None,
@@ -5021,7 +5053,7 @@ def suggestions_dismiss(
 import time as _time  # noqa: E402 - placement next to its sole user
 
 
-@app.command("log")
+@app.command("log", hidden=True)
 def log_cmd(
     follow: Annotated[
         bool,

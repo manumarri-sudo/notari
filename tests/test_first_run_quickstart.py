@@ -225,3 +225,61 @@ def test_keygen_gitignore_works_from_subdirectory(
     assert "/src/approver.pem" in gi
     assert "/src/approver.pem.pub" in gi
     assert not (sub / ".gitignore").exists()
+
+
+def _cli_ready_repo(repo: Path) -> str:
+    """Correct-order CLI setup; returns the pinned approver pubkey PEM."""
+    priv, pub = _keypair_and_perimeter(repo)
+    _commit_all(repo, "notari: signed boundary")
+    contract, _ = contract_mod.begin(
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+    )
+    provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
+    _commit_all(repo, "notari: open task contract")
+    return pub
+
+
+def test_verify_open_flag_writes_and_opens_fixit_page(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--open forces the browser handoff even on PASS; the page is written."""
+    import webbrowser
+
+    pub = _cli_ready_repo(repo)
+    (repo / "src" / "app.py").write_text("x = 1\ny = 2\n")
+    _commit_all(repo, "in-scope change")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("NOTARI_APPROVER_PUBKEYS", pub)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/name")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    runner = CliRunner()
+    res = runner.invoke(app, ["verify", "--open"])
+    assert res.exit_code == 0, res.output
+    assert (repo / ".notari" / "explain.html").exists()
+    assert len(opened) == 1 and opened[0].startswith("file://")
+
+
+def test_verify_default_never_opens_in_non_tty_or_ci(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default policy is on-failure AND interactive AND not CI; a BLOCK under
+    CliRunner (non-tty) must not open a browser, and CI env forces never."""
+    import webbrowser
+
+    pub = _cli_ready_repo(repo)
+    (repo / "migrations").mkdir(exist_ok=True)
+    (repo / "migrations" / "evil.sql").write_text("drop table users;\n")
+    _commit_all(repo, "forbidden change")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("NOTARI_APPROVER_PUBKEYS", pub)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/name")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    runner = CliRunner()
+    res = runner.invoke(app, ["verify"])
+    assert res.exit_code == 1, res.output  # BLOCK still exits 1
+    assert opened == []

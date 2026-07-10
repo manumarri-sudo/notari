@@ -2,6 +2,26 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - a CLI for people who don't read terminals
+
+### Changed
+
+- **The help surface is now three panels instead of a 25-command wall**: Core
+  (`init`, `begin`, `verify`, `explain`, `status`), Safety (`off`, `on`,
+  `approve`), and Health & evidence (`doctor`, `version`, `audit`). Every other
+  command still works by name (`notari <command> --help` included); it just is
+  not shouted at newcomers.
+- **`notari verify` hands off to the browser on failure**: it writes the
+  self-contained fix-it page and opens it, on failure only, only in an
+  interactive terminal, never in CI. `--open`/`--no-open` win;
+  `NOTARI_OPEN=always|never|on-failure` overrides the default. A browser
+  failure can never change the verdict or the exit code.
+
+Verified against a real production-shaped repo (Next.js app with migrations):
+keys auto-gitignored alongside an existing .gitignore, PASS on an in-scope
+component change, BLOCK with correctly attributed secret / forbidden-path /
+out-of-scope findings, honest posture readout.
+
 ## [0.3.2] - the first-run actually PASSes
 
 A cold-user test of the documented quickstart never produced a green PASS:
