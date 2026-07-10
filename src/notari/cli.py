@@ -976,7 +976,9 @@ def check_approval_cmd(
 # rejects a non-SHA pin, so init and status stay consistent. Bump this SHA on
 # every release (part of the release process); it is the SINGLE source of truth
 # shared with docs/secure-workflow.yml.
-_NOTARI_ACTION_PIN = "manumarri-sudo/notari@4a853898bb18cc806b9a868ecb77bdabdb3257d8"  # v0
+_NOTARI_ACTION_PIN = (
+    "manumarri-sudo/notari@01c83c3c1a0bb6d6637ba5927419bd365fc0536e"  # 0.3.0 release action
+)
 
 _CONSUMER_WORKFLOW = f"""\
 name: notari-change-control
