@@ -7,13 +7,15 @@
 > secrets), deterministically, in CI where the agent can't disable it. It does
 > **not** judge whether the code is semantically correct, and it is a real
 > adversarial boundary only with the full deployment in
-> [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) (signed contract, off-box
-> keys, required check). **Alpha**; treat the security model as the source of
-> truth over any one-line claim.
+> [docs/SECURITY-MODEL.md](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
+> (signed contract, off-box keys, required check). **Alpha**; treat the security
+> model as the source of truth over any one-line claim.
 
-**New here?** Start with the [Quickstart](docs/QUICKSTART.md) (zero to a blocked
-bad PR in ~10 minutes). Then: [Security & threat model](docs/SECURITY-MODEL.md) ·
-[Product & tiers](docs/PRODUCT.md).
+**New here?** Start with the
+[Quickstart](https://github.com/manumarri-sudo/notari/blob/main/docs/QUICKSTART.md)
+(zero to a blocked bad PR in ~10 minutes). Then:
+[Security & threat model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md) ·
+[Product & tiers](https://github.com/manumarri-sudo/notari/blob/main/docs/PRODUCT.md).
 
 **Found a bypass, a confusing error, or a reason you'd never adopt this?** That is
 exactly the feedback this alpha exists for:
@@ -36,9 +38,17 @@ backdoor. That is the honest scope, and it is the part a human reviewer most
 often misses on a large agent PR.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/notari-flow-dark.svg">
-  <img src="docs/assets/notari-flow-light.svg" alt="How Notari works: a human signs the task boundary, the AI agent writes the diff, CI verifies the change against the signed boundary and issues a PASS, NEEDS_REVIEW, or BLOCK verdict, recorded in a signed Change Passport any reviewer can re-check." width="920">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-flow-dark.svg">
+  <img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-flow-light.svg" alt="How Notari works: a human signs the task boundary, the AI agent writes the diff, CI verifies the change against the signed boundary and issues a PASS, NEEDS_REVIEW, or BLOCK verdict, recorded in a signed Change Passport any reviewer can re-check." width="920">
 </picture>
+
+The full loop, live — an agent edits in and out of scope, Notari verifies each
+diff (PASS / NEEDS_REVIEW / BLOCK), and a repeated mistake becomes a lesson
+taught back to the agent (from
+[`examples/change_control_demo.sh`](https://github.com/manumarri-sudo/notari/blob/main/examples/change_control_demo.sh),
+unedited):
+
+<img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-demo.gif" alt="Terminal recording of the demo: setup, a PASS on an in-scope change, BLOCK verdicts on forbidden-path and secret-introducing changes, notari explain remediation, and the lessons loop writing a promoted rule into CLAUDE.md." width="920">
 
 ```bash
 # 0. one-time: create a human approver key. Keep the PRIVATE half off the build
@@ -195,7 +205,7 @@ jobs:
           persist-credentials: false
       # Pin to the release commit SHA, not a mutable tag — `notari status`
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
-      - uses: manumarri-sudo/notari@RELEASE_SHA  # replace with the v0.3.0 release commit SHA
+      - uses: manumarri-sudo/notari@01c83c3c1a0bb6d6637ba5927419bd365fc0536e  # 0.3.0 release action
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
@@ -257,8 +267,8 @@ forging needs the private key — not the same secret, which is what the symmetr
 HMAC chain could never give you):
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/notari-trust-dark.svg">
-  <img src="docs/assets/notari-trust-light.svg" alt="Why the agent can't cheat: editing the CI workflow is defeated by base-branch control, planting an approver key is defeated by trust roots pinned outside the checkout, forging the verdict is defeated by the gate signature, and hiding changes behind symlinks or submodules surfaces as NEEDS_REVIEW." width="920">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-trust-dark.svg">
+  <img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-trust-light.svg" alt="Why the agent can't cheat: editing the CI workflow is defeated by base-branch control, planting an approver key is defeated by trust roots pinned outside the checkout, forging the verdict is defeated by the gate signature, and hiding changes behind symlinks or submodules surfaces as NEEDS_REVIEW." width="920">
 </picture>
 
 ```bash
@@ -364,15 +374,13 @@ that does and does not buy.
 ## Install
 
 ```bash
-uvx --from notari notari begin --help     # no install; run it once
-pipx install notari                      # or install the CLI persistently
-pip install notari                        # or into an existing venv
+uvx notari begin --help     # no install; run it once
+pipx install notari         # or install the CLI persistently
+pip install notari          # or into an existing venv
 ```
 
-The PyPI dist name is `notari` because the `notari` name is held by an unrelated
-package; the CLI binary, import path (`notari`), config dir (`~/.notari/`), env vars
-(`NOTARI_KEY`), and brand all stay `notari`. A PEP 541 reclaim for the canonical name
-is in flight (not yet granted); if it lands, `notari` becomes a transitional alias.
+One name everywhere: the PyPI dist, CLI binary, import path, config dir
+(`~/.notari/`), and env vars (`NOTARI_*`) are all `notari`.
 For a development checkout: `git clone https://github.com/manumarri-sudo/notari && cd
 notari && pip install -e .`.
 

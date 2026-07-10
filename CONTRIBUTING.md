@@ -2,7 +2,7 @@
 
 Thanks for thinking about it.
 
-Notari is a security-critical proxy. Buggy security tooling is worse than no security tooling. We bias toward fewer features, well-tested defaults, and changes that come with a regression test.
+Notari is security-critical code: a CI change-control gate plus a local tool-dispatch gate. Buggy security tooling is worse than no security tooling. We bias toward fewer features, well-tested defaults, and changes that come with a regression test.
 
 ## Setup
 
@@ -44,7 +44,7 @@ For features, please include:
 - What you were trying to do
 - What you expected to happen
 - What happened instead
-- Your `notari --version`, MCP client, and OS
+- Your `notari --version`, agent/CI environment (Claude Code, Cursor, GitHub Actions, …), and OS
 
 For dangerous-action misses, please include:
 - The exact tool name or shell command

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "notari"
-version = "0.3.0"
+version = "0.3.1"
 description = "Notari Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
 readme = "README.md"
 license = "MIT"
@@ -13,10 +13,11 @@ authors = [
     { name = "Manu Marri" },
 ]
 keywords = [
-    "mcp",
-    "model-context-protocol",
     "ai-agents",
     "agent-governance",
+    "change-control",
+    "code-review",
+    "ci-cd",
     "human-in-the-loop",
     "audit",
     "security",

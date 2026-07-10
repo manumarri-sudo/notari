@@ -188,9 +188,11 @@ All four are required; any one missing drops it back to cooperative-only:
    key path) and the gate signing key as `NOTARI_GATE_KEY` — repo/org **secrets** a
    PR cannot read or edit. (A committed `.notari/approvers/*.pub` set is a
    convenience layer used only in cooperative mode; strict ignores it entirely.)
-2. **Pin the Action to a published tag** (`uses: manumarri-sudo/notari@v0`), not
-   the PR's own checkout (`uses: ./` + `install-from-source`), so a PR can't ship
-   a modified gate that judges itself.
+2. **Pin the Action to the release commit SHA**
+   (`uses: manumarri-sudo/notari@<40-hex release SHA>` — `notari init` writes the
+   current pin, and `notari status` rejects a mutable-tag pin), not the PR's own
+   checkout (`uses: ./` + `install-from-source`), so a PR can't ship a modified
+   gate that judges itself.
 3. **Make the Status Check required** in branch protection, with admin-bypass and
    force-push disabled — otherwise a `BLOCK` is merely advisory.
 4. **Sign the contract** with the approver key (`notari begin --key`). The contract

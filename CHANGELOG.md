@@ -2,6 +2,36 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — docs and launch-surface fixes
+
+No code changes to the gate itself. This release exists mainly so the PyPI
+page carries the corrected README (the 0.3.0 PyPI description froze pre-fix
+copy, including a placeholder Action pin in the CI example).
+
+### Fixed
+
+- README install section no longer carries a stale rename note that contradicted
+  the published dist; the CI workflow example ships the real release-action pin
+  instead of a `RELEASE_SHA` placeholder; hero images use absolute URLs so they
+  render on PyPI; a terminal demo recording of the full verify → explain →
+  lessons loop is embedded.
+- SECURITY.md rewritten against the current product (CI change-control gate +
+  local tool-dispatch gate); the previous version still described the removed
+  MCP-proxy architecture. Claims tightened to what the code does: gate
+  signatures are configuration-dependent and labeled unsigned otherwise, any
+  in-scope symlink/submodule pointer change surfaces as NEEDS_REVIEW, and the
+  file-permission claim now matches `notari doctor`'s warn-only behavior.
+  Supported-versions table now says 0.3.x.
+- docs/SECURITY-MODEL.md deployment checklist now shows the SHA-pinned Action
+  form (`notari status` rejects mutable-tag pins) instead of a `@v0` example
+  the tool itself would reject.
+- CONTRIBUTING.md updated from proxy-era wording; CODE_OF_CONDUCT.md
+  (Contributor Covenant 2.1) added.
+- release.yml publish step no longer `continue-on-error` (Trusted Publishing is
+  registered; a publish failure should fail the release), and stale pre-rename
+  comments were removed. `pyproject.toml` keywords no longer lead with the
+  removed MCP-proxy surface.
+
 ## [0.3.0] — public alpha
 
 Notari Change Control: a CI/CD pull-request gate that verifies an AI-written diff

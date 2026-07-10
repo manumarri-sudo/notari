@@ -1,11 +1,11 @@
 name: release
 
 # Auto-publishes to PyPI when a GitHub release is published. Uses PyPI
-# Trusted Publishing (OIDC) so no API token lives in repo secrets. One-time
-# setup required on the PyPI side: register manumarri-sudo/notari as a
-# trusted publisher for the `notari` project with workflow `release.yml`
-# and environment `pypi`. The PyPI dist is `notari` because `notari` was
-# taken; the package, CLI binary, and config dir all remain `notari`. See:
+# Trusted Publishing (OIDC) so no API token lives in repo secrets.
+# manumarri-sudo/notari is registered as the trusted publisher for the
+# `notari` project (workflow `release.yml`, environment `pypi`) — registered
+# 2026-07-09, first publish 0.3.0. One name everywhere: dist, package, CLI
+# binary, and config dir are all `notari`. See:
 #   https://docs.pypi.org/trusted-publishers/
 
 on:
@@ -56,10 +56,9 @@ jobs:
         run: twine check dist/*
 
       - name: Publish to PyPI via Trusted Publishing
-        # Tolerated until PyPI Trusted Publishing is registered for `notari`.
-        # Without TP the OIDC handshake fails; once TP is in place this step
-        # publishes cleanly and `skip-existing: true` keeps re-runs idempotent.
-        continue-on-error: true
+        # TP is registered (first publish 0.3.0, 2026-07-09), so a publish
+        # failure now fails the release loudly — no continue-on-error, and
+        # `skip-existing: true` keeps re-runs idempotent.
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: dist/
