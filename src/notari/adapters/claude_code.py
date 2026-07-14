@@ -1267,11 +1267,11 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
     if decision.permission in ("deny", "ask"):
         human_reason = (
             f"{decision.reason}\n\n"
-            "You (the human) control this gate. From your OWN terminal:\n"
+            "--- **operator controls** (you run these in your own terminal; "
+            "the agent cannot) ---\n"
             "  notari approve --latest   release this one call (Touch ID or typed phrase)\n"
             "  notari off                pause the gate, bounded and logged\n"
-            "  notari doctor             check the gate's health\n"
-            "These are human-only: an agent's own attempt to run them is blocked."
+            "  notari doctor             check the gate's health"
         )
 
     return {
