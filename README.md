@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-mark.svg" alt="" width="34" align="left" hspace="10">
+
 # notari
 
 > **Notari** issues a signed **Change Passport** for every AI-authored pull
@@ -13,6 +15,64 @@
 > making it. **Alpha**; treat
 > [the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
 > as the source of truth over any one-line claim.
+
+## Start here: one command
+
+```bash
+uvx notari init
+```
+
+Nothing to install first. In one command, inside any git repo, that generates an
+approver keypair and a gate keypair, signs a secure-by-default perimeter, writes
+the hardened GitHub workflow (`pull_request_target`, SHA-pinned, the pull request
+checked out into a data-only directory), gitignores your private keys, and then
+prints your honest posture plus the exact steps still missing. Measured from a
+clean machine with no Python tooling configured, the CLI resolves and runs in
+about a second and a half.
+
+Prefer a persistent install? `pipx install notari` or `pip install notari`, then
+`notari init`. Either way the next two commands are the whole daily loop:
+
+```bash
+notari begin "add rate limiting" --scope "src/auth/**"   # sign what the agent may touch
+notari verify --strict                                    # in CI: PASS, NEEDS_REVIEW, or BLOCK
+```
+
+## What you actually get
+
+Four surfaces, each stated at its real strength rather than its most flattering one:
+
+**1. The gate, which is the provable boundary.** In CI, outside the agent's reach,
+every changed path is measured against a signed scope and a signed perimeter, added
+lines are scanned for 26 vendor secret patterns, and renames (both endpoints),
+mode-only changes, binaries, symlinks, submodules, and `.gitattributes` diff-hiding
+are all in the inventory rather than blind spots. There is no model in the decision
+path, so there is nothing to prompt-inject.
+
+**2. The receipt, which outlives the run.** A Change Passport (`passport.json` plus a
+PR-ready `passport.md`) that anyone re-verifies later with `notari verify-passport`,
+months on, on a different machine, without trusting this runtime or a screenshot.
+Behind it sits an HMAC-chained audit log that detects edits, insertions, and trailing
+truncation, and the passport's footer cites the exact chain entry for its run.
+
+**3. The loop, which stops the same mistake recurring.** `notari explain` turns a BLOCK
+into a per-finding fix and a paste-ready agent prompt, `notari lessons` ranks what an
+agent keeps getting wrong, and `notari teach` writes the lessons you promote into
+`CLAUDE.md`, `AGENTS.md`, or Cursor rules, so the next session starts already knowing.
+All local, all human-gated, no telemetry, and no raw code, diffs, or secret values ever
+leave your machine.
+
+**4. The guard on your laptop, which is defense-in-depth and not a hard boundary.** An
+optional `PreToolUse` hook gates the agent's tool calls as they happen (`rm -rf`,
+`git push --force`, `DROP TABLE`, `vercel --prod`, `.env` reads), critical calls need a
+single-use ten-minute approval that on macOS is hardware-attested through Touch ID on
+the Secure Enclave, and files the agent writes get an AST pass that flags
+`shutil.rmtree` and `exec(b64decode(...))` before a later `python foo.py` can run them.
+
+That fourth row is deliberately labelled: an application-layer gate can be routed
+around by a determined adversary, and the limits are enumerated in
+[the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
+rather than buried. The boundary that holds is the CI one.
 
 **New here?** Start with the
 [Quickstart](https://github.com/manumarri-sudo/notari/blob/main/docs/QUICKSTART.md)
@@ -383,18 +443,21 @@ trailing truncation, not just edits and insertions.
 
 ```bash
 notari audit verify
-# chain intact: 32332 entries verified.
+# chain intact: 72739 entries verified.
 ```
 
-That count is from ~45 days of real dogfooding on the maintainer's machine; your own
+That count is from 76 days of real dogfooding on the maintainer's machine
+(2026-05-07 to 2026-07-22, re-measured at release); your own
 log starts at one. The chain is locally tamper-evident (and optionally externally
 anchored), see [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) for exactly what
 that does and does not buy.
 
 ## Install
 
+The one-command path is at the top of this README (`uvx notari init`). The rest:
+
 ```bash
-uvx notari begin --help     # no install; run it once
+uvx notari begin --help     # no install; run any subcommand once
 pipx install notari         # or install the CLI persistently
 pip install notari          # or into an existing venv
 ```
