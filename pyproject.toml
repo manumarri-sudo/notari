@@ -40,7 +40,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic>=2.7",
+    "pydantic>=2.13.4",
     "rich>=13.7",
     "typer>=0.26.8",
     # Ed25519 attestation is the off-box root of trust for Change Control:
