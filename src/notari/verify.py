@@ -20,6 +20,7 @@ import enum
 import json
 import logging
 import os
+import posixpath
 import re
 import select
 import subprocess
@@ -82,6 +83,24 @@ def load_exceptions(root: Path) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         return []
     return [e for e in data if isinstance(e, dict)]
+
+
+def _resolve_link_target(link_path: str, target: str) -> str | None:
+    """Repo-relative path a symlink points at, or None when it leaves the tree.
+
+    `target` is the link's blob content, so it is a POSIX path relative to the
+    link's own directory (or absolute). None is returned for an empty/unreadable
+    target, an absolute target, or one that normalizes above the repo root: those
+    leave the reviewed tree entirely, so no repo glob can describe them and they
+    stay on the review path rather than blocking.
+    """
+    target = target.strip()
+    if not target or target.startswith("/"):
+        return None
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(link_path), target))
+    if resolved in (".", "..") or resolved.startswith("../"):
+        return None
+    return resolved
 
 
 # Resource ceilings. A candidate can craft an enormous diff or a huge added
@@ -1051,6 +1070,28 @@ def verify(
             f"link text [{detail}]"
         )
 
+    # A symlink whose RESOLVED target lands on a forbidden or gate-tamper surface
+    # is the same boundary crossing as renaming a file into that surface, so it
+    # BLOCKs rather than only paging a reviewer. NEEDS_REVIEW exits 0 and merges
+    # by default, which is precisely the outcome an attacker wants from
+    # `src/anything → ../../migrations`. Links that stay inside the boundary (or
+    # point somewhere the perimeter does not protect) keep the review treatment.
+    # (Security probe 2026-07-22: symlink-into-forbidden graded NEEDS_REVIEW.)
+    symlink_forbidden: list[str] = []
+    for c in symlink_changes:
+        resolved = _resolve_link_target(c["path"], c["target"])
+        if resolved is None:
+            continue
+        if any(deny_hit(resolved, g) for g in GATE_TAMPER_GLOBS) or (
+            perimeter is not None and perimeter.forbids(resolved)
+        ):
+            symlink_forbidden.append(f"{c['path']} → {c['target']} (resolves to {resolved})")
+    if symlink_forbidden:
+        reasons.append(
+            f"{len(symlink_forbidden)} symlink(s) resolve onto a forbidden surface: "
+            + "; ".join(symlink_forbidden[:5])
+        )
+
     # Homoglyph / mixed-script paths BLOCK. A changed path whose segment mixes
     # scripts, or is a wholly-non-Latin word that reads as ASCII, has no benign
     # reason to exist in a code path, and a broad allow-scope would admit it
@@ -1155,6 +1196,7 @@ def verify(
         or repo_blocks
         or scan_blocks
         or suspicious
+        or symlink_forbidden
     )
     if block:
         verdict = Verdict.BLOCK

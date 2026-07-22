@@ -32,7 +32,6 @@ from notari.touchid import (
     is_available,
 )
 
-
 # Captured BEFORE the autouse fixture patches it, so helper-contract tests can
 # exercise the real translation logic against a stub executable.
 _REAL_AUTHENTICATE_VIA_HELPER = touchid_mod._authenticate_via_helper
@@ -128,7 +127,9 @@ def test_touchid_result_is_immutable() -> None:
         (7, "", False, "error:7"),  # unknown code, empty stdout -> mapped fallback
     ],
 )
-def test_helper_exit_code_contract(monkeypatch, tmp_path, exit_code, stdout, want_success, want_reason):
+def test_helper_exit_code_contract(
+    monkeypatch, tmp_path, exit_code, stdout, want_success, want_reason
+):
     """The compiled helper communicates via exit code + one-word stdout;
     _authenticate_via_helper must translate both faithfully. Uses a stub
     executable so no real dialog can appear."""

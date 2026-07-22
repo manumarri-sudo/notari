@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from notari import contract as contract_mod
+from notari import perimeter as perimeter_mod
 from notari import verify as verify_mod
 from notari.verify import Verdict
 
@@ -61,6 +62,80 @@ def test_added_symlink_is_needs_review_with_target(tmp_path: Path) -> None:
     assert result.verdict is Verdict.NEEDS_REVIEW, result.reasons
     assert any("symlink" in r for r in result.reasons), result.reasons
     assert any("../secret/creds" in r for r in result.reasons), result.reasons
+
+
+def test_symlink_onto_forbidden_surface_blocks(tmp_path: Path) -> None:
+    """A link aimed at a forbidden surface is the same crossing as renaming a
+    file into it, so it BLOCKs rather than merging on a green NEEDS_REVIEW."""
+    _init_repo(tmp_path)
+    (tmp_path / "migrations").mkdir()
+    (tmp_path / "migrations" / "0001.sql").write_text("select 1;\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "migrations")
+    per = perimeter_mod.default_perimeter(
+        allowed_paths=("src/**",), forbidden_paths=("migrations/**",)
+    )
+    per.write(tmp_path)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "perimeter")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    (tmp_path / "src" / "link").symlink_to("../migrations")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "add redirect")
+
+    result = verify_mod.verify(
+        contract=_contract(base, "symlink-forbidden", allowed=("src/**",)),
+        root=tmp_path,
+        perimeter=per,
+        strict=False,
+    )
+
+    assert result.verdict is Verdict.BLOCK, result.reasons
+    assert any("resolve onto a forbidden surface" in r for r in result.reasons), result.reasons
+    assert any("migrations" in r for r in result.reasons), result.reasons
+
+
+def test_symlink_onto_gate_workflow_blocks(tmp_path: Path) -> None:
+    """Gate-tamper surfaces are protected with or without a perimeter."""
+    _init_repo(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "src" / "wf").symlink_to("../.github/workflows")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "link at the workflow dir")
+
+    result = verify_mod.verify(
+        contract=_contract(base, "symlink-gate", allowed=("src/**",)),
+        root=tmp_path,
+        strict=False,
+    )
+
+    assert result.verdict is Verdict.BLOCK, result.reasons
+
+
+def test_symlink_inside_the_boundary_still_only_reviews(tmp_path: Path) -> None:
+    """Guard against over-firing: a link that stays inside the approved scope
+    keeps the review treatment instead of failing the build."""
+    _init_repo(tmp_path)
+    per = perimeter_mod.default_perimeter(
+        allowed_paths=("src/**",), forbidden_paths=("migrations/**",)
+    )
+    per.write(tmp_path)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "perimeter")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    (tmp_path / "src" / "alias.txt").symlink_to("a.txt")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "in-boundary link")
+
+    result = verify_mod.verify(
+        contract=_contract(base, "symlink-inside", allowed=("src/**",)),
+        root=tmp_path,
+        perimeter=per,
+        strict=False,
+    )
+    assert result.verdict is Verdict.NEEDS_REVIEW, result.reasons
 
 
 def test_ordinary_in_scope_file_still_passes(tmp_path: Path) -> None:

@@ -4558,9 +4558,7 @@ def approve_token(
                     f"[red]biometric refused[/red]: {res.reason}\n"
                     "  approval REVOKED. agent retry will not be allowed.",
                 )
-                _emit_approve_audit(
-                    ev.APPROVE_BIOMETRIC_DENY, token, ap.tool_name, res.reason
-                )
+                _emit_approve_audit(ev.APPROVE_BIOMETRIC_DENY, token, ap.tool_name, res.reason)
                 raise typer.Exit(code=2)
             # else: sensor could not present (timeout/not_available/error) -
             # fall through to the typed-phrase challenge below.
@@ -4570,9 +4568,7 @@ def approve_token(
         # denied before reaching this CLI, so only a human at a real terminal
         # gets here. This is what makes approval work on the common ad-hoc-signed
         # install where Touch ID can never draw a sheet.
-        if not confirmed and _human_tty_challenge(
-            console, f"approve {ap.tool_name}"
-        ):
+        if not confirmed and _human_tty_challenge(console, f"approve {ap.tool_name}"):
             confirmed = True
             biometric_event = ev.APPROVE_BIOMETRIC_OK
             biometric_reason = "tty_challenge"
@@ -4586,9 +4582,7 @@ def approve_token(
                 "  Approve from a Terminal in your own login session, or pass\n"
                 "  --no-biometric to opt into typed-token-only approval.",
             )
-            _emit_approve_audit(
-                ev.APPROVE_BIOMETRIC_DENY, token, ap.tool_name, "not_available"
-            )
+            _emit_approve_audit(ev.APPROVE_BIOMETRIC_DENY, token, ap.tool_name, "not_available")
             raise typer.Exit(code=2)
     else:
         biometric_event = ev.APPROVE_BIOMETRIC_SKIPPED
@@ -4600,8 +4594,7 @@ def approve_token(
     # token is never left approvable.
     if store.approve(token) is None:
         console.print(
-            "[red]approval no longer resolvable (expired or consumed during "
-            "confirmation).[/red]",
+            "[red]approval no longer resolvable (expired or consumed during confirmation).[/red]",
         )
         raise typer.Exit(code=1)
 

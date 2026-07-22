@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import functools
 import hashlib
-import os
 import subprocess
 import sys
 import threading
@@ -100,22 +99,35 @@ def _helper_path() -> Path | None:
         if not _HELPER_SOURCE.exists():
             return None
         want = _source_hash()
-        if _HELPER_BIN.exists() and _HELPER_HASH.exists() and _HELPER_HASH.read_text().strip() == want:
+        if (
+            _HELPER_BIN.exists()
+            and _HELPER_HASH.exists()
+            and _HELPER_HASH.read_text().strip() == want
+        ):
             return _HELPER_BIN
         _HELPER_DIR.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             [
-                "clang", "-O2", "-fobjc-arc",
-                "-framework", "Foundation",
-                "-framework", "LocalAuthentication",
-                "-o", str(_HELPER_BIN), str(_HELPER_SOURCE),
+                "clang",
+                "-O2",
+                "-fobjc-arc",
+                "-framework",
+                "Foundation",
+                "-framework",
+                "LocalAuthentication",
+                "-o",
+                str(_HELPER_BIN),
+                str(_HELPER_SOURCE),
             ],
             capture_output=True,
             timeout=60,
         )
         if proc.returncode != 0 or not _HELPER_BIN.exists():
             return None
-        os.chmod(_HELPER_BIN, 0o755)
+        # 0o700: only the owner runs the approval helper. Nothing about it needs
+        # to be group- or world-executable, and a narrower mode keeps a shared
+        # machine from invoking another user's biometric prompt path.
+        _HELPER_BIN.chmod(0o700)
         _HELPER_HASH.write_text(want)
         return _HELPER_BIN
     except (OSError, subprocess.SubprocessError):
@@ -141,7 +153,9 @@ def _authenticate_via_helper(reason: str, timeout_s: float) -> TouchIDResult | N
         return TouchIDResult(False, "timeout")
     except (OSError, subprocess.SubprocessError):
         return None
-    reason_out = (proc.stdout or "").strip() or _HELPER_EXIT_REASONS.get(proc.returncode, f"error:{proc.returncode}")
+    reason_out = (proc.stdout or "").strip() or _HELPER_EXIT_REASONS.get(
+        proc.returncode, f"error:{proc.returncode}"
+    )
     return TouchIDResult(proc.returncode == 0, reason_out)
 
 

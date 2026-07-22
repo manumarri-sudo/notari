@@ -2,6 +2,44 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - a link is a path too
+
+The local gate gets a Touch ID path that actually presents on a normal
+`uv`/`pip` install, the approval flow gets an explicit auth ladder, and a
+pre-launch security probe closed the one boundary crossing that was still
+merging on a green check.
+
+### Fixed (security)
+
+- **A symlink whose resolved target lands on a forbidden or gate-tamper surface
+  now BLOCKs.** Previously such a link was reported accurately but graded
+  NEEDS_REVIEW, which exits 0 and merges by default, so `src/anything ->
+  ../../migrations` produced a green check even in strict mode while renaming a
+  file into that same directory blocked. A link into a protected path is the same
+  boundary crossing as a rename into it and is now treated as one. Links that
+  stay inside the boundary, point outside the repository, or aim at a path the
+  perimeter does not protect keep the review treatment, so the change does not
+  over-fire. Found by an adversarial probe run against a signed perimeter,
+  2026-07-22.
+- **The Touch ID helper is installed 0o700, not 0o755.** Nothing about the
+  approval helper needs to be group- or world-executable.
+- **Dependency lock refreshed** to clear two advisories carried by the pinned
+  development environment (`cryptography` GHSA-537c-gmf6-5ccf, `msgpack`
+  GHSA-6v7p-g79w-8964). Released packages already resolved above both floors;
+  this brings the committed lockfile in line.
+
+### Added
+
+- **Touch ID that presents under uv/pip installs.** A vendored Objective-C helper
+  (source-hash pinned, compiled on first use) owns the LocalAuthentication sheet,
+  because the python-build-standalone interpreter uv installs carries no team
+  identifier and could never draw the dialog itself.
+- **An explicit approval auth ladder**: real biometric first, a typed-phrase TTY
+  challenge when the sensor cannot present, and a refusal when there is no
+  controlling terminal at all unless `--no-biometric` is passed and logged.
+- **Sensitive-directory writes ask even in bypass mode**, so the one-off escape
+  hatch does not silently cover the paths that matter most.
+
 ## [0.3.4] - the first run actually blocks something
 
 An external tri-lens review (code, product, market) found that the default

@@ -9,8 +9,8 @@ authors:
 repository-code: https://github.com/manumarri-sudo/notari
 url: https://github.com/manumarri-sudo/notari
 license: MIT
-version: 0.3.0
-date-released: "2026-07-09"
+version: 0.4.0
+date-released: "2026-07-23"
 keywords:
   - ai-agents
   - agent-governance
