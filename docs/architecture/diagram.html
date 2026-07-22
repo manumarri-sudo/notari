@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notari: how the change control gate works, and where its boundary is</title>
+<style>
+  :root {
+    --paper:  #f7f5f0;
+    --sheet:  #ffffff;
+    --ink:    #14181d;
+    --muted:  #6f6a60;
+    --line:   #ddd7ca;
+    --seal:   #c0362c;   /* block / forbidden */
+    --verify: #1f7a4d;   /* pass / signed */
+    --amber:  #9a6700;   /* needs review */
+    --trust:  #0b4f9e;   /* trusted plane, outside the agent's reach */
+    --sans: -apple-system, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1500px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    padding: 44px 52px 56px 52px;
+    background-image:
+      linear-gradient(rgba(20,24,29,.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(20,24,29,.022) 1px, transparent 1px);
+    background-size: 34px 34px;
+  }
+
+  h1 { font-size: 30px; letter-spacing: -.7px; }
+  .deck {
+    margin-top: 10px; font-size: 15.5px; line-height: 1.6; color: #4a4f56;
+    max-width: 1120px;
+  }
+  .deck b { color: var(--ink); font-weight: 600; }
+  .stamp-line {
+    margin-top: 12px; font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  }
+
+  h2 {
+    font-size: 12px; letter-spacing: 2.4px; text-transform: uppercase;
+    color: var(--muted); margin: 40px 0 16px 0;
+    display: flex; align-items: center; gap: 14px;
+  }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  /* ---------- lanes ---------- */
+  .lanes { display: grid; grid-template-columns: 1fr 46px 1fr 46px 1.25fr; align-items: stretch; }
+  .lane { display: flex; flex-direction: column; }
+  .lane-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .lane-n {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    background: var(--ink); color: var(--paper); border-radius: 5px; padding: 2px 7px;
+  }
+  .lane-t { font-size: 15px; font-weight: 700; }
+  .lane-sub { font-size: 12.5px; color: var(--muted); margin-left: auto; font-family: var(--mono); }
+
+  .card {
+    background: var(--sheet); border: 1.5px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; box-shadow: 3px 3px 0 rgba(20,24,29,.045);
+    flex: 1; display: flex; flex-direction: column; gap: 11px;
+  }
+  .card.trusted { border-color: var(--trust); box-shadow: 3px 3px 0 rgba(11,79,158,.10); }
+  .card.untrusted { border-style: dashed; background: #fbfaf7; }
+
+  .t { font-size: 14px; font-weight: 700; }
+  .cmd {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    background: #f4f2ed; border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 9px; word-break: break-word;
+  }
+  .cmd .flag { color: var(--trust); }
+  .note { font-size: 12.5px; line-height: 1.55; color: #4a4f56; }
+  .note b { font-weight: 600; color: var(--ink); }
+  .muted-note { font-size: 12px; line-height: 1.5; color: var(--muted); }
+
+  ol.steps { list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 7px; }
+  ol.steps li {
+    counter-increment: s; font-size: 12.5px; line-height: 1.5;
+    padding-left: 26px; position: relative;
+  }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 1px;
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: rgba(11,79,158,.10); color: var(--trust);
+    display: flex; align-items: center; justify-content: center;
+  }
+  ol.steps code, .note code, .muted-note code, li code {
+    font-family: var(--mono); font-size: 11.5px;
+    background: #f4f2ed; border-radius: 4px; padding: 1px 4px;
+  }
+
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: #b8b1a3; font-size: 22px; padding-top: 30px;
+  }
+
+  /* ---------- verdicts ---------- */
+  .verdicts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px; }
+  .verdict { border-radius: 10px; padding: 11px 14px; border: 1.5px solid; background: var(--sheet); }
+  .verdict .v { font-family: var(--mono); font-size: 17px; font-weight: 700; letter-spacing: .6px; }
+  .verdict .d { font-size: 12px; color: #4a4f56; margin-top: 3px; line-height: 1.45; }
+  .vp { border-color: rgba(31,122,77,.45); } .vp .v { color: var(--verify); }
+  .vr { border-color: rgba(154,103,0,.45); }  .vr .v { color: var(--amber); }
+  .vb { border-color: rgba(192,54,44,.45); }  .vb .v { color: var(--seal); }
+
+  /* ---------- output row ---------- */
+  .outrow { display: grid; grid-template-columns: 1.15fr 46px 1fr 46px 1fr; align-items: stretch; }
+
+  /* ---------- safety grid ---------- */
+  .safety { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .guard {
+    background: var(--sheet); border: 1.5px solid var(--line); border-left: 4px solid var(--verify);
+    border-radius: 10px; padding: 13px 16px; box-shadow: 3px 3px 0 rgba(20,24,29,.04);
+  }
+  .guard .g { font-size: 13.5px; font-weight: 700; margin-bottom: 5px; }
+  .guard .w { font-size: 12.5px; line-height: 1.55; color: #4a4f56; }
+  .guard .src { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 7px; }
+
+  /* ---------- honesty box ---------- */
+  .honest {
+    margin-top: 18px; border: 1.5px dashed #b9b2a4; border-radius: 12px;
+    background: #f2f0ea; padding: 16px 20px;
+  }
+  .honest .h { font-size: 13.5px; font-weight: 700; margin-bottom: 8px; }
+  .honest ul { list-style: none; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 26px; }
+  .honest li { font-size: 12.5px; line-height: 1.55; color: #4a4f56; padding-left: 15px; position: relative; }
+  .honest li::before { content: "\00d7"; position: absolute; left: 0; color: var(--seal); font-weight: 700; }
+  .honest .tail { margin-top: 11px; font-size: 12.5px; color: #4a4f56; line-height: 1.55; }
+
+  footer {
+    margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    display: flex; justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<h1>
+  <svg width="30" height="30" viewBox="0 0 48 48" fill="none" style="vertical-align:-5px;margin-right:6px">
+    <rect x="5" y="5" width="38" height="38" rx="11" stroke="#14181d" stroke-width="3.2"/>
+    <path d="M24 16.5 L31.5 24 L24 31.5 L16.5 24 Z" fill="#c0362c"/>
+  </svg>Notari: how the gate works, and where its boundary is</h1>
+<p class="deck">
+  A human signs the boundary <b>once</b>. The agent then writes whatever it writes, and in CI,
+  outside the agent's reach, Notari measures the diff against that signed boundary and issues a
+  <b>Change Passport</b>: a receipt anyone can re-verify later without trusting Notari's runtime.
+  There is no model anywhere in the verdict, so the verdict cannot be prompt-injected, and every
+  box below corresponds to a command, a file, or a module that exists in the repository today.
+</p>
+<p class="stamp-line">notari 0.4.0 · alpha · sources: src/notari/{contract,verify,policy,secrets,passport,audit}.py · docs/SECURITY-MODEL.md</p>
+
+<h2>The path a change takes</h2>
+<div class="lanes">
+
+  <div class="lane">
+    <div class="lane-head"><span class="lane-n">1</span><span class="lane-t">Human</span><span class="lane-sub">once per task</span></div>
+    <div class="card">
+      <div class="t">Sign the boundary</div>
+      <div class="cmd">notari begin "add rate limiting"<br>
+        <span class="flag">--scope</span> src/auth/**<br>
+        <span class="flag">--approved-by</span> alice <span class="flag">--key</span> approver.pem<br>
+        <span class="flag">--expires-in</span> 7 <span class="flag">--repo</span> owner/repo</div>
+      <div class="note">
+        Writes <code>.notari/contract.json</code> plus a detached <code>.sig</code>: the approved task,
+        the allowed paths, the base commit, and a contract id.
+      </div>
+      <div class="note">
+        <code>--repo</code> binds the approval to one repository so a signed contract cannot be replayed
+        elsewhere, and <code>--expires-in</code> gives it a human-set deadline rather than a heuristic.
+      </div>
+      <div class="muted-note">
+        The standing perimeter of forbidden surfaces is signed separately and once, with
+        <code>notari guard</code>. The approver's private key never has to leave that machine.
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#8594;</div>
+
+  <div class="lane">
+    <div class="lane-head"><span class="lane-n">2</span><span class="lane-t">AI agent</span><span class="lane-sub">untrusted</span></div>
+    <div class="card untrusted">
+      <div class="t">Writes the diff, opens the PR</div>
+      <div class="note">
+        Claude Code, Codex, Cursor, Copilot, or a human in a hurry. Notari assumes nothing about
+        intent here, because the check does not depend on it.
+      </div>
+      <div class="note"><b>What it cannot do from inside this lane:</b></div>
+      <ol class="steps">
+        <li>Edit the workflow that judges it, because <code>pull_request_target</code> runs the trusted
+            workflow from the base branch, not from the pull request.</li>
+        <li>Forge the contract or the perimeter, because both carry Ed25519 signatures it has no key for.</li>
+        <li>Weaken a strict verdict with a waiver, because <code>.notari/exceptions.json</code> is ignored
+            entirely under <code>--strict</code>.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="arrow">&#8594;</div>
+
+  <div class="lane">
+    <div class="lane-head"><span class="lane-n">3</span><span class="lane-t">CI</span><span class="lane-sub">outside the agent's reach</span></div>
+    <div class="card trusted">
+      <div class="t">notari verify --strict</div>
+      <div class="note">Deterministic, in this order, every run:</div>
+      <ol class="steps">
+        <li>Build the authoritative changed-path inventory from
+            <code>git diff --name-status -z --find-renames</code>, keeping <b>both ends of a rename</b>
+            and including binary and mode-only changes.</li>
+        <li>Match every changed path against the signed scope.</li>
+        <li>Scan <b>added lines only</b> for the 26 vendor secret patterns in <code>secrets.py</code>.</li>
+        <li>Classify sensitive surfaces: CI and workflow files, lockfiles, test deletions, and git
+            configuration such as <code>.gitattributes</code> that can control diff visibility.</li>
+        <li>Apply logged exceptions, which strict mode discards.</li>
+        <li>Compose the verdict and chain a <code>verification.run</code> event into the audit log.</li>
+      </ol>
+      <div class="muted-note">
+        Same diff, same contract, same perimeter, same keys, same verdict, explainable line by line.
+        The only clock it consults is the expiry a human set.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="verdicts">
+  <div class="verdict vp"><div class="v">PASS</div><div class="d">In scope, no secrets, no forbidden surface. Exits 0, the build goes green.</div></div>
+  <div class="verdict vr"><div class="v">NEEDS_REVIEW</div><div class="d">Something a human should look at. Exits 0, so review is surfaced without stopping the pipeline.</div></div>
+  <div class="verdict vb"><div class="v">BLOCK</div><div class="d">Out of bounds or a secret in an added line. Exits non-zero, CI fails.</div></div>
+</div>
+
+<h2>What you are left holding</h2>
+<div class="outrow">
+
+  <div class="lane">
+    <div class="card">
+      <div class="t">The Change Passport</div>
+      <div class="note">
+        <code>verify</code> writes <code>passport.json</code> for tooling and <code>passport.md</code> for
+        the pull request. The markdown footer cites the <code>verification.run</code> audit MAC, so the
+        document traces back to the tamper-evident chain instead of asking you to trust it.
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#8594;</div>
+
+  <div class="lane">
+    <div class="card">
+      <div class="t">Anyone can re-check it</div>
+      <div class="cmd">notari verify-passport passport.json</div>
+      <div class="note">
+        Re-verifies the verdict <b>and</b> the signature, months later, on a different machine,
+        without trusting Notari's runtime or a screenshot. A forged PASS fails the signature.
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#8594;</div>
+
+  <div class="lane">
+    <div class="card">
+      <div class="t">The mistake becomes a rule</div>
+      <div class="cmd">notari explain</div>
+      <div class="note">
+        Every finding comes with a fix in plain language, and a repeated mistake gets promoted into
+        <code>CLAUDE.md</code> or <code>AGENTS.md</code> as a short rule, so the next session starts
+        already knowing it. The gate catches; the loop stops the catch from repeating.
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>How it keeps your work safe</h2>
+<div class="safety">
+  <div class="guard">
+    <div class="g">The boundary is signed, not configured</div>
+    <div class="w">Scope and perimeter carry Ed25519 signatures, so an agent that edits the config it
+      is judged by changes nothing about the verdict.</div>
+    <div class="src">contract.py · perimeter.py</div>
+  </div>
+  <div class="guard">
+    <div class="g">No model in the decision path</div>
+    <div class="w">The verdict is compiled rules over a diff, so there is no prompt to inject and no
+      judgment to talk out of its position.</div>
+    <div class="src">policy.py · verify.py</div>
+  </div>
+  <div class="guard">
+    <div class="g">The record is tamper-evident</div>
+    <div class="w">Every decision chains into an HMAC-linked audit log, including everything allowed
+      while the gate was paused, so an off-window is still on the record.</div>
+    <div class="src">audit.py · journal.py</div>
+  </div>
+  <div class="guard">
+    <div class="g">The judge sits outside the defendant</div>
+    <div class="w">CI runs the workflow from the base branch, so the pull request cannot rewrite the
+      check that is about to read it.</div>
+    <div class="src">action.yml · docs/secure-workflow.yml</div>
+  </div>
+  <div class="guard">
+    <div class="g">Approvals cannot be replayed</div>
+    <div class="w">A contract is bound to one repository and carries an expiry, so yesterday's yes
+      cannot be reused on another repo or three months later.</div>
+    <div class="src">contract.py</div>
+  </div>
+  <div class="guard">
+    <div class="g">Secrets are caught where they enter</div>
+    <div class="w">26 vendor patterns are matched against added lines, which is the moment a
+      credential actually becomes public.</div>
+    <div class="src">secrets.py</div>
+  </div>
+</div>
+
+<div class="honest">
+  <div class="h">What it does not do, stated plainly because a security claim without limits is marketing</div>
+  <ul>
+    <li>It does not judge whether the code is correct, safe, or good.</li>
+    <li>It does not see system calls, only the diff and the gated tool calls.</li>
+    <li>It does not see what an interpreter does once it is already running.</li>
+    <li>It does not see network bytes leaving the machine.</li>
+    <li>The optional local hook is defense in depth, not a hard boundary.</li>
+    <li>The commit-status source is spoof-detectable, not yet spoof-resistant.</li>
+  </ul>
+  <div class="tail">
+    Eleven of twelve documented bypass shapes BLOCK against a freshly signed perimeter, and the
+    twelfth is the known line-split secret limit, which is published rather than hidden. Run them
+    yourself with <code>bash examples/bypass_probes.sh</code>, and read
+    <code>docs/SECURITY-MODEL.md</code> before trusting any one-line claim here.
+  </div>
+</div>
+
+<footer>
+  <span>docs/architecture/diagram.html · regenerate after any change to the verify path</span>
+  <span>notari 0.4.0 · alpha</span>
+</footer>
+
+</body>
+</html>

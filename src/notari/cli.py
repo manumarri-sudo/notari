@@ -1242,7 +1242,13 @@ def init_cmd(
         wf.write_text(_CONSUMER_WORKFLOW)
 
     out.print(f"[green]✓[/green] perimeter [bold]{per.perimeter_id}[/bold] signed")
-    out.print(f"[green]✓[/green] keys in [bold]{keys_dir}[/bold] (gitignored) · workflow written")
+    # Relative to the repo root, because an absolute path in a deep checkout wraps
+    # mid-path and the `gh secret set` lines below stop being copy-pasteable.
+    try:
+        keys_shown = keys_dir.relative_to(root)
+    except ValueError:  # pragma: no cover - keys_dir is always under root today
+        keys_shown = keys_dir
+    out.print(f"[green]✓[/green] keys in [bold]{keys_shown}[/bold] (gitignored) · workflow written")
     if seeded:
         shown = ", ".join(seeded[:6]) + (" ..." if len(seeded) > 6 else "")
         out.print(
@@ -1262,9 +1268,13 @@ def init_cmd(
         "[dim](a key on this laptop is readable by the agent, these move trust off-box):[/dim]"
     )
     out.print("  1. Set CI secrets, then delete the local private keys:")
-    out.print(f"     [dim]gh secret set NOTARI_GATE_KEY < {keys_dir / 'gate.pem'}[/dim]")
     out.print(
-        f"     [dim]gh secret set NOTARI_APPROVER_PUBKEYS < {keys_dir / 'approver.pub'}[/dim]"
+        f"     [dim]gh secret set NOTARI_GATE_KEY < {keys_shown / 'gate.pem'}[/dim]",
+        soft_wrap=True,
+    )
+    out.print(
+        f"     [dim]gh secret set NOTARI_APPROVER_PUBKEYS < {keys_shown / 'approver.pub'}[/dim]",
+        soft_wrap=True,
     )
     out.print("     [dim](better: keep the approver key on a YubiKey/HSM, never on disk)[/dim]")
     out.print(
