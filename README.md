@@ -24,6 +24,14 @@
 exactly the feedback this alpha exists for:
 [open an issue](https://github.com/manumarri-sudo/notari/issues).
 
+**Want to attack it first?** `bash examples/bypass_probes.sh` runs twelve bypass
+shapes against a freshly signed perimeter and prints the verdict for each:
+rename into a forbidden path, mode-only change, case variant, a secret hidden
+behind a `.gitattributes -diff` entry, an agent widening its own signed
+contract, and more. Eleven BLOCK; the twelfth is the documented line-split
+secret limit. A thirteenth shape that earns an undeserved PASS is the single
+most useful thing you can send.
+
 <!-- mcp-name: io.github.manumarri-sudo/notari -->
 
 [![PyPI](https://img.shields.io/pypi/v/notari.svg)](https://pypi.org/project/notari/)
@@ -217,7 +225,7 @@ jobs:
           persist-credentials: false
       # Pin to the release commit SHA, not a mutable tag, `notari status`
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
-      - uses: manumarri-sudo/notari@2a38304891b6f3ec96a777f186bb02dfb7d4b664  # 0.3.4 release action
+      - uses: manumarri-sudo/notari@a9055d7b5c53e21b10e314ecc479a43934f197f9  # 0.4.0 release action
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
