@@ -66,6 +66,6 @@
 <text x="32" y="301" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#1f2328" text-anchor="start" opacity="1.0">Change Passport</text>
 <text x="32" y="321" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="normal" fill="#656d76" text-anchor="start" opacity="1.0">every verdict is signed by the gate key into a tamper-evident record</text>
 <text x="560" y="301" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="normal" fill="#0969da" text-anchor="start" opacity="1.0">notari verify-passport passport.json</text>
-<text x="560" y="321" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="normal" fill="#656d76" text-anchor="start" opacity="1.0">any reviewer re-checks the verdict; a forged PASS fails the signature</text>
+<text x="560" y="321" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="normal" fill="#656d76" text-anchor="start" opacity="1.0">any reviewer re-checks it; a forged PASS fails the signature</text>
 <line x1="724" y1="246" x2="500" y2="272" stroke="#0969da" stroke-width="1.5" marker-end="url(#arracc)" stroke-dasharray="4 3"/>
 </svg>
