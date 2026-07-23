@@ -285,3 +285,84 @@ def test_strict_pull_request_with_opt_in(repo: tuple[Path, dict[str, str]]) -> N
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "candidate-controlled" in (proc.stdout + proc.stderr)
+
+
+def test_symlinked_passport_target_is_not_followed_outside_checkout(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Red-team finding 1: a PR commits .notari/passport.json as a symlink to a
+    file OUTSIDE the checkout. The wrapper must not follow it (which would let a
+    PR overwrite a runner file from the trusted job); it replaces the symlink
+    with a real file in place and leaves the victim untouched."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("DO NOT OVERWRITE")
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    # Out-of-scope change so verify produces a real (BLOCK) passport to publish.
+    (root / "PAYLOAD.txt").write_text("x\n")
+    notari_dir = root / ".notari"
+    notari_dir.mkdir(exist_ok=True)
+    # The attack: passport.json is a symlink pointing at the outside victim.
+    link = notari_dir / "passport.json"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(victim)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        capture_output=True,
+        text=True,
+    )
+    # The victim outside the checkout is untouched...
+    assert victim.read_text() == "DO NOT OVERWRITE", proc.stderr
+    # ...and the published passport is a REAL file inside .notari, not the symlink.
+    published = notari_dir / "passport.json"
+    assert not published.is_symlink(), "symlink must be replaced by a real file"
+    assert json.loads(published.read_text())["verdict"] == "BLOCK"
+
+
+def test_symlinked_publish_dir_is_refused(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """A PR makes .notari itself a symlink to an outside dir. The wrapper must
+    refuse to publish rather than write through it."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")
+    # The publish dir (separate from the real .notari contract dir) is a symlink
+    # to a dir outside the checkout.
+    (root / "pubout").symlink_to(outside)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "pubout"},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "symlink" in (proc.stdout + proc.stderr).lower()
+    # Nothing was written into the outside dir.
+    assert not (outside / "passport.json").exists()

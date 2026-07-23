@@ -205,9 +205,40 @@ echo "Notari verdict: $VERDICT ($SAFE_REASONS)"
 
 # 4. Publish the verified passport to the repo-visible dir for humans/tooling.
 #    This is a copy of the artifact we already trusted, not the source of truth.
+#
+#    SECURITY (red-team 2026-07-22, finding 1): PUBLISH_DIR is inside the
+#    candidate checkout (_pr_checkout/.notari), and .notari is excluded from
+#    scope and symlink scanning, so a PR can commit a symlink here that a naive
+#    `cp` / `>` would FOLLOW to overwrite a runner file OUTSIDE the checkout. We
+#    refuse a symlinked publish dir, and replace any symlink AT each target with
+#    a real file before writing, so the write lands in the intended directory
+#    and can never be redirected out of it.
+if [[ -L "$PUBLISH_DIR" ]]; then
+  echo "notari: refusing to publish into symlinked '$PUBLISH_DIR' (finding 1)" >&2
+  exit 1
+fi
 mkdir -p "$PUBLISH_DIR"
-cp "$PASSPORT_JSON" "$PUBLISH_DIR/passport.json"
-[[ -f "$PASSPORT_MD" ]] && cp "$PASSPORT_MD" "$PUBLISH_DIR/passport.md"
+# Extra defense: the resolved publish dir must stay inside the current tree.
+_pub_real="$(cd "$PUBLISH_DIR" 2>/dev/null && pwd -P)" || {
+  echo "notari: cannot resolve publish dir '$PUBLISH_DIR'" >&2
+  exit 1
+}
+case "$_pub_real/" in
+  "$(pwd -P)/"*) : ;;  # inside the working tree, ok
+  *)
+    echo "notari: refusing to publish outside the checkout ('$_pub_real')" >&2
+    exit 1
+    ;;
+esac
+
+# Replace a symlink target with a real file before writing (rm -f unlinks the
+# symlink itself, never its target), so cp/redirect cannot follow it out.
+notari_safe_put() { # $1=src $2=dest
+  [[ -L "$2" ]] && rm -f "$2"
+  cp "$1" "$2"
+}
+notari_safe_put "$PASSPORT_JSON" "$PUBLISH_DIR/passport.json"
+[[ -f "$PASSPORT_MD" ]] && notari_safe_put "$PASSPORT_MD" "$PUBLISH_DIR/passport.md"
 
 # 5. Step output (so later steps / the job can branch on the verdict).
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -283,6 +314,9 @@ PY
   # Record the SHA + MAC we just posted so `notari verify-passport` can
   # cross-check that the status check on this commit was the one Notari wrote,
   # not a spoof posted by an injected workflow on the same context.
+  # Same symlink-follow defense as the passport writes above: unlink any symlink
+  # at the target so the redirect cannot be pointed outside the checkout.
+  [[ -L "$PUBLISH_DIR/status-fingerprint" ]] && rm -f "$PUBLISH_DIR/status-fingerprint"
   printf 'sha=%s\nmac=%s\ncontext=%s\nstate=%s\n' \
     "$STATUS_SHA" "$SAFE_MAC" "$STATUS_CONTEXT" "$STATE" \
     >"$PUBLISH_DIR/status-fingerprint"
