@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from notari.adapters.cursor import (
     _normalize_input,
     decide,
@@ -234,3 +236,29 @@ def test_install_wires_all_three_gate_events(tmp_path: Path) -> None:
     assert "beforeShellExecution" in data["hooks"]
     assert "beforeMCPExecution" in data["hooks"]
     assert "beforeReadFile" in data["hooks"]
+
+
+def test_main_fails_closed_when_the_gate_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Red-team finding 10: a crash inside the Cursor hook must DENY, not allow.
+
+    A broken gate that fail-opens is worse than no gate, and `deny` (not `ask`)
+    because Cursor's Auto-Run allow-list can silently override an ask.
+    """
+    import io
+
+    import notari.adapters.cursor as cursor
+
+    monkeypatch.setattr(cursor, "run_hook", _boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(tmp_path)})))
+
+    rc = cursor.main()
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["permission"] == "deny"
+    assert "fails closed" in out["agent_message"]
+
+
+def _boom(*_a: object, **_k: object) -> dict[str, object]:
+    raise RuntimeError("simulated gate crash")

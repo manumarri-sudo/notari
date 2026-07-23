@@ -518,12 +518,30 @@ def main() -> int:
         with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
             response = run_hook(stdin_text, audit=audit)
     except Exception as e:
-        # NEVER crash the hook - Cursor would surface the error to the
-        # agent, which would interpret it as "the call is fine."
+        # Fail CLOSED (security red-team 2026-07-22, finding 10). A crash in the
+        # gate machinery must never become an allow: a broken gate that fail-opens
+        # is worse than no gate. We still must not let the hook PROCESS die (Cursor
+        # would surface the raw error to the agent as "the call is fine"), so we
+        # return a well-formed DENY. `deny` not `ask`, because Cursor's Auto-Run
+        # allow-list can silently override an `ask` (see the module header).
         response = {
-            "permission": "allow",
-            "agent_message": f"notari: hook crashed (bug, fail-open): {e}",
+            "permission": "deny",
+            "agent_message": (
+                f"notari: gate crashed and fails closed (bug): {e}. "
+                "Run `notari doctor`; the operator can `notari off` to proceed."
+            ),
         }
+        # Best-effort record of the fail-closed decision, so a crashing gate is
+        # still on the audit trail. Suppressed because the crash may BE the audit
+        # path, and a logging failure must not turn the deny back into a crash.
+        with contextlib.suppress(Exception):
+            with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
+                audit.emit(
+                    event_type="gate.crash.failclosed",
+                    session_id="",
+                    risk="critical",
+                    payload={"error": f"{type(e).__name__}: {e}"},
+                )
 
     sys.stdout.write(json.dumps(response) + "\n")
     sys.stdout.flush()
