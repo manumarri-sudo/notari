@@ -2827,14 +2827,24 @@ def audit_verify(
         raise typer.Exit(code=1)
     head = read_head(p)
     expected_count = head.get("count") if head else None
-    total, failures = verify_chain(p, key, expected_count=expected_count)
+    expected_last_mac = head.get("mac") if head else None
+    total, failures = verify_chain(
+        p, key, expected_count=expected_count, expected_last_mac=expected_last_mac
+    )
     if failures:
         truncated = failures and failures[0] == 0
         if truncated:
-            console.print(
-                f"[red]chain BROKEN[/red]: log has {total} entries but a sealed "
-                f"mark recorded {expected_count}; trailing entries were removed."
-            )
+            if expected_count is not None and total < expected_count:
+                detail = (
+                    f"log has {total} entries but a sealed mark recorded "
+                    f"{expected_count}; trailing entries were removed."
+                )
+            else:
+                detail = (
+                    "the entry the seal pinned no longer carries its recorded mac; "
+                    "the sealed prefix was rewritten."
+                )
+            console.print(f"[red]chain BROKEN[/red]: {detail}")
             other = [f for f in failures if f != 0]
             if other:
                 console.print(f"  additional tampered/missing lines: {other[:20]}")

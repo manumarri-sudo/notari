@@ -74,3 +74,24 @@ def test_legit_growth_after_seal_still_verifies(tmp_path: Path) -> None:
     grown = runner.invoke(app, ["audit", "verify", "--log", str(p)])
     assert grown.exit_code == 0, grown.output
     assert "chain intact" in grown.output
+
+
+def test_sealed_prefix_rewrite_is_detected(tmp_path: Path) -> None:
+    # Red-team finding 6, the MAC half: after a clean verify seals (count, mac),
+    # an attacker who keeps the same entry count but rewrites the pinned entry
+    # (needs the key, but the check is cheap defense-in-depth) must be caught by
+    # the sealed-mac comparison, not silently re-sealed as the new baseline.
+    p = tmp_path / "audit.log.jsonl"
+    _seed_log(p, 4)
+    runner = CliRunner()
+    assert runner.invoke(app, ["audit", "verify", "--log", str(p)]).exit_code == 0
+
+    # Rebuild a DIFFERENT but internally valid 4-entry chain under the same key,
+    # so count matches but the entry at the sealed position carries a new mac.
+    p.unlink()
+    _seed_log(p, 4)  # fresh chain, same length, different macs
+    out = runner.invoke(app, ["audit", "verify", "--log", str(p)])
+    assert out.exit_code == 2, out.output
+    normalised = " ".join(out.output.split())
+    assert "BROKEN" in normalised
+    assert "sealed prefix was rewritten" in normalised

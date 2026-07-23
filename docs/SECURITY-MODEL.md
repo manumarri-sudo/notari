@@ -145,13 +145,23 @@ real. We do not close them with more regex.
    only write access to the log file, not the HMAC key. Mitigation, now wired
    into the CLI: a clean `notari audit verify` seals a high-water-mark (entry
    count + last mac) to a `<log>.head` sidecar, and every subsequent
-   `notari audit verify` reads that mark and reports BROKEN when the log is
-   shorter than it. The residual is honest: truncation *before* the first seal,
-   or deletion of the sidecar on a compromised host, stays undetected, and an
-   attacker who can read the HMAC key can re-seal at the lower count. Per-write
-   detection (a head pointer updated under the emit flock) would close the
-   pre-seal window but is deferred rather than risk the audited tamper-evidence
-   write path.
+   `notari audit verify` both reports BROKEN when the log is shorter than the
+   sealed count AND checks that the entry at the sealed position still carries
+   the sealed mac, so a same-length rewrite of the sealed prefix is caught too.
+   The residuals are stated plainly, because a partial mitigation described as a
+   full one is worse than none:
+   - **Rolling window after each seal.** Events appended *after* the last seal
+     and then deleted back to exactly the sealed count are NOT detected: the
+     entry at the sealed position is unchanged, so both the count and the mac
+     still match. Only per-write sealing closes this, and it is deferred (see
+     below), so between two verifies the tail is unprotected.
+   - Truncation *before* the first seal, or deletion of the unsigned sidecar on
+     a compromised host, stays undetected.
+   - An attacker who can read the HMAC key can re-chain and re-seal at will.
+   Per-write detection (a head pointer updated under the emit flock) would close
+   the rolling window but is deferred rather than risk the audited tamper-evidence
+   write path; it is the roadmap item that makes "detects trailing truncation"
+   unconditional.
 
 ## What the limits mean for the claims
 

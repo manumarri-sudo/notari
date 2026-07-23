@@ -265,29 +265,41 @@ def verify_chain(
     hmac_key: bytes,
     *,
     expected_count: int | None = None,
+    expected_last_mac: str | None = None,
 ) -> tuple[int, list[int]]:
     """Verify the HMAC chain over an existing log file.
 
     Returns (total_events, list of 1-based line numbers that failed verify).
     Empty failure list means the chain is intact.
 
-    `expected_count` closes the trailing-TRUNCATION gap. The chain alone can't
-    detect that the last N lines were deleted: each remaining entry still links
-    to its predecessor, so a truncated-but-valid shorter log verifies clean.
-    Pass the high-water-mark from a prior `seal_head` (see `read_head`) and a
-    shortfall (`total < expected_count`) is reported as a failure at line 0
-    (the "missing trailing entries" marker), so `if failures:` callers treat
-    the chain as broken.
+    `expected_count` closes the trailing-TRUNCATION gap against a sealed
+    high-water-mark. The chain alone can't detect that the last N lines were
+    deleted: each remaining entry still links to its predecessor, so a
+    truncated-but-valid shorter log verifies clean. A shortfall
+    (`total < expected_count`) is reported as a failure at line 0.
+
+    `expected_last_mac` is the mac the prior seal recorded for the entry at
+    `expected_count`. Comparing it detects a rewrite of the sealed *prefix*
+    that keeps the entry count intact (which otherwise needs the HMAC key, but
+    checking is cheap defense-in-depth): if the entry at the sealed position no
+    longer carries the sealed mac, that is reported at line 0 too. NOTE: this
+    does NOT close the rolling-window gap where events appended *after* the last
+    seal are later deleted back to exactly the sealed count; the entry at that
+    position is unchanged, so only per-write sealing catches that (see
+    SECURITY-MODEL.md limit 6).
     """
     failures: list[int] = []
     prev_mac_hex = ""
     total = 0
+    mac_at_expected: str | None = None
     with path.open("rb") as f:
         for i, raw in enumerate(f, start=1):
             total += 1
             try:
                 evt = json.loads(raw)
                 claimed_mac = evt.pop("mac", "")
+                if expected_count is not None and i == expected_count:
+                    mac_at_expected = claimed_mac
                 if evt.get("prev_mac") != prev_mac_hex:
                     failures.append(i)
                     prev_mac_hex = claimed_mac
@@ -300,6 +312,15 @@ def verify_chain(
                 failures.append(i)
     if expected_count is not None and total < expected_count:
         failures.insert(0, 0)  # line 0 == trailing truncation vs sealed count
+    elif (
+        expected_last_mac
+        and mac_at_expected is not None
+        and not hmac.compare_digest(mac_at_expected, expected_last_mac)
+    ):
+        # The chain still has >= expected_count entries, but the entry that the
+        # seal pinned no longer carries the sealed mac: the sealed prefix was
+        # rewritten. Flag as broken.
+        failures.insert(0, 0)
     return total, failures
 
 
