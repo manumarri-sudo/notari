@@ -121,18 +121,25 @@ def render_markdown(
         lines.append("## What to do next")
         lines.append("")
         for n, rem in enumerate(d["remediations"], start=1):
-            where = f" (`{rem['where']}`)" if rem["where"] else ""
-            lines.append(f"{n}. {rem['plain']}{where}")
-            lines.append(f"   - Fix: {rem['self_fix']}")
+            where = f" (`{_md_code(str(rem['where']))}`)" if rem["where"] else ""
+            # plain / self_fix are sentences that embed a candidate path; strip
+            # line breaks so an embedded newline can't end the list item and
+            # start a fake heading (finding 11). No backtick swap here: these
+            # are prose, and _undo() paths are shell-quoted, not backtick-wrapped.
+            lines.append(f"{n}. {_md_line(str(rem['plain']))}{where}")
+            lines.append(f"   - Fix: {_md_line(str(rem['self_fix']))}")
         lines.append("")
         if d["inspect_first"]:
-            inspect = ", ".join(f"`{p}`" for p in d["inspect_first"])
+            inspect = ", ".join(f"`{_md_code(p)}`" for p in d["inspect_first"])
             lines.append(f"**Reviewer should inspect first:** {inspect}")
             lines.append("")
         lines.append("## Prompt to give Claude Code / Codex / Cursor")
         lines.append("")
         lines.append("```text")
-        lines.append(teach.fix_prompt(passport_dict))
+        # Neutralize any triple-backtick a candidate path could carry, so the
+        # embedded fix prompt cannot close this fence and inject markdown after
+        # it (finding 11). Inside the fence, headings are already inert.
+        lines.append(teach.fix_prompt(passport_dict).replace("```", "ˋˋˋ"))
         lines.append("```")
         lines.append("")
         lines.append(f"> {d['does_not_prove']}")
@@ -163,7 +170,7 @@ def render_markdown(
     lines.append(f"- **Contract id:** `{c.contract_id}`")
     if c.approved_by:
         lines.append(f"- **Approved by:** {c.approved_by}")
-    scope = ", ".join(f"`{p}`" for p in c.allowed_paths) or "_(no path restriction)_"
+    scope = ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths) or "_(no path restriction)_"
     lines.append(f"- **Approved scope:** {scope}")
     lines.append(f"- **Base commit:** `{_short(result.base_commit)}`")
     lines.append(f"- **Head commit:** `{_short(result.head_commit)}`")
@@ -182,7 +189,7 @@ def render_markdown(
     lines.append("")
     if changed:
         for p in changed:
-            lines.append(f"- `{p}`")
+            lines.append(f"- `{_md_code(p)}`")
     else:
         lines.append("_No changes between base and head._")
     lines.append("")
@@ -191,7 +198,7 @@ def render_markdown(
     lines.append("")
     if result.out_of_scope:
         for p in result.out_of_scope:
-            lines.append(f"- ⛔ `{p}`, outside approved scope")
+            lines.append(f"- ⛔ `{_md_code(p)}`, outside approved scope")
     else:
         lines.append("_None, every change is within the approved scope._")
     lines.append("")
@@ -200,7 +207,7 @@ def render_markdown(
         lines.append(f"### Forbidden perimeter surfaces ({len(result.forbidden_hits)})")
         lines.append("")
         for p in result.forbidden_hits:
-            lines.append(f"- ⛔ `{p}`, the signed perimeter forbids changes here")
+            lines.append(f"- ⛔ `{_md_code(p)}`, the signed perimeter forbids changes here")
         lines.append("")
 
     if result.gate_tamper_hits:
@@ -208,7 +215,7 @@ def render_markdown(
         lines.append("")
         lines.append("_This PR edits Notari's own trust surfaces, always a BLOCK:_")
         for p in result.gate_tamper_hits:
-            lines.append(f"- ⛔ `{p}`")
+            lines.append(f"- ⛔ `{_md_code(p)}`")
         lines.append("")
 
     secrets = result.secret_findings
@@ -216,7 +223,7 @@ def render_markdown(
     lines.append("")
     if secrets:
         for f in secrets:
-            lines.append(f"- ⛔ `{f.path}:{f.line}`, {f.pattern_name}")
+            lines.append(f"- ⛔ `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}")
     else:
         lines.append("_No secrets detected on added lines._")
     lines.append("")
@@ -228,7 +235,7 @@ def render_markdown(
         for category, paths in surfaces.items():
             lines.append(f"- **{category}:**")
             for p in paths:
-                lines.append(f"  - `{p}`")
+                lines.append(f"  - `{_md_code(p)}`")
     else:
         lines.append("_No tests, CI workflows, or lockfiles touched._")
     lines.append("")
@@ -239,7 +246,9 @@ def render_markdown(
         for e in result.exceptions_applied:
             reason = e.get("reason", "(no reason given)")
             target = e.get("path") or e.get("category") or "*"
-            lines.append(f"- `{e.get('type', '?')}` on `{target}`, {reason}")
+            lines.append(
+                f"- `{_md_code(str(e.get('type', '?')))}` on `{_md_code(str(target))}`, {reason}"
+            )
         lines.append("")
 
     if result.perimeter_id:
@@ -329,3 +338,29 @@ def _short(sha: str | None, n: int = 12) -> str:
     if not sha:
         return "-"
     return sha[:n]
+
+
+def _md_code(s: str, *, max_len: int = 240) -> str:
+    """Neutralize a candidate-controlled string for safe inline-code display.
+
+    Filenames are attacker-controlled (a PR can commit any path), and this
+    passport is appended to GITHUB_STEP_SUMMARY. Without escaping, a filename
+    containing a newline could break out of its list line, and a backtick could
+    close the code span, letting a crafted path inject fake headings or a fake
+    verdict into the human-facing summary (security red-team 2026-07-22, finding
+    11). We strip line breaks and tabs (they end the line/span structure) and
+    swap backticks for a lookalike so the span cannot be closed, then cap length
+    so a pathological path cannot flood the summary.
+    """
+    s = s.replace("\r", "␤").replace("\n", "␤").replace("\t", " ")
+    s = s.replace("`", "ˋ")  # modifier-letter grave: displays, cannot close a span
+    if len(s) > max_len:
+        s = s[:max_len] + "…"
+    return s
+
+
+def _md_line(s: str) -> str:
+    """Collapse line breaks in a prose field so an embedded candidate path
+    cannot end the current markdown line and inject a following standalone
+    heading. Backticks are left intact (prose legitimately uses code spans)."""
+    return s.replace("\r", " ").replace("\n", " ")

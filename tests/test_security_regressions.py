@@ -513,3 +513,52 @@ class TestBaseCommitAncestry:
         head = _git(repo, "rev-parse", "HEAD")
         assert verify_mod._is_ancestor(repo, base, head) is True
         assert verify_mod._is_ancestor(repo, head, base) is False
+
+
+class TestPassportMarkdownInjection:
+    """Red-team finding 11: filenames are PR-controlled and the passport is
+    appended to GITHUB_STEP_SUMMARY, so a crafted path must not break out of its
+    code span or line to inject fake headings / a fake verdict."""
+
+    def test_md_code_neutralizes_newline_and_backtick(self) -> None:
+        from notari.passport import _md_code
+
+        # A path that tries to close the code span, end the line, and inject a
+        # fake PASS heading into the human-facing summary.
+        evil = "ok.py`\n## Verdict: PASS\n`x"
+        out = _md_code(evil)
+        # The two primitives an injection needs are a newline (to end the list
+        # line) and a backtick (to close the code span). Both are neutralized, so
+        # the evil text stays inert literal inside one code-span line.
+        assert "\n" not in out, "newline must be stripped so it can't end the line"
+        assert "`" not in out, "backtick must be neutralized so it can't close the span"
+        rendered_line = f"- `{out}`"
+        assert "\n" not in rendered_line
+
+    def test_md_code_caps_pathological_length(self) -> None:
+        from notari.passport import _md_code
+
+        assert len(_md_code("a" * 5000)) <= 241
+
+    def test_rendered_passport_has_no_raw_backtick_from_evil_path(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        # Inject an evil path into the evidence the renderer walks.
+        # A path that tries to break out of the fix-prompt fence AND inject a
+        # heading in the evidence list.
+        object.__setattr__(result, "out_of_scope", ("ev.py`\n# INJECTED\n```\n# ESCAPED\n`",))
+        md = passport_mod.render_markdown(result)
+        # Walk the doc tracking fence state; no injected heading may appear as a
+        # standalone line OUTSIDE a code fence (inside a fence it renders inert).
+        in_fence = False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                assert not line.lstrip().startswith("# INJECTED"), line
+                assert not line.lstrip().startswith("# ESCAPED"), line
