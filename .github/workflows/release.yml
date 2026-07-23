@@ -36,8 +36,14 @@ jobs:
           python-version: "3.12"
 
       - name: Install build deps
+        # Pinned, not `--upgrade`, so this OIDC-privileged release job does not
+        # pull whatever `latest` resolves to at publish time (security red-team
+        # 2026-07-22, finding 7). PyPI versions are immutable, so an exact pin
+        # cannot be swapped for a compromised re-upload; a fully hermetic build
+        # would add --require-hashes against a committed lock, tracked as the
+        # remaining hardening in docs/SECURITY-MODEL.md.
         run: |
-          python -m pip install --upgrade pip build twine
+          python -m pip install "pip==26.1.2" "build==1.5.0" "twine==6.2.0"
 
       - name: Verify tag matches pyproject version
         run: |

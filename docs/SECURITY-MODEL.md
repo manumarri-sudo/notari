@@ -419,10 +419,17 @@ until these land:
   (isolated mode) and `PYTHONSAFEPATH=1` to prevent candidate-controlled Python
   modules (pip.py, json.py, sitecustomize.py) from shadowing trusted imports.
   The secure template checks out the PR into an isolated subdirectory
-  (`_pr_checkout`) with `persist-credentials: false`.
-  **Residual:** Notari's own PyPI dependencies are version-ranged, not
-  hash-locked; a compromised transitive dependency could still execute. Use
-  `--require-hashes` in hardened deployments.
+  (`_pr_checkout`) with `persist-credentials: false`. The **release** job
+  (`release.yml`), which holds OIDC publish rights, pins `pip`, `build`, and
+  `twine` to exact versions instead of `--upgrade`, and the build backend
+  (`hatchling`) is pinned exactly in `[build-system]`, so the privileged job no
+  longer resolves whatever `latest` is at publish time. PyPI versions are
+  immutable, so an exact pin cannot be swapped for a compromised re-upload.
+  **Residual:** the CI gate job still installs Notari's own transitive
+  dependencies version-ranged, not hash-locked, so a compromised transitive
+  dependency could execute in the gate process; and the release pins are exact
+  versions, not hashes. A fully hermetic build adds `--require-hashes` against a
+  committed lock. Use `--require-hashes` in hardened deployments today.
 
 - **Off-box evidence anchoring.** The Merkle transparency tree head is built but
   not yet anchored off the runner, so a CI passport's MAC is not independently

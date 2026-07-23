@@ -589,3 +589,24 @@ class TestUnrestrictedScopeIsSurfaced:
         result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
         md = passport_mod.render_markdown(result)
         assert "unrestricted" not in md.lower()
+
+
+class TestReleaseToolchainPinned:
+    """Red-team finding 7: the OIDC-privileged release job must not resolve an
+    unbounded/latest build toolchain. Pins are guarded so they can't regress to
+    `--upgrade`."""
+
+    def test_release_build_deps_are_pinned_not_upgraded(self) -> None:
+        root = Path(__file__).parent.parent
+        rel = (root / ".github" / "workflows" / "release.yml").read_text()
+        assert "pip install --upgrade pip build twine" not in rel
+        for pin in ("pip==", "build==", "twine=="):
+            assert pin in rel, pin
+
+    def test_build_backend_is_pinned_exactly(self) -> None:
+        import tomllib
+
+        root = Path(__file__).parent.parent
+        with open(root / "pyproject.toml", "rb") as f:
+            requires = tomllib.load(f)["build-system"]["requires"]
+        assert any(r.startswith("hatchling==") for r in requires), requires
