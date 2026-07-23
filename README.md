@@ -50,10 +50,13 @@ Four surfaces, each stated at its real strength rather than its most flattering 
 every changed path outside `.notari/` is measured against a signed scope and a signed
 perimeter, each touched file is scanned for 26 vendor secret patterns, and renames
 (both endpoints), mode-only changes, binaries, symlinks, submodules, and
-`.gitattributes` diff-hiding are all in the inventory rather than blind spots. Secret
-detection is a finite pattern set, so it catches the common vendor-format leaks rather
-than proving no secret exists. There is no model in the decision path, so there is
-nothing to prompt-inject.
+`.gitattributes` diff-hiding are all in the inventory rather than blind spots. You name
+the scope per task (`--scope`), so a narrow scope means "only these paths", and the
+explicit `--scope '**'` means "anything the signed perimeter does not forbid", stated
+plainly on the passport either way so a PASS is never ambiguous. Secret detection is a
+finite pattern set, so it catches the common vendor-format leaks rather than proving no
+secret exists. There is no model in the decision path, so there is nothing to
+prompt-inject.
 
 **2. The receipt, which outlives the run.** A Change Passport (`passport.json` plus a
 PR-ready `passport.md`) whose Ed25519 signature anyone can re-check later with

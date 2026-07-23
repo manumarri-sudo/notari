@@ -562,3 +562,30 @@ class TestPassportMarkdownInjection:
             if not in_fence:
                 assert not line.lstrip().startswith("# INJECTED"), line
                 assert not line.lstrip().startswith("# ESCAPED"), line
+
+
+class TestUnrestrictedScopeIsSurfaced:
+    """Red-team finding 2: an unrestricted contract must never render like a
+    scoped one, so a reviewer sees a PASS means 'nothing forbidden', not 'only
+    the approved paths'."""
+
+    def test_passport_flags_unrestricted_scope(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        md = passport_mod.render_markdown(result)
+        assert "unrestricted" in md.lower()
+        assert "perimeter is the only boundary" in md
+
+    def test_passport_scoped_contract_not_flagged(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        md = passport_mod.render_markdown(result)
+        assert "unrestricted" not in md.lower()

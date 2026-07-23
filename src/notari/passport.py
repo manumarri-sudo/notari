@@ -170,7 +170,20 @@ def render_markdown(
     lines.append(f"- **Contract id:** `{c.contract_id}`")
     if c.approved_by:
         lines.append(f"- **Approved by:** {c.approved_by}")
-    scope = ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths) or "_(no path restriction)_"
+    from notari.policy import scope_is_unrestricted
+
+    if scope_is_unrestricted(c.allowed_paths):
+        # Never let an unrestricted contract read like a scoped one: a reviewer
+        # must see that the per-task boundary here is the perimeter only, so a
+        # PASS means "nothing forbidden", not "only the approved paths".
+        shown = (
+            ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths)
+            if c.allowed_paths
+            else "none declared"
+        )
+        scope = f"⚠️ **unrestricted** ({shown}), perimeter is the only boundary"
+    else:
+        scope = ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths)
     lines.append(f"- **Approved scope:** {scope}")
     lines.append(f"- **Base commit:** `{_short(result.base_commit)}`")
     lines.append(f"- **Head commit:** `{_short(result.head_commit)}`")

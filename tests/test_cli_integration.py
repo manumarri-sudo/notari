@@ -498,3 +498,53 @@ def test_version_flag_prints_version_and_exits(runner: CliRunner) -> None:
         result = runner.invoke(app, [flag])
         assert result.exit_code == 0, result.output
         assert __version__ in result.output
+
+
+# ── F2: scope is a required, conscious choice ────────────────────────────────
+# Red-team finding 2: an omitted --scope used to silently create an unrestricted
+# contract that PASSed almost any diff, a signed blank cheque. begin now refuses,
+# and --scope '**' is the explicit opt-out.
+
+
+def test_scope_is_unrestricted_helper() -> None:
+    from notari.policy import scope_is_unrestricted
+
+    assert scope_is_unrestricted([])
+    assert scope_is_unrestricted(["**"])
+    assert scope_is_unrestricted(["."])
+    assert scope_is_unrestricted(["src/**", "**"])  # any universal entry counts
+    assert not scope_is_unrestricted(["src/**"])
+    assert not scope_is_unrestricted(["src/*.py", "tests/**"])
+
+
+def test_begin_without_scope_is_refused(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    result = runner.invoke(app, ["begin", "add rate limiting"])
+    assert result.exit_code == 2, result.output
+    assert "scope is required" in result.output.lower()
+    # It must point the user at the explicit opt-out, not just fail.
+    assert "'**'" in result.output
+
+
+def test_begin_with_explicit_star_scope_is_allowed(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import subprocess
+
+    _isolate(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "i"], cwd=repo, capture_output=True, check=True)
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["begin", "broad task", "--scope", "**"])
+    assert result.exit_code == 0, result.output
+    # The explicit opt-out is allowed but must warn it is perimeter-only.
+    assert "unrestricted scope" in result.output.lower()

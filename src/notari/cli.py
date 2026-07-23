@@ -161,8 +161,9 @@ def begin_cmd(
         typer.Option(
             "--scope",
             "-s",
-            help="allowed path (glob / dir / file). Repeatable. "
-            "Omit to declare no path restriction.",
+            help="allowed path (glob / dir / file). Repeatable. Required: pass a "
+            "narrow glob (e.g. 'src/api/**'), or --scope '**' to consciously "
+            "allow anything the perimeter does not forbid.",
         ),
     ] = None,
     approved_by: Annotated[
@@ -205,7 +206,23 @@ def begin_cmd(
     """
     from notari import contract as contract_mod
     from notari import perimeter as perimeter_mod
+    from notari import policy as policy_mod
     from notari import provenance as provenance_mod
+
+    # Scope is a required, conscious choice (security red-team 2026-07-22,
+    # finding 2). Omitting it used to silently create an unrestricted contract
+    # that PASSed almost any diff, a signed blank cheque against the headline
+    # "only what a human approved". You must now name a scope, or type the
+    # explicit `--scope '**'` opt-out to allow anything the perimeter permits.
+    if scope is None:
+        console.print(
+            "[red]--scope is required.[/red] A contract with no scope authorizes "
+            "every path the perimeter does not forbid, which is a blank cheque.\n"
+            "  Narrow it:            [bold]notari begin \"<task>\" --scope 'src/api/**'[/bold]\n"
+            "  Or opt in explicitly: [bold]notari begin \"<task>\" --scope '**'[/bold]  "
+            "[dim](perimeter is the only boundary)[/dim]"
+        )
+        raise typer.Exit(code=2)
 
     try:
         with AuditLog(path=default_audit_path(), hmac_key=_hmac_key()) as audit:
@@ -243,16 +260,16 @@ def begin_cmd(
     scope_str = ", ".join(contract.allowed_paths) or "(no path restriction)"
     out.print(f"  scope: {scope_str}")
     out.print(f"  base commit: {contract.base_commit or '(no commits yet)'}")
-    # Empty scope is the single biggest first-run footgun (0.3.4): with no
-    # --scope, every path the perimeter does not forbid is "in scope", so verify
-    # PASSes almost any diff and the gate looks like it does nothing. Say so
-    # loudly; the perimeter's forbidden list is the only thing biting otherwise.
-    if not contract.allowed_paths:
+    # An explicit `--scope '**'` (or '.') is a conscious unrestricted choice, but
+    # it still means the per-task boundary is only the standing perimeter. Say so
+    # loudly so a reader of the contract and the passport never mistakes an
+    # unrestricted contract for a scoped one (red-team finding 2).
+    if policy_mod.scope_is_unrestricted(contract.allowed_paths):
         out.print(
-            "  [yellow]⚠ no scope set:[/yellow] every path your perimeter does not forbid counts "
-            "as in-bounds, so this contract will PASS most diffs.\n"
-            "  Re-run with [bold]--scope <glob>[/bold] (e.g. --scope 'src/api/**') to make the "
-            "boundary actually mean something for this task."
+            "  [yellow]⚠ unrestricted scope:[/yellow] you passed --scope '**', so every path the "
+            "perimeter does not forbid is in-bounds and this contract will PASS most diffs.\n"
+            "  That is the perimeter-only posture; narrow it with a real glob "
+            "(e.g. --scope 'src/api/**') to make this task's boundary bite."
         )
     # First-run ordering guard (0.3.2): the contract just froze base=HEAD, so
     # any setup file still uncommitted (perimeter, .gitignore from keygen/guard)

@@ -1617,6 +1617,18 @@ def path_in_scope(path: str, allowed_paths: Sequence[str]) -> bool:
     return any(_path_matches(path, p) for p in allowed_paths)
 
 
+def scope_is_unrestricted(allowed_paths: Sequence[str]) -> bool:
+    """True if the scope permits every path: empty, or a universal glob.
+
+    Matches `path_in_scope`'s universal cases (`**`, `.`) so the CLI and the
+    passport can flag "this contract's per-task boundary is the perimeter only"
+    whether the scope was omitted (legacy) or set explicitly to `--scope '**'`.
+    """
+    if not allowed_paths:
+        return True
+    return any(p.strip().rstrip("/") in ("**", ".") for p in allowed_paths)
+
+
 def classify_sensitive_surface(path: str) -> str | None:
     """Classify a path as a sensitive surface, or None.
 
