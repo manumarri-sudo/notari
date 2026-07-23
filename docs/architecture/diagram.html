@@ -153,7 +153,7 @@
   There is no model anywhere in the verdict, so the verdict cannot be prompt-injected, and every
   box below corresponds to a command, a file, or a module that exists in the repository today.
 </p>
-<p class="stamp-line">notari 0.4.0 · alpha · sources: src/notari/{contract,verify,policy,secrets,passport,audit}.py · docs/SECURITY-MODEL.md</p>
+<p class="stamp-line">notari 0.4.1 · alpha · sources: src/notari/{contract,verify,policy,secrets,passport,audit}.py · docs/SECURITY-MODEL.md</p>
 
 <h2>The path a change takes</h2>
 <div class="lanes">
@@ -168,7 +168,9 @@
         <span class="flag">--expires-in</span> 7 <span class="flag">--repo</span> owner/repo</div>
       <div class="note">
         Writes <code>.notari/contract.json</code> plus a detached <code>.sig</code>: the approved task,
-        the allowed paths, the base commit, and a contract id.
+        the allowed paths, the base commit, and a contract id. <code>--scope</code> is required, so
+        the boundary is a conscious choice; <code>--scope '**'</code> is the explicit "anything the
+        perimeter permits" opt-out, and an unrestricted contract is flagged on the passport.
       </div>
       <div class="note">
         <code>--repo</code> binds the approval to one repository so a signed contract cannot be replayed
@@ -214,7 +216,7 @@
             <code>git diff --name-status -z --find-renames</code>, keeping <b>both ends of a rename</b>
             and including binary and mode-only changes.</li>
         <li>Match every changed path against the signed scope.</li>
-        <li>Scan <b>added lines only</b> for the 26 vendor secret patterns in <code>secrets.py</code>.</li>
+        <li>Scan <b>each touched file</b> (whole blob from the candidate, not just added lines) for the 26 vendor patterns plus 6 inline-credential shapes in <code>secrets.py</code>.</li>
         <li>Classify sensitive surfaces: CI and workflow files, lockfiles, test deletions, and git
             configuration such as <code>.gitattributes</code> that can control diff visibility.</li>
         <li>Apply logged exceptions, which strict mode discards.</li>
@@ -230,7 +232,7 @@
 
 <div class="verdicts">
   <div class="verdict vp"><div class="v">PASS</div><div class="d">In scope, no secrets, no forbidden surface. Exits 0, the build goes green.</div></div>
-  <div class="verdict vr"><div class="v">NEEDS_REVIEW</div><div class="d">Something a human should look at. Exits 0, so review is surfaced without stopping the pipeline.</div></div>
+  <div class="verdict vr"><div class="v">NEEDS_REVIEW</div><div class="d">Something a human should look at (submodule bump, out-of-scope symlink). The hardened template defaults to <code>block-on-review</code>, so it fails the build unless you opt out.</div></div>
   <div class="verdict vb"><div class="v">BLOCK</div><div class="d">Out of bounds or a secret in an added line. Exits non-zero, CI fails.</div></div>
 </div>
 
@@ -309,9 +311,9 @@
     <div class="src">contract.py</div>
   </div>
   <div class="guard">
-    <div class="g">Secrets are caught where they enter</div>
-    <div class="w">26 vendor patterns are matched against added lines, which is the moment a
-      credential actually becomes public.</div>
+    <div class="g">Secrets are caught in the whole file</div>
+    <div class="w">26 vendor patterns plus 6 inline-credential shapes are matched against every
+      touched file, not just added lines, so a rename or a UTF-16 file cannot hide one.</div>
     <div class="src">secrets.py</div>
   </div>
 </div>
@@ -336,7 +338,7 @@
 
 <footer>
   <span>docs/architecture/diagram.html · regenerate after any change to the verify path</span>
-  <span>notari 0.4.0 · alpha</span>
+  <span>notari 0.4.1 · alpha</span>
 </footer>
 
 </body>
