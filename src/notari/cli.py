@@ -37,7 +37,7 @@ from notari import journal as journal_mod
 from notari import telemetry as tel
 from notari._version import __version__
 from notari.adapters import claude_code as cc_adapter
-from notari.audit import AuditLog, verify_chain
+from notari.audit import AuditLog, read_head, seal_head, verify_chain
 from notari.config import (
     default_audit_path,
     default_config_path,
@@ -2810,22 +2810,50 @@ def audit_verify(
         typer.Option("--log", "-l"),
     ] = None,
 ) -> None:
-    """Walk the HMAC chain. Reports any tampered or missing entries."""
+    """Walk the HMAC chain. Reports any tampered, missing, or truncated entries.
+
+    Trailing truncation (deleting the last N entries) leaves a shorter but still
+    internally valid chain, so the walk alone cannot see it. We close that gap
+    against a sealed high-water-mark: the prior run wrote a `<log>.head` sidecar
+    recording the entry count, and if the log is now shorter than that count the
+    chain is reported BROKEN. On a clean verify we advance the sidecar to the
+    current count. The first run on a fresh log has no prior mark to compare
+    against and seals one for next time; truncation is detectable from then on.
+    """
+    key = _hmac_key()
     p = log_path or default_audit_path()
     if not p.exists():
         console.print(f"[yellow]no log:[/yellow] {p}")
         raise typer.Exit(code=1)
-    total, failures = verify_chain(p, _hmac_key())
+    head = read_head(p)
+    expected_count = head.get("count") if head else None
+    total, failures = verify_chain(p, key, expected_count=expected_count)
     if failures:
-        console.print(f"[red]chain BROKEN[/red]: {len(failures)} of {total} entries fail")
-        console.print(f"  failed line numbers: {failures[:20]}")
-        console.print(
-            "  if these failures pre-date notari 0.1.1, they may be from "
-            "concurrent-write breaks fixed in 0.1.1.\n"
-            "  to re-chain those entries: [bold]notari audit repair --legacy --yes[/bold]"
-        )
+        truncated = failures and failures[0] == 0
+        if truncated:
+            console.print(
+                f"[red]chain BROKEN[/red]: log has {total} entries but a sealed "
+                f"mark recorded {expected_count}; trailing entries were removed."
+            )
+            other = [f for f in failures if f != 0]
+            if other:
+                console.print(f"  additional tampered/missing lines: {other[:20]}")
+        else:
+            console.print(f"[red]chain BROKEN[/red]: {len(failures)} of {total} entries fail")
+            console.print(f"  failed line numbers: {failures[:20]}")
+            console.print(
+                "  if these failures pre-date notari 0.1.1, they may be from "
+                "concurrent-write breaks fixed in 0.1.1.\n"
+                "  to re-chain those entries: [bold]notari audit repair --legacy --yes[/bold]"
+            )
         raise typer.Exit(code=2)
-    console.print(f"[green]chain intact[/green]: {total} entries verified.")
+    # Clean chain: advance the high-water-mark so a later truncation below this
+    # length is detectable. seal_head re-verifies before writing, so it cannot
+    # seal over a broken chain.
+    with contextlib.suppress(Exception):
+        seal_head(p, key)
+    sealed_note = "" if head else " (sealed a high-water-mark for truncation detection)"
+    console.print(f"[green]chain intact[/green]: {total} entries verified.{sealed_note}")
 
 
 @audit_app.command("export")
