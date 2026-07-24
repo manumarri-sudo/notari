@@ -113,7 +113,7 @@ def render_markdown(
     lines.append(f"## Verdict: {badge}")
     lines.append("")
     for r in result.reasons:
-        lines.append(f"- {r}")
+        lines.append(f"- {_md_text(r)}")
     lines.append("")
 
     # Action block, only when there's something to act on (BLOCK / NEEDS_REVIEW).
@@ -166,10 +166,10 @@ def render_markdown(
 
     lines.append("## Contract")
     lines.append("")
-    lines.append(f"- **Task:** {c.task}")
-    lines.append(f"- **Contract id:** `{c.contract_id}`")
+    lines.append(f"- **Task:** {_md_text(c.task)}")
+    lines.append(f"- **Contract id:** `{_md_code(c.contract_id)}`")
     if c.approved_by:
-        lines.append(f"- **Approved by:** {c.approved_by}")
+        lines.append(f"- **Approved by:** {_md_text(c.approved_by)}")
     from notari.policy import scope_is_unrestricted
 
     if scope_is_unrestricted(c.allowed_paths):
@@ -260,7 +260,8 @@ def render_markdown(
             reason = e.get("reason", "(no reason given)")
             target = e.get("path") or e.get("category") or "*"
             lines.append(
-                f"- `{_md_code(str(e.get('type', '?')))}` on `{_md_code(str(target))}`, {reason}"
+                f"- `{_md_code(str(e.get('type', '?')))}` on "
+                f"`{_md_code(str(target))}`, {_md_text(str(reason))}"
             )
         lines.append("")
 
@@ -373,7 +374,29 @@ def _md_code(s: str, *, max_len: int = 240) -> str:
 
 
 def _md_line(s: str) -> str:
-    """Collapse line breaks in a prose field so an embedded candidate path
-    cannot end the current markdown line and inject a following standalone
-    heading. Backticks are left intact (prose legitimately uses code spans)."""
+    """Collapse line breaks in NOTARI'S OWN prose (remediation sentences) so an
+    embedded candidate path cannot end the current markdown line and inject a
+    following standalone heading. Backticks are left intact because this prose
+    legitimately uses code spans. Do NOT use on candidate-controlled fields, use
+    _md_text, which also neutralizes backticks and HTML."""
     return s.replace("\r", " ").replace("\n", " ")
+
+
+def _md_text(s: str, *, max_len: int = 500) -> str:
+    """Sanitize a candidate-controlled PROSE field for the human passport.
+
+    The contract task, the approver string, the reason lines, and applied-
+    exception reasons are all attacker-controllable and land in
+    GITHUB_STEP_SUMMARY. `_md_line` only collapsed CR/LF, which left three
+    injection vectors open (security re-review 2026-07-23, F11): a stray backtick
+    could open a code span that swallows the rest of the line, and a raw ``<`` /
+    ``>`` could inject HTML, e.g. a ``</details>`` that escapes the evidence fold
+    and lets crafted text pose as a real verdict. We collapse line breaks and
+    tabs, neutralize backticks with a lookalike, escape angle brackets to HTML
+    entities (which render as the real characters, so the text stays faithful),
+    and cap length so a pathological field cannot flood the summary."""
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = s.replace("`", "ˋ").replace("<", "&lt;").replace(">", "&gt;")
+    if len(s) > max_len:
+        s = s[:max_len] + "…"
+    return s

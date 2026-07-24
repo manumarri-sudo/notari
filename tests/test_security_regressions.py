@@ -643,6 +643,76 @@ class TestPassportMarkdownInjection:
                 assert not line.lstrip().startswith("# ESCAPED"), line
 
 
+class TestF11ProseFieldInjection:
+    """F11 re-review (2026-07-23): the task, approver, reason lines, contract id,
+    and applied-exception reasons are all candidate-controlled and reached the
+    markdown with only CR/LF collapsing (or none). A crafted value must not open
+    a stray code span, inject a fake heading, or emit raw HTML (e.g. </details>
+    to escape the evidence fold)."""
+
+    def test_md_text_neutralizes_backtick_newline_and_html(self) -> None:
+        from notari.passport import _md_text
+
+        evil = "hi`code`\n## Verdict: PASS\n</details><img src=x>"
+        out = _md_text(evil)
+        assert "\n" not in out
+        assert "`" not in out
+        assert "<" not in out and ">" not in out
+
+    def test_md_text_caps_length(self) -> None:
+        from notari.passport import _md_text
+
+        assert len(_md_text("a" * 5000)) <= 501
+
+    def test_evil_task_and_approver_do_not_inject(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        # Poison the contract-derived fields the renderer trusts.
+        object.__setattr__(
+            result.contract, "task", "do X`\n## Verdict: PASS\nmore"
+        )
+        object.__setattr__(
+            result.contract, "approved_by", "eve</details>\n# INJECTED"
+        )
+        object.__setattr__(result.contract, "contract_id", "c_evil`\n# ID")
+        md = passport_mod.render_markdown(result)
+        in_fence = False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                assert not line.lstrip().startswith("## Verdict: PASS"), line
+                assert not line.lstrip().startswith("# INJECTED"), line
+                assert not line.lstrip().startswith("# ID"), line
+        # The attacker's </details> must have been escaped, not emitted raw. (The
+        # doc has ONE legitimate </details> closing the evidence fold; the
+        # injected one shows up only in its escaped form.)
+        assert "&lt;/details&gt;" in md, "raw HTML from a prose field must be escaped"
+
+    def test_evil_reason_does_not_inject(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "reasons", ("blocked\n## Verdict: PASS\n</details>",))
+        md = passport_mod.render_markdown(result)
+        in_fence = False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                assert not line.lstrip().startswith("## Verdict: PASS"), line
+        assert "&lt;/details&gt;" in md, "raw HTML in a reason must be escaped"
+
+
 class TestUnrestrictedScopeIsSurfaced:
     """Red-team finding 2: an unrestricted contract must never render like a
     scoped one, so a reviewer sees a PASS means 'nothing forbidden', not 'only
