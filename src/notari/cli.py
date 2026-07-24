@@ -2877,10 +2877,28 @@ def audit_verify(
         raise typer.Exit(code=2)
     # Clean chain: advance the high-water-mark so a later truncation below this
     # length is detectable. seal_head re-verifies before writing, so it cannot
-    # seal over a broken chain.
-    with contextlib.suppress(Exception):
+    # seal over a broken chain. Sealing is best-effort (a read-only or full disk
+    # must not fail the verify), but we only CLAIM to have sealed when it really
+    # succeeded: the message previously said "sealed a high-water-mark" even when
+    # the write raised and was suppressed, reporting a durability guarantee that
+    # did not exist (security re-review 2026-07-23, N3).
+    sealed_ok = False
+    seal_error: Exception | None = None
+    try:
         seal_head(p, key)
-    sealed_note = "" if head else " (sealed a high-water-mark for truncation detection)"
+        sealed_ok = True
+    except Exception as e:  # noqa: BLE001 - best-effort seal, never fail the verify
+        seal_error = e
+    if not sealed_ok:
+        console.print(
+            "[yellow]note[/yellow]: chain verified, but could not advance the "
+            f"high-water-mark ({seal_error}); truncation detection was not updated"
+        )
+    sealed_note = (
+        " (sealed a high-water-mark for truncation detection)"
+        if sealed_ok and not head
+        else ""
+    )
     console.print(f"[green]chain intact[/green]: {total} entries verified.{sealed_note}")
 
 

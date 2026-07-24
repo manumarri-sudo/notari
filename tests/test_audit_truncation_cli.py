@@ -95,3 +95,28 @@ def test_sealed_prefix_rewrite_is_detected(tmp_path: Path) -> None:
     normalised = " ".join(out.output.split())
     assert "BROKEN" in normalised
     assert "sealed prefix was rewritten" in normalised
+
+
+def test_seal_failure_is_not_reported_as_sealed(tmp_path: Path, monkeypatch) -> None:
+    """N3 re-review (2026-07-23): seal_head is best-effort and was wrapped in a
+    bare exception-suppress, but the message still claimed 'sealed a high-water-
+    mark' on a first verify even when the write raised and nothing was sealed.
+    A failed seal must be surfaced, never reported as a durability guarantee."""
+    import notari.cli as cli_mod
+
+    p = tmp_path / "audit.log.jsonl"
+    _seed_log(p, 4)
+
+    def _boom(*_a, **_k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(cli_mod, "seal_head", _boom)
+    r = CliRunner().invoke(app, ["audit", "verify", "--log", str(p)])
+    # The verify itself still succeeds (sealing is best-effort)...
+    assert r.exit_code == 0, r.output
+    assert "chain intact" in r.output
+    normalised = " ".join(r.output.split())
+    # ...but it must NOT claim it sealed, and must say the mark was not advanced.
+    assert "sealed a high-water-mark" not in normalised
+    assert "could not advance the high-water-mark" in normalised
+    assert not p.with_name(p.name + ".head").exists()

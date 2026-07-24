@@ -145,11 +145,23 @@ _STDERR_CAP = 8192  # keep only enough stderr to explain a failure
 
 
 def _git_capture(args: list[str], root: Path, *, timeout: int, max_bytes: int) -> tuple[str, bool]:
-    """Run a git command, reading AT MOST ``max_bytes`` of stdout.
+    """Run a git command, reading AT MOST ``max_bytes`` of stdout as text.
 
-    Returns ``(text, truncated)``. Unlike ``subprocess.run(capture_output=True)``
+    Thin decode wrapper over ``_git_capture_bytes``; see it for the streaming +
+    timeout guarantees. ``errors="replace"`` keeps text hunks intact when a real
+    repo carries undecodable binary bytes."""
+    raw, truncated = _git_capture_bytes(args, root, timeout=timeout, max_bytes=max_bytes)
+    return raw.decode("utf-8", errors="replace"), truncated
+
+
+def _git_capture_bytes(
+    args: list[str], root: Path, *, timeout: int, max_bytes: int
+) -> tuple[bytes, bool]:
+    """Run a git command, reading AT MOST ``max_bytes`` of stdout as raw bytes.
+
+    Returns ``(data, truncated)``. Unlike ``subprocess.run(capture_output=True)``
     this streams and stops at the cap, so a candidate-crafted multi-gigabyte diff
-    cannot buffer the whole output into memory and OOM the runner.
+    (or file blob) cannot buffer the whole output into memory and OOM the runner.
 
     The wall-clock ``timeout`` is enforced on every read via ``select`` on the raw
     pipe fds, so it bounds a git process that hangs *between* bytes as well as one
@@ -225,7 +237,7 @@ def _git_capture(args: list[str], root: Path, *, timeout: int, max_bytes: int) -
         detail = b"".join(err_chunks).decode("utf-8", errors="replace").strip()
         msg = f"git command failed (rc={rc}): {detail or args}"
         raise VerifyError(msg)
-    return b"".join(chunks).decode("utf-8", errors="replace"), truncated
+    return b"".join(chunks), truncated
 
 
 def git_diff(
@@ -476,28 +488,39 @@ def _decode_blob(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
-def _read_candidate_blob(root: Path, candidate_sha: str, path: str) -> str | None:
+def _read_candidate_blob(
+    root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
+) -> tuple[str | None, bool]:
     """Read a file from the candidate commit's tree, not the worktree.
 
-    Returns decoded text (handling UTF-16/UTF-8), or None if the blob doesn't
-    exist at that commit. Logs a warning on unexpected git failures so silent
-    scan skips are visible."""
+    Returns ``(text, truncated)``: decoded text (handling UTF-16/UTF-8) or None
+    if the blob doesn't exist at that commit, and whether the read hit the byte
+    ceiling. The read is bounded by the SAME size + timeout ceilings as the diff
+    (via ``_git_capture_bytes``): previously this was an unbounded
+    ``subprocess.run`` per touched file, so a single multi-gigabyte blob could
+    OOM the runner or a hung ``cat-file`` could stall the gate, bypassing the
+    50 MiB / timeout limits (security re-review 2026-07-23, N2). A timeout is
+    reported as truncated=True (unreadable but flagged incomplete); an absent /
+    unreadable blob logs and returns None."""
     try:
-        proc = subprocess.run(
+        raw, truncated = _git_capture_bytes(
             ["git", "cat-file", "blob", f"{candidate_sha}:{path}"],
-            cwd=root,
-            capture_output=True,
-            check=True,
+            root,
+            timeout=limits.git_timeout,
+            max_bytes=limits.max_diff_bytes,
         )
-    except FileNotFoundError:
-        return None
-    except subprocess.CalledProcessError as e:
+    except VerifyError as e:
+        if "timed out" in str(e):
+            # Flag it incomplete rather than silently skipping the scan.
+            return None, True
         _log.warning("blob read failed for %s:%s, %s", candidate_sha[:12], path, e)
-        return None
-    return _decode_blob(proc.stdout)
+        return None, False
+    return _decode_blob(raw), truncated
 
 
-def _base_line_set(root: Path, base_sha: str | None, path: str) -> frozenset[str]:
+def _base_line_set(
+    root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
+) -> frozenset[str]:
     """Lines already present in `path` at the base commit.
 
     Used to keep the blob-level secret scan from BLOCKing a pre-existing
@@ -511,7 +534,7 @@ def _base_line_set(root: Path, base_sha: str | None, path: str) -> frozenset[str
     base here."""
     if not base_sha or base_sha == _EMPTY_TREE:
         return frozenset()
-    content = _read_candidate_blob(root, base_sha, path)
+    content, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if content is None:
         return frozenset()
     return frozenset(content.splitlines())
@@ -905,7 +928,15 @@ def verify(
         dest = cp.path
         if dest.startswith(".notari/"):
             continue
-        content = _read_candidate_blob(root, candidate_sha, dest)
+        content, blob_truncated = _read_candidate_blob(
+            root, candidate_sha, dest, limits=limits
+        )
+        if blob_truncated:
+            scan_dispositions.append(
+                f"oversized-blob: {dest} exceeded {limits.max_diff_bytes} bytes (or the "
+                "read timed out) and was truncated; secret scanning did not cover the "
+                "whole file"
+            )
         if content is None:
             continue
         # For an IN-PLACE modification, only lines this change INTRODUCED can
@@ -915,7 +946,11 @@ def verify(
         # content into (or across) scope, so they stay fully scanned - that is
         # what catches a secret in a 100%-rename that has no added diff lines
         # (H-4) or in a brand-new file.
-        base_lines = _base_line_set(root, base, dest) if cp.status == "M" else frozenset()
+        base_lines = (
+            _base_line_set(root, base, dest, limits=limits)
+            if cp.status == "M"
+            else frozenset()
+        )
         for lineno, line in enumerate(content.splitlines(), 1):
             if line in base_lines:
                 continue
