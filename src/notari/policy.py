@@ -1619,9 +1619,13 @@ def path_in_scope(path: str, allowed_paths: Sequence[str]) -> bool:
 
 # Diverse probe paths for the unrestricted-scope check. A genuinely restrictive
 # allow-list excludes at least one of these; only a scope that admits EVERY one
-# is treated as unrestricted. The set spans a root file with no directory, a
-# dotfile, a dot-directory, a deep nested path, and assorted top-level dirs, so
-# a narrow scope (src/**, *.py, docs/) always fails at least one.
+# is treated as unrestricted. Adding probes can only make the check STRICTER
+# about calling a scope universal (a truly universal scope still matches them
+# all), so this never misses an unrestricted scope, it only cuts false warnings.
+# The set spans a root file with no directory, several distinct extensions plus
+# extensionless and binary-asset names (so an extension-list allowlist like
+# `**/*.py` fails), a dotfile, a dot-directory, a deep nested path, and assorted
+# top-level dirs (re-review defect 8 added the non-code names).
 _UNRESTRICTED_PROBES: Final[tuple[str, ...]] = (
     "src/main.py",
     "README.md",
@@ -1631,6 +1635,10 @@ _UNRESTRICTED_PROBES: Final[tuple[str, ...]] = (
     "a/b/c/d/e.txt",
     "docs/guide.md",
     "lib/vendor/thing.min.js",
+    "assets/logo.png",
+    "bin/run",
+    "Makefile",
+    "data/fixtures/sample.bin",
 )
 
 

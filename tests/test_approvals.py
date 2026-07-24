@@ -187,12 +187,17 @@ def test_consume_rejects_different_tool(tmp_path: Path) -> None:
 
 
 def test_expired_approval_is_inactive(tmp_path: Path) -> None:
+    import json
+
     p = tmp_path / "approvals.json"
     store = ApprovalStore(path=p)
     ap = store.issue("Bash", {"command": "ls"}, ttl_seconds=1)
-    # force expiry
-    ap.expires_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    store.save()
+    # Force expiry on disk (there is no public unlocked save; a real approval just
+    # ages out). Rewrite the record with a past expiry, then reload the store.
+    data = json.loads(p.read_text())
+    data[ap.token]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    p.write_text(json.dumps(data))
+    store = ApprovalStore.load(path=p)
     consumed = store.consume("Bash", {"command": "ls"})
     assert consumed is None
     # Active list excludes expired.
@@ -356,3 +361,25 @@ def test_mutators_fail_closed_without_posix_lock(tmp_path: Path, monkeypatch) ->
         store.revoke("any-token")
     with pytest.raises(ApprovalLockUnavailable):
         store.consume("Bash", {"command": "x"})
+
+
+def test_no_public_unlocked_save_to_resurrect_a_token(tmp_path: Path) -> None:
+    """Re-review defect 7: the public unlocked save() that let a stale in-memory
+    snapshot overwrite a concurrent consume (resurrecting the token) is gone. The
+    only writer is private (_write, called under the lock), so a stale store has
+    no supported way to persist and resurrect."""
+    p = tmp_path / "approvals.json"
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "deploy"})
+    a.approve(ap.token)
+
+    b = ApprovalStore.load(path=p)  # stale snapshot: token still approved+unconsumed
+    assert a.consume("Bash", {"command": "deploy"}) is not None
+
+    # There is no public save(); a stale writer cannot blind-overwrite.
+    assert not hasattr(b, "save"), "public unlocked save() must not exist"
+    # Any legitimate mutation on the stale store re-reads fresh under the lock,
+    # so it cannot restore the consumed token either.
+    b.issue("Edit", {"file": "x.py"})
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "deploy"}) is None

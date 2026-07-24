@@ -26,8 +26,8 @@ import contextlib
 import hashlib
 import json
 import secrets
-from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -174,11 +174,15 @@ class ApprovalStore:
             store.approvals[token] = ap
         return store
 
-    def save(self) -> None:
-        """Low-level writer. Call ONLY while holding the store lock (via
-        `_locked`); a bare save races a concurrent writer and can resurrect a
-        just-consumed token (F9). The mutators below all route through
-        `_locked`, so this is never an unguarded read-modify-write."""
+    def _write(self) -> None:
+        """Low-level writer. PRIVATE and unlocked: only `_locked` calls it, while
+        holding the exclusive lock, right after re-reading the authoritative
+        on-disk state. There is deliberately no public `save()`: a bare
+        blind-overwrite save on a stale in-memory snapshot could resurrect a
+        just-consumed token even under a lock (the write persists stale state,
+        not the concurrent consume), so the only supported mutation path is the
+        locked read-modify-write in `_locked` (security re-review 2026-07-23,
+        defect 7)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = {tok: ap.to_json() for tok, ap in self.approvals.items()}
         self.path.write_text(json.dumps(body, indent=2, sort_keys=True))
@@ -186,17 +190,18 @@ class ApprovalStore:
             self.path.chmod(0o600)
 
     @contextlib.contextmanager
-    def _locked(self) -> Any:
+    def _locked(self) -> Iterator[ApprovalStore]:
         """Exclusive lock around a full read-modify-write of the approvals file.
 
         Every mutator (issue / approve / revoke / consume) runs inside this so
         the sequence is atomic against other processes. The authoritative
         on-disk state is re-read INSIDE the lock and yielded as a fresh store;
-        the caller mutates that, then it is saved and mirrored back onto `self`,
-        all before the lock releases. Previously only consume() locked, so a
-        stale issue/approve/revoke writer could save an in-memory dict that
+        the caller mutates that, then it is written and adopted as `self`'s
+        state, all before the lock releases. Previously only consume() locked, so
+        a stale issue/approve/revoke writer could save an in-memory dict that
         still held a since-consumed token and restore it (security re-review
-        2026-07-23, F9).
+        2026-07-23, F9). `self.approvals` is rebound to the fresh dict, so a
+        caller only ever sees the just-persisted authoritative state.
 
         Fails CLOSED where POSIX file locking is unavailable: without a lock the
         race is unavoidable, so a mutation raises rather than risk a double
@@ -217,28 +222,14 @@ class ApprovalStore:
             try:
                 fresh = ApprovalStore.load(self.path)
                 yield fresh
-                fresh.save()
-                self._mirror_from(fresh)
+                fresh._write()
+                # Adopt the fresh dict wholesale. The object a mutator returns is
+                # taken FROM this fresh store, so the caller's handle and
+                # self.approvals reference the same instance (no stale-copy or
+                # split-identity, re-review defect 9).
+                self.approvals = fresh.approvals
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-
-    def _mirror_from(self, fresh: ApprovalStore) -> None:
-        """Adopt `fresh`'s state without orphaning Approval objects this store
-        has already handed out. A caller holding the object `issue()`/`approve()`
-        returned must keep seeing live fields (and a later `save()` must persist
-        its in-place edits), so for a token that already exists in memory we copy
-        the fresh fields INTO the existing object rather than swapping in the
-        freshly-loaded instance."""
-        merged: dict[str, Approval] = {}
-        for tok, fresh_ap in fresh.approvals.items():
-            existing = self.approvals.get(tok)
-            if existing is not None:
-                for f in fields(Approval):
-                    setattr(existing, f.name, getattr(fresh_ap, f.name))
-                merged[tok] = existing
-            else:
-                merged[tok] = fresh_ap
-        self.approvals = merged
 
     def issue(
         self,

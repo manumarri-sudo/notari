@@ -455,6 +455,21 @@ def test_scan_still_catches_opaque_hardcoded_password():
     assert any(h.pattern_name == "password-flag" for h in scan("mysql --password hunter2secret"))
 
 
+def test_scan_does_not_suppress_secrets_with_brackets_or_common_words():
+    # Re-review defect 3: the value filter over-suppressed. A real password that
+    # contains brackets, parens, or the letters of a common word ("sample") must
+    # still be caught, or the gate goes blind on genuine credentials.
+    for s in (
+        "DB_PASSWORD=Correct[Horse]Battery9!",
+        "DB_PASSWORD=ProdSample#2026!",
+        "API_TOKEN=Example_Xy91Kf22Qz",
+    ):
+        assert any(h.pattern_name == "env-secret" for h in scan(s)), s
+    assert any(
+        h.pattern_name == "password-flag" for h in scan("svc --password token(value)7xK9")
+    )
+
+
 def test_scan_env_secret_regex_is_not_redos():
     # Two unbounded [A-Z_]* around the keyword made this polynomial-backtracking
     # on a long keyword-free run with no trailing assignment. Bounded quantifiers

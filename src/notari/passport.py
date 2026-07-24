@@ -185,8 +185,12 @@ def render_markdown(
     else:
         scope = ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths)
     lines.append(f"- **Approved scope:** {scope}")
-    lines.append(f"- **Base commit:** `{_short(result.base_commit)}`")
-    lines.append(f"- **Head commit:** `{_short(result.head_commit)}`")
+    # base/head commit come from the contract / repo and are normally validated
+    # hex SHAs, but a crafted contract can carry arbitrary text there before
+    # validation, so neutralize before it lands in a code span (re-review defect
+    # 6): a bare backtick would otherwise close the span and inject markdown.
+    lines.append(f"- **Base commit:** `{_md_code(_short(result.base_commit))}`")
+    lines.append(f"- **Head commit:** `{_md_code(_short(result.head_commit))}`")
     lines.append("")
 
     # Collapse the raw evidence/trust detail so the PR summary stays scannable:
@@ -268,11 +272,15 @@ def render_markdown(
     if result.perimeter_id:
         lines.append("## Trust")
         lines.append("")
-        lines.append(f"- **Perimeter:** `{result.perimeter_id}`")
+        # perimeter_id / key_id originate from a perimeter that, in cooperative
+        # mode or before provenance is established, can be candidate-influenced,
+        # so wrap them in _md_code: a bare backtick or newline could otherwise
+        # close the span and inject a fake verdict heading (re-review defect 6).
+        lines.append(f"- **Perimeter:** `{_md_code(result.perimeter_id)}`")
         if result.provenance is not None:
             prov = result.provenance
             mark = "✅" if prov.status.is_trustworthy else "⚠️"
-            signer = f" (approver `{prov.key_id}`)" if prov.key_id else ""
+            signer = f" (approver `{_md_code(prov.key_id)}`)" if prov.key_id else ""
             lines.append(f"- **Perimeter provenance:** {mark} {prov.status.value}{signer}")
         lines.append(f"- **Strict mode:** {'on' if result.strict else 'off'}")
         lines.append("")
@@ -374,12 +382,17 @@ def _md_code(s: str, *, max_len: int = 240) -> str:
 
 
 def _md_line(s: str) -> str:
-    """Collapse line breaks in NOTARI'S OWN prose (remediation sentences) so an
-    embedded candidate path cannot end the current markdown line and inject a
-    following standalone heading. Backticks are left intact because this prose
-    legitimately uses code spans. Do NOT use on candidate-controlled fields, use
-    _md_text, which also neutralizes backticks and HTML."""
-    return s.replace("\r", " ").replace("\n", " ")
+    """Sanitize NOTARI'S OWN prose (remediation sentences) that EMBEDS a
+    candidate-controlled value (a task string or a path). Collapse line breaks so
+    the embedded value cannot end the line and inject a following standalone
+    heading, and escape angle brackets so it cannot emit raw HTML such as a
+    ``</details>`` that escapes the evidence fold (security re-review 2026-07-23,
+    defect 5). Backticks are LEFT intact because Notari's own remediation prose
+    legitimately uses code spans and a stray backtick in a single collapsed line
+    can at worst open an inert inline span, not a heading or HTML. For a field
+    that is ENTIRELY candidate-controlled use _md_text (which also neutralizes
+    backticks)."""
+    return s.replace("\r", " ").replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _md_text(s: str, *, max_len: int = 500) -> str:

@@ -2887,7 +2887,7 @@ def audit_verify(
     try:
         seal_head(p, key)
         sealed_ok = True
-    except Exception as e:  # noqa: BLE001 - best-effort seal, never fail the verify
+    except Exception as e:  # best-effort seal, must never fail the verify
         seal_error = e
     if not sealed_ok:
         console.print(

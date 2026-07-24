@@ -215,72 +215,77 @@ echo "Notari verdict: $VERDICT ($SAFE_REASONS)"
 #    and can never be redirected out of it.
 TREE_ROOT="$(pwd -P)"
 
-# Refuse a symlink at the publish dir OR at ANY existing ancestor component,
-# BEFORE we create anything. The earlier check inspected only the leaf and ran
-# AFTER `mkdir -p`, so a symlinked intermediate component (e.g. a planted
-# `_pr_checkout`) was followed by mkdir and the writes before detection, letting
-# a PR redirect our writes outside the checkout (security re-review 2026-07-23,
-# F1). We walk each already-existing component and stop at the first missing one
-# (nothing below it can be a symlink yet).
-notari_reject_symlink_path() { # $1 = path (need not fully exist)
-  local path="$1" acc comp
-  case "$path" in
-    /*) acc="" ;;   # absolute
-    *)  acc="." ;;  # relative to cwd
-  esac
-  local oldopts
-  oldopts="$(set +o)"          # save shell options (globbing state)
-  set -f                       # never glob-expand a path component
-  local IFS=/
-  for comp in $path; do
-    [[ -z "$comp" || "$comp" == "." ]] && continue
-    acc="$acc/$comp"
-    if [[ -L "$acc" ]]; then
-      echo "notari: refusing to publish, '$acc' is a symlink (F1)" >&2
-      exit 1
-    fi
-    [[ -e "$acc" ]] || break   # first missing component: stop
-  done
-  eval "$oldopts"              # restore globbing state
+# The publish is done by a small `python3 -I` helper rather than shell, because
+# the shell version could not close the attack safely (security re-review
+# 2026-07-23): a bare `[[ -L ]]` inspected only the leaf; `mkdir -p` followed a
+# symlinked INTERMEDIATE component before any check; `mv -f` FOLLOWS a
+# destination symlink-to-directory (moving our file outside the checkout instead
+# of replacing the link, GNU needs `-T`); a check-then-write by pathname left a
+# TOCTOU window; and `$(set +o)` captured `errexit` OFF (bash clears it in the
+# command-substitution subshell), so restoring it silently disabled fail-fast.
+#
+# The helper walks the publish dir one component at a time using openat on held
+# directory fds with O_NOFOLLOW|O_DIRECTORY, so a symlink at ANY component (leaf
+# or ancestor) fails closed and no symlink is ever traversed, which also confines
+# every write to the checkout without a separate containment check. It rejects
+# absolute paths and `..`, writes to a temp file created O_EXCL|O_NOFOLLOW in the
+# final dir fd, then renameat's it onto the destination, replacing any symlink
+# there without following it. Race-free (all operations are relative to fds we
+# hold, never re-resolved by pathname) and atomic. `-I` isolates the interpreter
+# so the candidate checkout on cwd cannot shadow `os`.
+NOTARI_SAFE_WRITE_PY='
+import os, sys
+tree_root, pub, name = sys.argv[1], sys.argv[2], sys.argv[3]
+data = sys.stdin.buffer.read()
+parts = [p for p in pub.replace("\\", "/").split("/") if p not in ("", ".")]
+if os.path.isabs(pub) or any(p == ".." for p in parts):
+    sys.exit("notari: refusing unsafe publish dir %r" % pub)
+if "/" in name or name in ("", ".", ".."):
+    sys.exit("notari: refusing unsafe dest name %r" % name)
+try:
+    root_fd = os.open(tree_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+except OSError as e:
+    sys.exit("notari: cannot open tree root %r: %s" % (tree_root, e))
+fds = [root_fd]
+try:
+    for comp in parts:
+        try:
+            os.mkdir(comp, 0o755, dir_fd=fds[-1])
+        except FileExistsError:
+            pass
+        try:
+            fds.append(os.open(comp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
+        except OSError as e:
+            sys.exit("notari: refusing to publish, %r is a symlink or not a directory (%s)" % (comp, e))
+    ddfd = fds[-1]
+    tmpname = ".notari.tmp.%d" % os.getpid()
+    try:
+        os.unlink(tmpname, dir_fd=ddfd)
+    except FileNotFoundError:
+        pass
+    wfd = os.open(tmpname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=ddfd)
+    try:
+        with os.fdopen(wfd, "wb") as fh:
+            fh.write(data)
+        os.rename(tmpname, name, src_dir_fd=ddfd, dst_dir_fd=ddfd)
+    except BaseException:
+        try:
+            os.unlink(tmpname, dir_fd=ddfd)
+        except OSError:
+            pass
+        raise
+finally:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+'
+notari_safe_put() { # $1=dest-basename; file CONTENT arrives on stdin
+  python3 -I -c "$NOTARI_SAFE_WRITE_PY" "$TREE_ROOT" "$PUBLISH_DIR" "$1"
 }
-
-notari_reject_symlink_path "$PUBLISH_DIR"
-mkdir -p "$PUBLISH_DIR"
-# Re-check the leaf did not race into a symlink between the walk and mkdir, and
-# that the fully-resolved dir is still inside the checkout.
-if [[ -L "$PUBLISH_DIR" ]]; then
-  echo "notari: refusing to publish into symlinked '$PUBLISH_DIR' (F1)" >&2
-  exit 1
-fi
-_pub_real="$(cd "$PUBLISH_DIR" 2>/dev/null && pwd -P)" || {
-  echo "notari: cannot resolve publish dir '$PUBLISH_DIR'" >&2
-  exit 1
-}
-case "$_pub_real/" in
-  "$TREE_ROOT/"*) : ;;  # inside the working tree, ok
-  *)
-    echo "notari: refusing to publish outside the checkout ('$_pub_real')" >&2
-    exit 1
-    ;;
-esac
-
-# Atomic, symlink-safe write: render into a temp file in the SAME (verified) dir,
-# then rename it onto the final name. `mv` replaces a symlink AT the dest (it
-# never writes through it) and rename(2) within a dir is atomic, closing the
-# check->write TOCTOU window that `cp` over a possibly-swapped dest left open.
-# We write into the RESOLVED dir ($_pub_real) so the final step cannot traverse
-# a component swapped after the walk.
-notari_safe_put() { # $1=src $2=dest-basename
-  local tmp
-  tmp="$(mktemp "$_pub_real/.notari.tmp.XXXXXX")" || {
-    echo "notari: cannot create temp file in '$_pub_real'" >&2
-    exit 1
-  }
-  cat "$1" >"$tmp"
-  mv -f "$tmp" "$_pub_real/$2"
-}
-notari_safe_put "$PASSPORT_JSON" "passport.json"
-[[ -f "$PASSPORT_MD" ]] && notari_safe_put "$PASSPORT_MD" "passport.md"
+notari_safe_put passport.json <"$PASSPORT_JSON"
+[[ -f "$PASSPORT_MD" ]] && notari_safe_put passport.md <"$PASSPORT_MD"
 
 # 5. Step output (so later steps / the job can branch on the verdict).
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -355,18 +360,12 @@ PY
 
   # Record the SHA + MAC we just posted so `notari verify-passport` can
   # cross-check that the status check on this commit was the one Notari wrote,
-  # not a spoof posted by an injected workflow on the same context.
-  # Same atomic, symlink-safe write as the passport artifacts above: a plain
-  # redirect would FOLLOW a symlink planted at the target, so we render into a
-  # temp file in the resolved dir and rename it into place.
-  _fp_tmp="$(mktemp "$_pub_real/.notari.tmp.XXXXXX")" || {
-    echo "notari: cannot create fingerprint temp file in '$_pub_real'" >&2
-    exit 1
-  }
+  # not a spoof posted by an injected workflow on the same context. Written
+  # through the same O_NOFOLLOW helper, so a symlink planted at the target is
+  # replaced, never followed.
   printf 'sha=%s\nmac=%s\ncontext=%s\nstate=%s\n' \
     "$STATUS_SHA" "$SAFE_MAC" "$STATUS_CONTEXT" "$STATE" \
-    >"$_fp_tmp"
-  mv -f "$_fp_tmp" "$_pub_real/status-fingerprint"
+    | notari_safe_put status-fingerprint
 fi
 
 # 8. Exit code: fail the job on BLOCK (when fail-on-block is on), and on

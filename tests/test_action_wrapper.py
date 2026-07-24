@@ -407,6 +407,51 @@ def test_symlinked_intermediate_component_is_refused(
     assert not (outside / "nested").exists(), "mkdir followed a symlinked ancestor"
 
 
+def test_symlinked_dest_to_outside_directory_is_not_followed(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Re-review defect 1: a passport file committed as a symlink to an OUTSIDE
+    DIRECTORY. `mv -f` treats such a dest as the target directory and moves the
+    file INTO it (outside the checkout); GNU needs `-T` to avoid that. The
+    O_NOFOLLOW + renameat publish must replace the symlink with a real file in
+    place and leave the outside directory empty."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")  # out of scope -> real BLOCK passport
+    notari_dir = root / ".notari"
+    notari_dir.mkdir(exist_ok=True)
+    link = notari_dir / "passport.json"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(outside)  # symlink to a DIRECTORY
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        capture_output=True,
+        text=True,
+    )
+    # Nothing was written into the outside directory...
+    assert not (outside / "passport.json").exists(), proc.stderr
+    assert list(outside.iterdir()) == [], "the outside dir must stay empty"
+    # ...and the published passport is a REAL file inside .notari.
+    published = notari_dir / "passport.json"
+    assert published.is_file() and not published.is_symlink()
+    assert json.loads(published.read_text())["verdict"] == "BLOCK"
+
+
 def test_publish_into_clean_nested_dir_succeeds(
     repo: tuple[Path, dict[str, str]]
 ) -> None:

@@ -220,6 +220,23 @@ class TestF5ModifiedFilePreexistingSecret:
         result = verify_mod.verify(contract=contract, root=repo)
         assert result.secret_findings, "a newly added secret in a modified file must be caught"
 
+    def test_duplicated_secret_line_is_caught_not_swallowed_by_base(self, repo: Path) -> None:
+        # Re-review defect 4: base-line subtraction must preserve multiplicity. If
+        # the base already has one secret line and the change adds a SECOND
+        # identical one, a plain set would suppress both; a multiset flags the copy.
+        key_line = f"API_KEY = '{_fake_openai_key()}'\n"
+        (repo / "src" / "dup.py").write_text(key_line)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "pre-existing single secret line")
+        contract, _ = contract_mod.begin("edit", allowed_paths=["**"], root=repo)
+        # Append an identical secret line (an in-place modification, status M).
+        with (repo / "src" / "dup.py").open("a") as fh:
+            fh.write(key_line)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "duplicate the secret line")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.secret_findings, "the duplicated (newly introduced) secret line must be caught"
+
 
 # ── F2: unrestricted scope is surfaced by verify, incl. non-literal spellings ──
 
@@ -711,6 +728,68 @@ class TestF11ProseFieldInjection:
             if not in_fence:
                 assert not line.lstrip().startswith("## Verdict: PASS"), line
         assert "&lt;/details&gt;" in md, "raw HTML in a reason must be escaped"
+
+    def _nonfence_text(self, md: str) -> str:
+        out, in_fence = [], False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                out.append(line)
+        return "\n".join(out)
+
+    def test_evil_task_in_remediation_prose_does_not_inject(self, repo: Path) -> None:
+        # Defect 5: the task string reaches remediation prose (explain.py) which
+        # the passport rendered through _md_line (CR/LF only), so raw HTML slipped
+        # through. An out-of-scope path makes the remediation block render.
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(
+            result.contract, "task", "<details><summary>VERIFIED PASS</summary>evil"
+        )
+        object.__setattr__(result, "out_of_scope", ("outside.py",))
+        md = passport_mod.render_markdown(result)
+        outside = self._nonfence_text(md)
+        # Outside code fences, the ONLY structural details/summary tags are the
+        # evidence fold's single pair; the task's tags must be escaped, not raw.
+        assert outside.count("<details>") == 1, "task injected a raw <details> outside a fence"
+        assert outside.count("<summary>") == 1, "task injected a raw <summary> outside a fence"
+
+    def test_evil_perimeter_id_does_not_inject(self, repo: Path) -> None:
+        # Defect 6: perimeter id bypassed sanitizing. Its code span must not be
+        # closable, and its newlines must not break out to inject a heading.
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "perimeter_id", "`\n</details>\n## Verdict: PASS\n<details>")
+        md = passport_mod.render_markdown(result)
+        outside = self._nonfence_text(md)
+        # No standalone fake heading (the value stays confined to one line inside
+        # an inline code span; its newlines were neutralized to a placeholder, so
+        # the </details> it carries renders inert and cannot start a new block).
+        for line in outside.splitlines():
+            assert not line.lstrip().startswith("## Verdict: PASS"), line
+        assert "␤" in md, "perimeter id newlines must be neutralized, not passed through"
+
+    def test_evil_base_commit_cannot_close_code_span(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "base_commit", "abc`\n## Verdict: PASS")
+        md = passport_mod.render_markdown(result)
+        for line in self._nonfence_text(md).splitlines():
+            assert not line.lstrip().startswith("## Verdict: PASS"), line
 
 
 class TestUnrestrictedScopeIsSurfaced:

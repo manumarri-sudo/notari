@@ -25,6 +25,7 @@ import re
 import select
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -518,26 +519,28 @@ def _read_candidate_blob(
     return _decode_blob(raw), truncated
 
 
-def _base_line_set(
+def _base_line_counts(
     root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
-) -> frozenset[str]:
-    """Lines already present in `path` at the base commit.
+) -> Counter[str]:
+    """Multiset of lines already present in `path` at the base commit.
 
     Used to keep the blob-level secret scan from BLOCKing a pre-existing
     credential (or a false-positive-shaped line) that this change never touched:
     an unrelated one-line edit must not fail because a secret sits elsewhere in
-    the same file (security re-review 2026-07-23, F5). A line counts as
-    introduced only when it is absent from this set. Called only for in-place
-    modifications; for an initial commit or a path with no base blob the set is
-    empty, so every line is treated as introduced. `git cat-file` reads any
-    `<sha>:<path>` tree blob, so the candidate-blob reader is reused against the
-    base here."""
+    the same file (security re-review 2026-07-23, F5). A candidate line counts as
+    introduced only once its running occurrence count EXCEEDS the base count, so
+    duplicating a secret line (base has one, candidate adds a second identical
+    one) is still caught, a plain set would have swallowed the copy (re-review
+    defect 4). Called only for in-place modifications; for an initial commit or a
+    path with no base blob the multiset is empty, so every line is introduced.
+    `git cat-file` reads any `<sha>:<path>` tree blob, so the candidate-blob
+    reader is reused against the base here."""
     if not base_sha or base_sha == _EMPTY_TREE:
-        return frozenset()
+        return Counter()
     content, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if content is None:
-        return frozenset()
-    return frozenset(content.splitlines())
+        return Counter()
+    return Counter(content.splitlines())
 
 
 def _block_result(
@@ -946,13 +949,18 @@ def verify(
         # content into (or across) scope, so they stay fully scanned - that is
         # what catches a secret in a 100%-rename that has no added diff lines
         # (H-4) or in a brand-new file.
-        base_lines = (
-            _base_line_set(root, base, dest, limits=limits)
+        base_counts = (
+            _base_line_counts(root, base, dest, limits=limits)
             if cp.status == "M"
-            else frozenset()
+            else Counter()
         )
+        seen_counts: Counter[str] = Counter()
         for lineno, line in enumerate(content.splitlines(), 1):
-            if line in base_lines:
+            seen_counts[line] += 1
+            # Suppress only as many occurrences of a line as the base had; the
+            # (N+1)th identical line is newly introduced and must be scanned, so a
+            # duplicated secret line cannot hide behind its pre-existing twin.
+            if seen_counts[line] <= base_counts.get(line, 0):
                 continue
             for hit in _secrets.scan(line):
                 blob_secret_findings.append(

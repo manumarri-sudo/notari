@@ -355,9 +355,24 @@ _NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
     }
 )
 
-_NONSECRET_SUBSTRINGS: Final[tuple[str, ...]] = (
-    "changeme", "change_me", "change-me", "example", "placeholder", "your_",
-    "your-", "yourpassword", "redacted", "dummy", "sample", "<", ">", "...",
+# Whole-value stand-ins (after quote-stripping). These match the ENTIRE value,
+# not a substring: a real password may legitimately contain the letters of
+# "sample" or "example", so treating those as a substring signal suppressed
+# genuine credentials (security re-review 2026-07-23, defect 3). Only a value
+# that IS a placeholder counts.
+_NONSECRET_WHOLE: Final[frozenset[str]] = frozenset(
+    {
+        "changeme", "change_me", "change-me", "placeholder", "redacted",
+        "example", "sample", "dummy", "todo", "tbd", "value", "string",
+    }
+)
+
+# Code-reference signals: the value is an env lookup / config read, not a
+# literal. These are specific tokens, not "contains a bracket" (a real secret
+# can contain brackets or parens).
+_CODE_REF_SIGNALS: Final[tuple[str, ...]] = (
+    "os.environ", "os.getenv", "getenv(", "process.env", "config.get(",
+    "settings.", "secrets.get", "vault.", ".env[",
 )
 
 
@@ -365,9 +380,12 @@ def _looks_like_nonsecret(value: str) -> bool:
     """True when a low-confidence inline VALUE is plainly not a literal secret.
 
     Applied only to `_LOW_CONFIDENCE_INLINE` shapes in `scan()`, so the blocking
-    gate stops false-BLOCKing ordinary code. A genuine hardcoded opaque password
-    matches none of these and is still caught; vendor-format keys are matched by
-    `_PATTERNS` regardless of assignment form.
+    gate stops false-BLOCKing ordinary code (env lookups, working-dir vars,
+    placeholders, doc flags). It is deliberately CONSERVATIVE: a genuine opaque
+    password that merely contains a bracket, a paren, or the letters of a common
+    word must still be caught, and vendor-format keys are matched by `_PATTERNS`
+    regardless of assignment form. Missing a real secret is worse than a rare
+    false positive, so only clear references and whole-value placeholders qualify.
     """
     v = value.strip()
     # Peel one layer of matching surrounding quotes so a quoted stand-in reads
@@ -377,22 +395,31 @@ def _looks_like_nonsecret(value: str) -> bool:
     if not v:
         return True
     low = v.lower()
-    # Shell/template/env reference or command substitution, not a literal.
-    if v[0] in "$%<{" or v.startswith("${") or "$(" in v or "`" in v:
+    # Shell / template / env reference or command substitution (value STARTS as a
+    # reference, or contains a command substitution / interpolation).
+    if v[0] in "$%{" or v.startswith("${") or "$(" in v or "`" in v:
         return True
-    # A code expression (call, index, attribute lookup), not a hardcoded value.
-    if any(c in v for c in "()[]") or ".environ" in low or "getenv" in low or "process.env" in low:
+    # An angle-bracket placeholder: <token>, <your-password>.
+    if v.startswith("<") and v.endswith(">"):
+        return True
+    # A code expression that reads the value from elsewhere (specific tokens, not
+    # "contains any bracket"): os.environ[...], getenv(...), config.get(...).
+    if any(sig in low for sig in _CODE_REF_SIGNALS):
         return True
     # A filesystem path (the working-directory-var class), not a credential.
     if v.startswith(("/", "./", "../", "~/")):
         return True
-    # Named stand-ins and repeated filler.
-    if low in _NONSECRET_TOKENS or any(t in low for t in _NONSECRET_SUBSTRINGS):
+    # The WHOLE value is a known stand-in / placeholder word (not a substring).
+    if low in _NONSECRET_TOKENS or low in _NONSECRET_WHOLE:
         return True
+    # A template placeholder spelled as a whole value: your-api-key, YOUR_TOKEN.
+    if low.startswith(("your_", "your-")):
+        return True
+    # Repeated filler (xxxx, ****, ----, ....).
     if len(set(v)) == 1:
         return True
     # An ALL-CAPS identifier used as the value (doc/help text, or a reference to
-    # another env-var name rather than an embedded secret).
+    # another env-var name rather than an embedded secret): --password PASSWORD.
     if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", v):
         return True
     return False

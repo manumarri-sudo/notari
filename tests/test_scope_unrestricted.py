@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from notari.policy import path_in_scope, scope_is_unrestricted
+from notari.policy import _UNRESTRICTED_PROBES, path_in_scope, scope_is_unrestricted
 
 # Universal spellings: each admits every path through the segment matcher.
 _UNIVERSAL = [
@@ -35,16 +35,14 @@ _RESTRICTIVE = [
     ["src/main.py"],
     ["src/**", "docs/**"],
     ["*"],  # segment-aware `*` matches root files only, not nested paths
+    # Re-review defect 8: an extension-list allowlist admits code/docs but not a
+    # binary asset, so it must NOT be flagged unrestricted.
+    ["*", "**/*.py", "**/*.md", "**/*.yml", "a/**", "lib/**"],
 ]
 
-_SAMPLE_PATHS = [
-    "src/main.py",
-    "README.md",
-    ".env",
-    ".github/workflows/ci.yml",
-    "a/b/c/d/e.txt",
-    "lib/vendor/thing.min.js",
-]
+# The detector's property is defined relative to ITS probe set, so the
+# consistency checks below probe exactly that set.
+_SAMPLE_PATHS = list(_UNRESTRICTED_PROBES)
 
 
 @pytest.mark.parametrize("scope", _UNIVERSAL)
