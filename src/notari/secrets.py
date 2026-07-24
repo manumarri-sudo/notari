@@ -253,15 +253,22 @@ def scan(
     for label, cred_re in _INLINE_CRED_PATTERNS:
         for m in cred_re.finditer(text):
             s, e = m.span("secret")
-            if e > s:
-                hits.append(
-                    SecretHit(
-                        pattern_name=label,
-                        matched_at=s,
-                        length=e - s,
-                        line=_line_for_offset(text, s),
-                    ),
-                )
+            if e <= s:
+                continue
+            # Low-confidence inline shapes gate on the VALUE: skip references,
+            # paths, and placeholders so the blocking scanner does not fire on
+            # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
+            # shapes are specific enough to report unconditionally.
+            if label in _LOW_CONFIDENCE_INLINE and _looks_like_nonsecret(text[s:e]):
+                continue
+            hits.append(
+                SecretHit(
+                    pattern_name=label,
+                    matched_at=s,
+                    length=e - s,
+                    line=_line_for_offset(text, s),
+                ),
+            )
     return hits
 
 
@@ -305,14 +312,90 @@ _INLINE_CRED_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     # FOO_PASSWORD=... / DB_SECRET=... / X_TOKEN=... inline env assignment.
     # The `(?!\[REDACTED:)` guard keeps redact() idempotent: an already-
     # redacted marker (which contains a space) is not re-matched.
+    #
+    # The identifier runs on either side of the keyword are length-bounded
+    # ({0,64}) rather than unbounded `*`. Two unbounded `[A-Z_]*` around a
+    # keyword whose own letters live in the same class made this pattern
+    # polynomial-backtracking (ReDoS) on a long keyword-free upper/underscore
+    # run with no trailing assignment (security re-review 2026-07-23, F5).
+    # Finite bounds cap the per-start work at a constant, so finditer stays
+    # linear; 64 identifier chars on each flank is far past any real env-var
+    # name. The value is likewise bounded so a pathological line cannot blow
+    # the match up.
     (
         "env-secret",
         re.compile(
-            r"(?i)\b[A-Z_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[-_]?KEY|PWD)[A-Z_]*"
-            r"\s*=\s*(?P<secret>(?!\[REDACTED:)\S+)",
+            r"(?i)\b[A-Z0-9_]{0,64}(?:PASSWORD|PASSWD|SECRET|TOKEN|API[-_]?KEY|PWD)"
+            r"[A-Z0-9_]{0,64}\s*=\s*(?P<secret>(?!\[REDACTED:)\S{1,4096})",
         ),
     ),
 )
+
+# Inline shapes whose match depends on a loosely-structured VALUE (an assignment
+# right-hand side or a CLI flag argument) rather than a vendor-anchored prefix.
+# These are the false-positive-prone ones: redact() still applies them
+# unconditionally (over-redacting a log line is harmless), but scan() - which
+# feeds the BLOCKING gate - first rejects values that are plainly not literal
+# credentials (env/command references, filesystem paths, angle-placeholder
+# tokens, doc-flag stand-ins). The vendor-anchored inline shapes (bearer header,
+# aws_secret_access_key, DSN password) are specific enough that they scan
+# unfiltered. Added after F5 regressed usability by BLOCKing ordinary code
+# (env lookups, working-directory vars, placeholders, doc flags), 2026-07-23.
+_LOW_CONFIDENCE_INLINE: Final[frozenset[str]] = frozenset(
+    {"password-flag", "mysql-pflag", "env-secret"}
+)
+
+# Lowercased values that are stand-ins, not secrets. Kept small and literal;
+# fuzzier stand-ins are caught by the substring list below.
+_NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "none", "null", "nil", "true", "false", "na", "n/a", "tbd", "todo",
+        "password", "passwd", "secret", "token", "pwd", "apikey", "api_key",
+        "key", "xxx", "test", "foo", "bar", "baz", "value", "string",
+    }
+)
+
+_NONSECRET_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "changeme", "change_me", "change-me", "example", "placeholder", "your_",
+    "your-", "yourpassword", "redacted", "dummy", "sample", "<", ">", "...",
+)
+
+
+def _looks_like_nonsecret(value: str) -> bool:
+    """True when a low-confidence inline VALUE is plainly not a literal secret.
+
+    Applied only to `_LOW_CONFIDENCE_INLINE` shapes in `scan()`, so the blocking
+    gate stops false-BLOCKing ordinary code. A genuine hardcoded opaque password
+    matches none of these and is still caught; vendor-format keys are matched by
+    `_PATTERNS` regardless of assignment form.
+    """
+    v = value.strip()
+    # Peel one layer of matching surrounding quotes so a quoted stand-in reads
+    # as a stand-in, not a literal.
+    if len(v) >= 2 and v[0] in "\"'`" and v[-1] == v[0]:
+        v = v[1:-1].strip()
+    if not v:
+        return True
+    low = v.lower()
+    # Shell/template/env reference or command substitution, not a literal.
+    if v[0] in "$%<{" or v.startswith("${") or "$(" in v or "`" in v:
+        return True
+    # A code expression (call, index, attribute lookup), not a hardcoded value.
+    if any(c in v for c in "()[]") or ".environ" in low or "getenv" in low or "process.env" in low:
+        return True
+    # A filesystem path (the working-directory-var class), not a credential.
+    if v.startswith(("/", "./", "../", "~/")):
+        return True
+    # Named stand-ins and repeated filler.
+    if low in _NONSECRET_TOKENS or any(t in low for t in _NONSECRET_SUBSTRINGS):
+        return True
+    if len(set(v)) == 1:
+        return True
+    # An ALL-CAPS identifier used as the value (doc/help text, or a reference to
+    # another env-var name rather than an embedded secret).
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", v):
+        return True
+    return False
 
 
 def redact(text: str, *, extra_patterns: Iterable[SecretPattern] = ()) -> str:

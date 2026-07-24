@@ -497,6 +497,26 @@ def _read_candidate_blob(root: Path, candidate_sha: str, path: str) -> str | Non
     return _decode_blob(proc.stdout)
 
 
+def _base_line_set(root: Path, base_sha: str | None, path: str) -> frozenset[str]:
+    """Lines already present in `path` at the base commit.
+
+    Used to keep the blob-level secret scan from BLOCKing a pre-existing
+    credential (or a false-positive-shaped line) that this change never touched:
+    an unrelated one-line edit must not fail because a secret sits elsewhere in
+    the same file (security re-review 2026-07-23, F5). A line counts as
+    introduced only when it is absent from this set. Called only for in-place
+    modifications; for an initial commit or a path with no base blob the set is
+    empty, so every line is treated as introduced. `git cat-file` reads any
+    `<sha>:<path>` tree blob, so the candidate-blob reader is reused against the
+    base here."""
+    if not base_sha or base_sha == _EMPTY_TREE:
+        return frozenset()
+    content = _read_candidate_blob(root, base_sha, path)
+    if content is None:
+        return frozenset()
+    return frozenset(content.splitlines())
+
+
 def _block_result(
     contract: Contract,
     reason: str,
@@ -888,7 +908,17 @@ def verify(
         content = _read_candidate_blob(root, candidate_sha, dest)
         if content is None:
             continue
+        # For an IN-PLACE modification, only lines this change INTRODUCED can
+        # BLOCK: a pre-existing credential on an untouched line is not this
+        # contract's diff to answer for and must not fail an unrelated one-line
+        # edit (F5 re-review). Adds, renames, and copies bring the whole file
+        # content into (or across) scope, so they stay fully scanned - that is
+        # what catches a secret in a 100%-rename that has no added diff lines
+        # (H-4) or in a brand-new file.
+        base_lines = _base_line_set(root, base, dest) if cp.status == "M" else frozenset()
         for lineno, line in enumerate(content.splitlines(), 1):
+            if line in base_lines:
+                continue
             for hit in _secrets.scan(line):
                 blob_secret_findings.append(
                     policy.SecretFinding(path=dest, line=lineno, pattern_name=hit.pattern_name)

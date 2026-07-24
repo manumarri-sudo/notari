@@ -407,3 +407,63 @@ def test_scan_does_not_flag_ordinary_prose():
     hits = [h.pattern_name for h in scan(s)]
     assert "env-secret" not in hits
     assert "password-flag" not in hits
+
+
+# ---------------------------------------------------------------------------
+# F5 re-review (2026-07-23): the low-confidence inline shapes REGRESSED
+# usability by BLOCKing ordinary code. scan() must not fire on env/command
+# references, filesystem paths, placeholders, or doc-flag stand-ins, while a
+# genuine hardcoded opaque credential is still caught.
+# ---------------------------------------------------------------------------
+
+
+def test_scan_ignores_env_lookup_not_a_literal():
+    for s in (
+        'API_KEY = os.environ["API_KEY"]',
+        "DB_PASSWORD = os.getenv('DB_PASSWORD')",
+        "token = process.env.TOKEN",
+        'SECRET = config.get("secret")',
+    ):
+        hits = [h.pattern_name for h in scan(s)]
+        assert "env-secret" not in hits, s
+
+
+def test_scan_ignores_working_dir_and_path_values():
+    for s in ("PWD=$(pwd)", "export OLDPWD=$PWD", "SECRET_DIR=/etc/app/secrets"):
+        hits = [h.pattern_name for h in scan(s)]
+        assert "env-secret" not in hits, s
+
+
+def test_scan_ignores_placeholders_and_doc_flags():
+    for s in (
+        "PASSWORD=changeme",
+        "API_KEY=your-api-key-here",
+        "SECRET=xxxxxxxx",
+        "app --password <your-password>",
+        "connect --token TOKEN --host db",
+        "DB_SECRET=${DB_SECRET}",
+    ):
+        hits = [h.pattern_name for h in scan(s)]
+        assert "env-secret" not in hits, s
+        assert "password-flag" not in hits, s
+
+
+def test_scan_still_catches_opaque_hardcoded_password():
+    # A real embedded credential (no reference, no placeholder) must survive the
+    # value filter so the fix narrows false positives without going blind.
+    assert any(h.pattern_name == "env-secret" for h in scan("DB_PASSWORD=hunter2secret"))
+    assert any(h.pattern_name == "password-flag" for h in scan("mysql --password hunter2secret"))
+
+
+def test_scan_env_secret_regex_is_not_redos():
+    # Two unbounded [A-Z_]* around the keyword made this polynomial-backtracking
+    # on a long keyword-free run with no trailing assignment. Bounded quantifiers
+    # keep it linear: a pathological input must return promptly and match nothing.
+    import time
+
+    pathological = ("PASSWORD" * 5000) + "!"  # long, keyword-dense, no '=' value
+    start = time.perf_counter()
+    hits = [h.pattern_name for h in scan(pathological)]
+    elapsed = time.perf_counter() - start
+    assert "env-secret" not in hits
+    assert elapsed < 1.0, f"scan took {elapsed:.2f}s, possible ReDoS"

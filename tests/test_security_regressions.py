@@ -184,6 +184,43 @@ class TestH4RenameSecretDetection:
         assert not result.secret_findings
 
 
+# ── F5 re-review: modified-file blob scan must not block pre-existing secrets ──
+
+
+class TestF5ModifiedFilePreexistingSecret:
+    """The whole-file blob scan false-BLOCKed an unrelated one-line edit when a
+    pre-existing secret sat elsewhere in the same file (security re-review
+    2026-07-23, F5). An in-place modification must only be answerable for the
+    lines it introduces; a secret it newly adds is still caught."""
+
+    def test_preexisting_secret_on_untouched_line_does_not_block(self, repo: Path) -> None:
+        (repo / "src" / "legacy.py").write_text(
+            f"API_KEY = '{_fake_openai_key()}'\n\n\ndef untouched():\n    return 1\n"
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "pre-existing secret already in the tree")
+        contract, _ = contract_mod.begin("edit an unrelated line", allowed_paths=["**"], root=repo)
+        # Append a new, secret-free line; the credential line is untouched.
+        with (repo / "src" / "legacy.py").open("a") as fh:
+            fh.write("\n# added a harmless comment\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "unrelated edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert not result.secret_findings, "pre-existing secret on an untouched line must not block"
+
+    def test_newly_added_secret_in_modified_file_is_caught(self, repo: Path) -> None:
+        (repo / "src" / "svc.py").write_text("def handler():\n    return 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "clean module")
+        contract, _ = contract_mod.begin("add config", allowed_paths=["**"], root=repo)
+        with (repo / "src" / "svc.py").open("a") as fh:
+            fh.write(f"API_KEY = '{_fake_openai_key()}'\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "introduce a secret")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.secret_findings, "a newly added secret in a modified file must be caught"
+
+
 # ── R6-H1: UTF-16 encoded secrets ─────────────────────────────────────────────
 
 
