@@ -11,9 +11,11 @@ from pathlib import Path
 
 import pytest
 
+import notari.approvals as approvals_mod
 from notari.approvals import (
     DEFAULT_TTL_SECONDS,
     Approval,
+    ApprovalLockUnavailable,
     ApprovalStore,
     args_digest,
 )
@@ -292,3 +294,65 @@ def test_concurrent_consume_yields_exactly_one_winner(tmp_path: Path) -> None:
     outs = [p.communicate()[0].strip() for p in procs]
     assert outs.count("WON") == 1, outs
     assert outs.count("LOST") == 7, outs
+
+
+# ── F9 re-review: mutators lock too (not just consume), fail closed off-POSIX ──
+
+
+def test_stale_issue_writer_cannot_resurrect_consumed_token(tmp_path: Path) -> None:
+    """The core F9 race: only consume() used to lock, so a stale issue/approve/
+    revoke writer would save an in-memory dict that still held a since-consumed
+    token and bring it back to life. With every mutator locked and re-reading
+    on-disk state first, a consumed token stays consumed no matter what a stale
+    instance writes afterwards."""
+    p = tmp_path / "approvals.json"
+
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "rm -rf x"})
+    a.approve(ap.token)
+
+    # b loads the approved-but-unconsumed state, then goes stale.
+    b = ApprovalStore.load(path=p)
+
+    # a consumes the one-shot token.
+    assert a.consume("Bash", {"command": "rm -rf x"}) is not None
+
+    # b (stale) now writes via a different mutator; its in-memory copy still
+    # thinks the token is unconsumed. It must NOT restore it.
+    b.issue("Edit", {"file": "unrelated.py"})
+
+    # A fresh reader must still see the original token as spent.
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "rm -rf x"}) is None
+
+
+def test_stale_approve_writer_cannot_resurrect_consumed_token(tmp_path: Path) -> None:
+    p = tmp_path / "approvals.json"
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "deploy"})
+    a.approve(ap.token)
+    other = a.issue("Bash", {"command": "other"})
+
+    b = ApprovalStore.load(path=p)  # stale: sees both tokens unconsumed
+    assert a.consume("Bash", {"command": "deploy"}) is not None
+    b.approve(other.token)  # stale writer touches a DIFFERENT token
+
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "deploy"}) is None
+
+
+def test_mutators_fail_closed_without_posix_lock(tmp_path: Path, monkeypatch) -> None:
+    """Where fcntl is unavailable there is no way to make the write race-safe, so
+    every mutator raises rather than perform an unlocked read-modify-write that
+    could restore a consumed token. Hook callers suppress this, so the effect is
+    'stay blocked', never 'silently allow'."""
+    monkeypatch.setattr(approvals_mod, "_HAS_FLOCK", False)
+    store = ApprovalStore(path=tmp_path / "approvals.json")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.issue("Bash", {"command": "x"})
+    with pytest.raises(ApprovalLockUnavailable):
+        store.approve("any-token")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.revoke("any-token")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.consume("Bash", {"command": "x"})
