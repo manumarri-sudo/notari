@@ -221,6 +221,48 @@ class TestF5ModifiedFilePreexistingSecret:
         assert result.secret_findings, "a newly added secret in a modified file must be caught"
 
 
+# ── F2: unrestricted scope is surfaced by verify, incl. non-literal spellings ──
+
+
+class TestF2UnrestrictedScopeSurfaced:
+    """verify must flag an unrestricted per-task scope in its reasons, and the
+    flag must fire on universal globs a literal check missed (`**/**`), not only
+    on the bare `**` (security re-review 2026-07-23, F2)."""
+
+    def test_verify_warns_on_star_star(self, repo: Path) -> None:
+        (repo / "src" / "a.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["**"], root=repo)
+        (repo / "src" / "a.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert any("unrestricted" in r for r in result.reasons), result.reasons
+
+    def test_verify_warns_on_globstar_over_globstar(self, repo: Path) -> None:
+        (repo / "src" / "b.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["**/**"], root=repo)
+        (repo / "src" / "b.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert any("unrestricted" in r for r in result.reasons), result.reasons
+
+    def test_verify_does_not_warn_on_restricted_scope(self, repo: Path) -> None:
+        (repo / "src" / "c.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "c.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert not any("unrestricted" in r for r in result.reasons), result.reasons
+
+
 # ── R6-H1: UTF-16 encoded secrets ─────────────────────────────────────────────
 
 

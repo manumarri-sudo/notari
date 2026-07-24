@@ -1617,16 +1617,37 @@ def path_in_scope(path: str, allowed_paths: Sequence[str]) -> bool:
     return any(_path_matches(path, p) for p in allowed_paths)
 
 
-def scope_is_unrestricted(allowed_paths: Sequence[str]) -> bool:
-    """True if the scope permits every path: empty, or a universal glob.
+# Diverse probe paths for the unrestricted-scope check. A genuinely restrictive
+# allow-list excludes at least one of these; only a scope that admits EVERY one
+# is treated as unrestricted. The set spans a root file with no directory, a
+# dotfile, a dot-directory, a deep nested path, and assorted top-level dirs, so
+# a narrow scope (src/**, *.py, docs/) always fails at least one.
+_UNRESTRICTED_PROBES: Final[tuple[str, ...]] = (
+    "src/main.py",
+    "README.md",
+    "rootfile",
+    ".env",
+    ".github/workflows/ci.yml",
+    "a/b/c/d/e.txt",
+    "docs/guide.md",
+    "lib/vendor/thing.min.js",
+)
 
-    Matches `path_in_scope`'s universal cases (`**`, `.`) so the CLI and the
-    passport can flag "this contract's per-task boundary is the perimeter only"
-    whether the scope was omitted (legacy) or set explicitly to `--scope '**'`.
+
+def scope_is_unrestricted(allowed_paths: Sequence[str]) -> bool:
+    """True if the scope effectively permits every path.
+
+    Decided with the SAME matcher the gate enforces with (`path_in_scope`), not a
+    literal spelling check: a scope is unrestricted iff it admits every probe in
+    `_UNRESTRICTED_PROBES`. A spelling check missed universal globs that are not
+    literally `**` - `**/**`, `*/**`, `./**`, `**/` all match everything through
+    the segment matcher yet slipped past the flag, so the CLI warning and the
+    passport could read a wide-open contract as scoped (security re-review
+    2026-07-23, F2). Empty stays unrestricted (no per-task boundary declared).
     """
     if not allowed_paths:
         return True
-    return any(p.strip().rstrip("/") in ("**", ".") for p in allowed_paths)
+    return all(path_in_scope(probe, allowed_paths) for probe in _UNRESTRICTED_PROBES)
 
 
 def classify_sensitive_surface(path: str) -> str | None:

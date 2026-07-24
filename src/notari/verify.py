@@ -1059,6 +1059,18 @@ def verify(
     reasons: list[str] = []
     reasons.extend(reasons_ancestry)
     reasons.extend(empty_diff_warning)
+    # Surface an unrestricted per-task scope explicitly rather than letting a
+    # wide-open contract read as a scoped one (security re-review 2026-07-23,
+    # F2). This is a warning, not a block: the scope model deliberately keeps the
+    # signed perimeter (not the per-task scope) as the load-bearing boundary, so
+    # `--scope '**'` is a legitimate conscious opt-out that still verifies. The
+    # detector uses the enforcement matcher, so this now also fires on `**/**`
+    # and the other universal spellings a literal check missed.
+    if policy.scope_is_unrestricted(contract.allowed_paths):
+        reasons.append(
+            "warning: contract scope is unrestricted (every path is in scope); "
+            "the signed perimeter is the only boundary for this change"
+        )
     if unwaived_secrets:
         tail = "" if secrets_block else " (perimeter block_secrets=false: review, not block)"
         reasons.append(f"{len(unwaived_secrets)} secret(s) detected on added lines{tail}")
