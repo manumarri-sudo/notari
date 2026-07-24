@@ -58,4 +58,9 @@ jobs:
           gate-key: ${{ secrets.NOTARI_GATE_KEY }}
           gate-pubkeys: ${{ vars.NOTARI_GATE_PUBKEYS }}
           approver-pubkeys: ${{ secrets.NOTARI_APPROVER_PUBKEYS }}
-          passport-dir: _pr_checkout/.notari
+          # Leave passport-dir at its default (.notari). The wrapper cd's into
+          # checkout-path first, so passport-dir is ALREADY relative to the
+          # candidate checkout; passing "_pr_checkout/.notari" here re-nested it
+          # to _pr_checkout/_pr_checkout/.notari and, worse, manufactured an
+          # intermediate _pr_checkout component inside the checkout that a PR
+          # symlink could redirect (security re-review 2026-07-23, N4 + F1).

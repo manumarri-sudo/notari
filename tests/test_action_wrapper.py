@@ -366,3 +366,71 @@ def test_symlinked_publish_dir_is_refused(
     assert "symlink" in (proc.stdout + proc.stderr).lower()
     # Nothing was written into the outside dir.
     assert not (outside / "passport.json").exists()
+
+
+def test_symlinked_intermediate_component_is_refused(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """F1 re-review (2026-07-23): the leaf-only check plus the check-after-mkdir
+    order let a symlinked INTERMEDIATE component slip through. A PR plants
+    `pubdir` as a symlink to an outside dir and asks to publish into
+    `pubdir/nested`. `mkdir -p` would have followed the link and created the
+    dir OUTSIDE the checkout before the containment check ran. The wrapper must
+    refuse on the ancestor symlink, before creating anything."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")
+    # The intermediate component (not the leaf) is the symlink out of the tree.
+    (root / "pubdir").symlink_to(outside)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "pubdir/nested"},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "symlink" in (proc.stdout + proc.stderr).lower()
+    # mkdir -p must NOT have followed the link to create the dir outside.
+    assert not (outside / "nested").exists(), "mkdir followed a symlinked ancestor"
+
+
+def test_publish_into_clean_nested_dir_succeeds(
+    repo: tuple[Path, dict[str, str]]
+) -> None:
+    """The hardening must not regress the ordinary case: publishing into a
+    real nested dir that does not yet exist works and lands a real file."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")  # out of scope -> real BLOCK passport
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "artifacts/notari"},
+        capture_output=True,
+        text=True,
+    )
+    published = root / "artifacts" / "notari" / "passport.json"
+    assert published.is_file() and not published.is_symlink(), proc.stderr
+    assert json.loads(published.read_text())["verdict"] == "BLOCK"
