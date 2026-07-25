@@ -405,7 +405,7 @@ class TestMixedEncodingBlobDoesNotHideACredential:
     def _scan_views(raw: bytes) -> set[str]:
         return {
             h.pattern_name
-            for view in verify_mod._decode_blob_views(raw)
+            for view in verify_mod._decode_blob_views(raw)[0]
             for h in secrets_mod.scan(view)
         }
 
@@ -439,7 +439,7 @@ class TestMixedEncodingBlobDoesNotHideACredential:
         at the start of the next and synthesise a credential present in NEITHER,
         which would BLOCK a clean change."""
         raw = ("A" * 17 + "\nAuthorization: Bearer ").encode("latin-1") + b"\x00" + b"4f9KzQ2LmN8PrT7"
-        views = verify_mod._decode_blob_views(raw)
+        views, _complete = verify_mod._decode_blob_views(raw)
         assert len(views) > 1
         assert all(isinstance(v, str) for v in views)
 
@@ -448,7 +448,7 @@ class TestMixedEncodingBlobDoesNotHideACredential:
         """The primary decoding comes first and keeps its own numbering, so the line
         reported for a genuine wide-encoded file is the file's own line."""
         text = 'AWS_KEY = "' + _VENDOR + '"\n'
-        primary = verify_mod._decode_blob_views(text.encode(encoding))[0]
+        primary = verify_mod._decode_blob_views(text.encode(encoding))[0][0]
         hits = [h for h in secrets_mod.scan(primary) if h.pattern_name == "AWS Access Key ID"]
         assert [h.line for h in hits] == [1]
 
@@ -591,3 +591,44 @@ class TestBaseLineSuppressionSurvivesTheViewsChange:
         """The reason base-line counting exists at all."""
         result = self._modify(repo, f'a = "{self.K}"\n', f'a = "{self.K}"\nunrelated = 1\n')
         assert not [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+
+
+class TestViewBudgetBoundsTheScanCost:
+    """Views multiply scanning work, and a candidate controls how many large
+    NUL-bearing files a PR touches. Measured before the budget: a 52 MB UTF-16 blob
+    produced 3 views, 16.2s of scanning and 288 MB peak RSS, against roughly 5s for
+    the single-view path. That only DELAYS a verdict rather than forging one, since
+    no verdict means the required check never turns green, but a gate that can be
+    stalled for minutes per file is a denial-of-service worth bounding.
+
+    The budget must degrade LOUDLY: dropped views are reported as a disposition so
+    an incomplete scan is never presented as a clean pass."""
+
+    def test_small_blobs_keep_every_view(self) -> None:
+        raw = ('AWS = "x"\n' * 5).encode("utf-16-le")
+        views, complete = verify_mod._decode_blob_views(raw)
+        assert complete is True
+        assert len(views) > 1
+
+    def test_oversized_blob_drops_views_and_says_so(self) -> None:
+        raw = ("hello world\n" * 300_000).encode("utf-16-le")
+        views, complete = verify_mod._decode_blob_views(raw, max_chars=1024)
+        assert complete is False
+        # The primary decoding is always kept: the budget reduces coverage, it never
+        # leaves the file unscanned.
+        assert len(views) == 1
+
+    def test_dropped_views_are_recorded_as_a_disposition(self, repo: Path) -> None:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "big.txt").write_bytes(("hello world\n" * 200_000).encode("utf-16-le"))
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "big")
+        original = verify_mod.DEFAULT_MAX_VIEW_CHARS
+        try:
+            verify_mod.DEFAULT_MAX_VIEW_CHARS = 1024
+            result = verify_mod.verify(contract=contract, root=repo)
+        finally:
+            verify_mod.DEFAULT_MAX_VIEW_CHARS = original
+        assert any("partial-decoding-coverage" in d for d in result.scan_dispositions), (
+            result.scan_dispositions
+        )

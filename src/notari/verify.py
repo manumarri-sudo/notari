@@ -555,7 +555,18 @@ def _confidence_of(finding: policy.SecretFinding) -> str:
     return "low" if _secrets_mod.is_low_confidence(finding.pattern_name) else "high"
 
 
-def _decode_blob_views(raw: bytes) -> list[str]:
+# Total decoded characters across all views of ONE blob. Views multiply scanning
+# work: measured on this machine, a 52 MB UTF-16 blob yields 3 views, 16.2s of
+# scanning and 288 MB peak RSS, against roughly 5s for the single-view path. A
+# candidate can submit many such files, and while that only DELAYS a verdict rather
+# than forging one (no verdict means the required check never turns green), a gate
+# that can be stalled for minutes per file is a denial-of-service worth bounding.
+# Past the budget the extra views are dropped and the reduced coverage is recorded
+# as a disposition, so an incomplete scan is never reported as a clean PASS.
+DEFAULT_MAX_VIEW_CHARS = 24 * 1024 * 1024
+
+
+def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[list[str], bool]:
     """Every text view of a blob the secret patterns should run over.
 
     A blob is not always ONE encoding. It can carry a wide-encoded region and a
@@ -573,23 +584,51 @@ def _decode_blob_views(raw: bytes) -> list[str]:
     The NUL probe covers the WHOLE blob, not the first 512 bytes: a wide-encoded
     region beginning after that offset was previously invisible to every view but
     the primary one, which is a false negative rather than a cosmetic gap.
+
+    Returns ``(views, complete)``. ``complete`` is False when the character budget
+    stopped extra views being built, so the caller can record that the scan covered
+    less than it wanted rather than passing quietly.
     """
     views = [_decode_blob(raw)]
     if b"\x00" not in raw:
-        return views
+        return views, True
     seen = {views[0]}
+    # Resolved here, not as a default argument: a default binds at definition time,
+    # so the module constant could not be tuned by a caller or a test.
+    budget = (DEFAULT_MAX_VIEW_CHARS if max_chars is None else max_chars) - len(views[0])
+
+    def _take(candidate: str) -> bool:
+        """Add a view if it is new and the budget allows. False means out of budget."""
+        nonlocal budget
+        if candidate in seen:
+            return True
+        if len(candidate) > budget:
+            return False
+        budget -= len(candidate)
+        seen.add(candidate)
+        views.append(candidate)
+        return True
+
     # Every wide decoding that yields plausible text, not just the winner: a blob
     # holding one region in UTF-16-LE and another in UTF-16-BE has no single
     # correct answer, and Latin-1 cannot reconstruct either of them.
-    for enc in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+    complete = True
+    for enc, width in (("utf-16-le", 2), ("utf-16-be", 2), ("utf-32-le", 4), ("utf-32-be", 4)):
+        # Check the budget against the ESTIMATED size before decoding. Decoding and
+        # then discarding still materialises the whole string, which is where the
+        # peak memory goes; the estimate is exact for BMP text and an upper bound
+        # otherwise, since surrogate pairs only ever shorten the result.
+        if len(raw) // width > budget:
+            complete = False
+            continue
         try:
             decoded = raw.decode(enc)
         except (UnicodeDecodeError, ValueError):
             continue
-        if "�" in decoded[:256] or decoded in seen:
+        if "�" in decoded[:256]:
             continue
-        seen.add(decoded)
-        views.append(decoded)
+        if not _take(decoded):
+            complete = False
     # Latin-1 maps every byte, so an ASCII credential survives it whatever the rest
     # of the file is. NUL becomes a SPACE rather than nothing: deleting it glued the
     # neighbouring regions together and destroyed the word boundary the anchored
@@ -602,20 +641,22 @@ def _decode_blob_views(raw: bytes) -> list[str]:
     #   - NUL DELETED reassembles a credential that sits INSIDE the wide region,
     #     where the interleaved NULs would otherwise split `AKIA...` into `A K I A`
     #     and no pattern would match.
+    # Latin-1 is one char per byte, so the size is known without decoding.
+    if len(raw) > budget:
+        return views, False
     latin = raw.decode("latin-1")
     for salvage in (latin.replace("\x00", " "), latin.replace("\x00", "")):
-        if salvage not in seen:
-            seen.add(salvage)
-            views.append(salvage)
-    return views
+        if not _take(salvage):
+            complete = False
+    return views, complete
 
 
 def _read_candidate_blob(
     root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
-) -> tuple[list[str] | None, bool]:
+) -> tuple[list[str] | None, bool, bool]:
     """Read a file from the candidate commit's tree, not the worktree.
 
-    Returns ``(views, truncated)``: the text VIEWS to scan (see
+    Returns ``(views, truncated, views_complete)``: the text VIEWS to scan (see
     ``_decode_blob_views``, a blob may need more than one) or None
     if the blob doesn't exist at that commit, and whether the read hit the byte
     ceiling. The read is bounded by the SAME size + timeout ceilings as the diff
@@ -635,10 +676,11 @@ def _read_candidate_blob(
     except VerifyError as e:
         if "timed out" in str(e):
             # Flag it incomplete rather than silently skipping the scan.
-            return None, True
+            return None, True, True
         _log.warning("blob read failed for %s:%s, %s", candidate_sha[:12], path, e)
-        return None, False
-    return _decode_blob_views(raw), truncated
+        return None, False, True
+    views, views_complete = _decode_blob_views(raw)
+    return views, truncated, views_complete
 
 
 def _base_line_counts(
@@ -659,7 +701,7 @@ def _base_line_counts(
     reader is reused against the base here."""
     if not base_sha or base_sha == _EMPTY_TREE:
         return Counter()
-    views, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
+    views, _, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if not views:
         return Counter()
     # Every view of the BASE, so a base line suppresses its candidate twin no
@@ -1058,7 +1100,7 @@ def verify(
         dest = cp.path
         if dest.startswith(".notari/"):
             continue
-        views, blob_truncated = _read_candidate_blob(
+        views, blob_truncated, views_complete = _read_candidate_blob(
             root, candidate_sha, dest, limits=limits
         )
         if blob_truncated:
@@ -1066,6 +1108,12 @@ def verify(
                 f"oversized-blob: {dest} exceeded {limits.max_diff_bytes} bytes (or the "
                 "read timed out) and was truncated; secret scanning did not cover the "
                 "whole file"
+            )
+        if not views_complete:
+            scan_dispositions.append(
+                f"partial-decoding-coverage: {dest} needed more decoding views than the "
+                f"{DEFAULT_MAX_VIEW_CHARS}-character budget allows, so some encodings of "
+                "this file were not scanned"
             )
         if not views:
             continue
