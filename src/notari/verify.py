@@ -16,6 +16,7 @@ so the verdict is reproducible and explainable line by line.
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import json
 import logging
@@ -1214,6 +1215,16 @@ def verify(
         if key not in seen_secrets:
             all_secret_findings.append(f)
             seen_secrets.add(key)
+        elif _confidence_of(f) != "low":
+            # Same finding from both channels with DIFFERENT confidence: the
+            # blocking reading wins. Keeping whichever channel happened to run
+            # first would let a view that mangled the surrounding syntax downgrade
+            # a credential the other channel read correctly.
+            for i, existing in enumerate(all_secret_findings):
+                if (existing.path, existing.line, existing.pattern_name) == key:
+                    if _confidence_of(existing) == "low":
+                        all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
+                    break
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:

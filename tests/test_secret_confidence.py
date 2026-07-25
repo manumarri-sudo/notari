@@ -632,3 +632,51 @@ class TestViewBudgetBoundsTheScanCost:
         assert any("partial-decoding-coverage" in d for d in result.scan_dispositions), (
             result.scan_dispositions
         )
+
+
+class TestChannelMergePrefersTheBlockingReading:
+    """The diff channel and the blob channel can both report the same (path, line,
+    pattern). If they disagree on confidence, keeping whichever ran first would let
+    a view that mangled the surrounding syntax downgrade a credential the other
+    channel read correctly. The blocking reading wins."""
+
+    def test_high_confidence_upgrade_survives_the_merge(self) -> None:
+        import dataclasses
+
+        from notari import policy as policy_mod
+
+        low = policy_mod.SecretFinding(
+            path="a.py", line=1, pattern_name="dsn-password", confidence="low"
+        )
+        high = dataclasses.replace(low, confidence="high")
+        # The helper the merge uses must read the carried value, not the pattern.
+        assert verify_mod._confidence_of(low) == "low"
+        assert verify_mod._confidence_of(high) == "high"
+
+    def test_finding_without_the_field_defaults_to_blocking(self) -> None:
+        from notari import policy as policy_mod
+
+        legacy = policy_mod.SecretFinding(path="a.py", line=1, pattern_name="dsn-password")
+        assert verify_mod._confidence_of(legacy) == "high"
+
+
+class TestRedactIsNotNarrowedByScanSuppression:
+    """The precision work all lives in `scan()`, which feeds the gate. `redact()`
+    feeds the audit log and exports, where over-redacting is harmless and a miss
+    leaks a credential, so it must stay aggressive on everything scan() suppresses.
+    This asymmetry is the whole reason the filters were not put in the patterns."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "DB_PASSWORD=short1",  # under the scan length floor
+            "DB_PASSWORD=PASSWORD",  # env-var-name reference
+            'DB_PASSWORD=data["token"]',  # expression, not a literal
+            "DB_PASSWORD=<your-password>",  # placeholder
+            "DB_PASSWORD=${DB_PASSWORD}",  # template reference
+        ],
+    )
+    def test_values_scan_ignores_are_still_redacted(self, text: str) -> None:
+        assert secrets_mod.scan(text) == [], "precondition: scan suppresses this"
+        assert secrets_mod.redact(text) != text, text
+        assert "REDACTED" in secrets_mod.redact(text)
