@@ -558,3 +558,36 @@ class TestViewDedupKeepsEveryDistinctCredential:
         data = f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode()
         found = self._aws(self._verify_file(repo, "plain.txt", data))
         assert [f.line for f in found] == [1, 2]
+
+
+class TestBaseLineSuppressionSurvivesTheViewsChange:
+    """`_base_line_counts` now sums every VIEW of the base blob, which risks
+    over-suppressing: if the base's salvage views contribute extra copies of a line,
+    a genuinely new candidate copy could be swallowed. Both directions pinned."""
+
+    K = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+    def _modify(self, repo: Path, base_text: str, new_text: str) -> object:
+        f = repo / "src" / "f.txt"
+        f.write_text(base_text)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "base")
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        f.write_text(new_text)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "change")
+        return verify_mod.verify(contract=contract, root=repo)
+
+    def test_duplicated_secret_line_is_still_caught(self, repo: Path) -> None:
+        """The (N+1)th identical line is newly introduced and must not hide behind
+        its pre-existing twin."""
+        result = self._modify(repo, f'a = "{self.K}"\n', f'a = "{self.K}"\nb = "{self.K}"\n')
+        assert [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert result.verdict is Verdict.BLOCK
+
+    def test_untouched_pre_existing_secret_does_not_block_an_unrelated_edit(
+        self, repo: Path
+    ) -> None:
+        """The reason base-line counting exists at all."""
+        result = self._modify(repo, f'a = "{self.K}"\n', f'a = "{self.K}"\nunrelated = 1\n')
+        assert not [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
