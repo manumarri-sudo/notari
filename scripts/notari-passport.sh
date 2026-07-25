@@ -89,8 +89,31 @@ fi
 # A private temp dir we own: the verifier writes here, and the verdict is read
 # back ONLY from here. Nothing in the repo tree can influence the decision.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/notari.XXXXXX")"
-cleanup() { rm -rf "$WORK"; }
-trap cleanup EXIT
+cleanup() { rm -rf "$WORK" || true; }
+
+# Evidence-emission state, read by the EXIT trap. `set -e` aborts with the
+# failing command's status, which is normally 1, and 1 is exactly what this
+# script uses to mean "the gate says BLOCK", so without normalising, a crash is
+# indistinguishable from a refusal. Every deliberate fail-closed path here
+# already exits 2, so the trap maps any OTHER nonzero abort onto 2 as well and
+# says so, rather than letting a broken gate impersonate a reviewed decision.
+EVIDENCE_EMITTED=0
+VERDICT_EXIT=0
+
+on_exit() {
+  local rc=$? # capture FIRST; every command below clobbers $?
+  cleanup
+  if [[ "$rc" -ne 0 && "$rc" -ne 2 && "$VERDICT_EXIT" != "1" ]]; then
+    echo "::error::notari wrapper aborted before publishing a verdict (rc=$rc); failing closed"
+    if [[ "$EVIDENCE_EMITTED" != "1" && -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      printf '## Notari: the gate did not complete\n\nThe wrapper aborted (rc=%s) before it could publish a verdict. This is a tooling failure, not a review decision, so do not read the missing check as approval.\n' \
+        "$rc" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+    fi
+    exit 2
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
 
 # 1. Run the verifier into the temp dir. It exits 1 on BLOCK and 0 on
 #    PASS/NEEDS_REVIEW; any OTHER exit is a crash / bad invocation. Capture the
@@ -231,13 +254,21 @@ TREE_ROOT="$(pwd -P)"
 # absolute paths and `..`, writes to a temp file created O_EXCL|O_NOFOLLOW in the
 # final dir fd, then renameat's it onto the destination, replacing any symlink
 # there without following it. Race-free (all operations are relative to fds we
-# hold, never re-resolved by pathname) and atomic. `-I` isolates the interpreter
-# so the candidate checkout on cwd cannot shadow `os`.
+# hold, never re-resolved by pathname) and atomic. Only POSIX separators are
+# treated as separators, so a directory legitimately named `a\b\c` is ONE
+# component rather than three (runners here are Linux).
+#
+# `-I` is isolated mode: it drops cwd from sys.path and ignores PYTHONPATH and
+# user site-packages. Note what it does NOT do: a hostile `os.py` in the checkout
+# could not shadow `os` for this invocation either way, because CPython has
+# already imported `os` into sys.modules before the `-c` body runs. The isolation
+# earns its keep on PYTHONPATH and user site-packages, so keep it, but do not
+# credit it with preventing a shadow it was never the barrier against.
 NOTARI_SAFE_WRITE_PY='
 import os, sys
 tree_root, pub, name = sys.argv[1], sys.argv[2], sys.argv[3]
 data = sys.stdin.buffer.read()
-parts = [p for p in pub.replace("\\", "/").split("/") if p not in ("", ".")]
+parts = [p for p in pub.split("/") if p not in ("", ".")]
 if os.path.isabs(pub) or any(p == ".." for p in parts):
     sys.exit("notari: refusing unsafe publish dir %r" % pub)
 if "/" in name or name in ("", ".", ".."):
@@ -258,21 +289,33 @@ try:
         except OSError as e:
             sys.exit("notari: refusing to publish, %r is a symlink or not a directory (%s)" % (comp, e))
     ddfd = fds[-1]
-    tmpname = ".notari.tmp.%d" % os.getpid()
+    # Unguessable temp name, and no pre-unlink. The old name was the pid, so a
+    # candidate who guessed it could pre-create `.notari.tmp.<pid>` as a
+    # DIRECTORY: the pre-unlink caught only FileNotFoundError, so the resulting
+    # error escaped and aborted the wrapper. O_EXCL (not name secrecy) is what
+    # makes the create safe; randomness just removes the collision a candidate
+    # could arrange.
+    tmpname = ".notari.tmp.%s" % os.urandom(8).hex()
     try:
-        os.unlink(tmpname, dir_fd=ddfd)
-    except FileNotFoundError:
-        pass
-    wfd = os.open(tmpname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=ddfd)
+        wfd = os.open(tmpname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=ddfd)
+    except OSError as e:
+        sys.exit("notari: cannot create a temp file in the publish dir (%s)" % e)
     try:
         with os.fdopen(wfd, "wb") as fh:
             fh.write(data)
         os.rename(tmpname, name, src_dir_fd=ddfd, dst_dir_fd=ddfd)
-    except BaseException:
+    except BaseException as e:
         try:
             os.unlink(tmpname, dir_fd=ddfd)
         except OSError:
             pass
+        # A candidate-planted DIRECTORY at the destination makes rename raise
+        # EISDIR. Report it as a refusal, not as an unhandled traceback: the
+        # caller degrades this to a warning, and a traceback in the log reads as
+        # broken tooling rather than as a hostile repo, which is what invites a
+        # maintainer to override the gate.
+        if isinstance(e, OSError):
+            sys.exit("notari: cannot publish %r (%s)" % (name, e))
         raise
 finally:
     for fd in fds:
@@ -284,15 +327,39 @@ finally:
 notari_safe_put() { # $1=dest-basename; file CONTENT arrives on stdin
   python3 -I -c "$NOTARI_SAFE_WRITE_PY" "$TREE_ROOT" "$PUBLISH_DIR" "$1"
 }
-notari_safe_put passport.json <"$PASSPORT_JSON"
-[[ -f "$PASSPORT_MD" ]] && notari_safe_put passport.md <"$PASSPORT_MD"
+# Publishing is a convenience copy of an artifact we ALREADY trusted (the verdict
+# was read from $WORK and validated in steps 2 to 3c), so a failure here must not
+# abort the run: the candidate controls this directory, and a directory planted at
+# the destination used to crash the helper under `set -e`, skipping every evidence
+# channel below and leaving a real BLOCK visible to nobody but a traceback. Same
+# `... || echo "::warning::"` idiom the Status Check POST already uses; `set -e` is
+# suspended inside a `||` list, and the ecosystem convention (Trivy publishing its
+# SARIF from an `if: always()` step) is this same separation of verdict from
+# publication.
+notari_safe_put passport.json <"$PASSPORT_JSON" ||
+  echo "::warning::could not publish passport.json into $PUBLISH_DIR (verdict unaffected)"
+# An `if` rather than a bare `[[ ... ]] && cmd` AND-list. This is legibility, not
+# a bug fix: bash exempts every command of an AND-OR list except the last from
+# `set -e`, and when the condition fails the list just yields 1 without exiting
+# (verified: `set -e; [[ -f /nonexistent ]] && echo hi; echo SURVIVED` reaches
+# SURVIVED). The `if` makes the guard explicit and leaves room for the `||`
+# warning below.
+if [[ -f "$PASSPORT_MD" ]]; then
+  notari_safe_put passport.md <"$PASSPORT_MD" ||
+    echo "::warning::could not publish passport.md into $PUBLISH_DIR (verdict unaffected)"
+fi
 
-# 5. Step output (so later steps / the job can branch on the verdict).
+# 5. Step output (so later steps / the job can branch on the verdict). From here
+#    on the verdict HAS reached a durable channel, so the EXIT trap no longer
+#    needs to emit its fallback summary. GITHUB_OUTPUT and GITHUB_STEP_SUMMARY
+#    are runner-owned append files outside the checkout, so a later abort cannot
+#    unwrite what was already appended.
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "verdict=$VERDICT"
     echo "exit_code=$EXIT_CODE"
   } >>"$GITHUB_OUTPUT"
+  EVIDENCE_EMITTED=1
 fi
 
 # 6. Job summary: the full markdown passport, visible on the PR's Checks tab.
@@ -365,12 +432,16 @@ PY
   # replaced, never followed.
   printf 'sha=%s\nmac=%s\ncontext=%s\nstate=%s\n' \
     "$STATUS_SHA" "$SAFE_MAC" "$STATUS_CONTEXT" "$STATE" \
-    | notari_safe_put status-fingerprint
+    | notari_safe_put status-fingerprint ||
+    echo "::warning::could not record the status fingerprint; the Status Check was already posted with its MAC, so this only costs verify-passport's cross-check for this run"
 fi
 
 # 8. Exit code: fail the job on BLOCK (when fail-on-block is on), and on
 #    NEEDS_REVIEW when block-on-review promoted it to a blocking state above.
 if [[ "$BLOCK_FOR_EXIT" == "true" && "$FAIL_ON_BLOCK" == "true" ]]; then
+  # Mark this as the DELIBERATE verdict exit so the EXIT trap passes 1 through
+  # instead of normalising it to 2 as it does for an abnormal abort.
+  VERDICT_EXIT=1
   exit 1
 fi
 exit 0

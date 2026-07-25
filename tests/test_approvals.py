@@ -6,6 +6,7 @@ mismatch by tool name, mismatch by args, persistence across reload.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -383,3 +384,40 @@ def test_no_public_unlocked_save_to_resurrect_a_token(tmp_path: Path) -> None:
     b.issue("Edit", {"file": "x.py"})
     c = ApprovalStore.load(path=p)
     assert c.consume("Bash", {"command": "deploy"}) is None
+
+
+class TestCorruptStoreDegradesSafely:
+    """Round-6 findings P5/P6, both non-blocking."""
+
+    def test_naive_expires_at_reads_as_expired_not_a_crash(self, tmp_path: Path) -> None:
+        """`is_expired` caught only ValueError, so a timezone-naive `expires_at`
+        parsed fine and then raised TypeError on the aware/naive comparison,
+        escaping the corruption guard in load() and propagating out of a
+        property."""
+        from notari import approvals as approvals_mod
+
+        ap = approvals_mod.Approval(
+            token="t",
+            tool_name="Bash",
+            args_digest="d",
+            expires_at="2026-01-01T00:00:00",  # no offset: naive
+            issued_at="2026-01-01T00:00:00+00:00",
+            approved_at="2026-01-01T00:00:00+00:00",
+        )
+        assert ap.is_expired is True
+        assert ap.is_consumable is False
+
+    def test_write_is_atomic_so_unlocked_readers_never_see_a_torn_file(
+        self, tmp_path: Path
+    ) -> None:
+        """`load`, `active` and `latest_pending` read without the lock, so the
+        writer must publish by rename rather than truncate-and-write."""
+        from notari import approvals as approvals_mod
+
+        path = tmp_path / "approvals.json"
+        store = approvals_mod.ApprovalStore(path=path)
+        store.issue("Bash", {"command": "ls"}, reason="r")
+        assert path.exists()
+        # No temp files left behind, and the published file is complete JSON.
+        assert list(tmp_path.glob("*.tmp.*")) == []
+        assert json.loads(path.read_text())

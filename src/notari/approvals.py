@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import secrets
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -100,9 +101,15 @@ class Approval:
 
     @property
     def is_expired(self) -> bool:
+        # TypeError as well as ValueError: a timezone-NAIVE `expires_at` parses
+        # fine and then raises on the comparison against an aware `_now()`, which
+        # escaped the corruption guard in `load()` and propagated out of a
+        # property. Notari always writes aware timestamps, so this only happens
+        # with a hand-edited or corrupted store, and treating it as expired is the
+        # fail-closed reading.
         try:
             return _now() >= datetime.fromisoformat(self.expires_at)
-        except ValueError:
+        except (TypeError, ValueError):
             return True
 
     @property
@@ -182,12 +189,27 @@ class ApprovalStore:
         just-consumed token even under a lock (the write persists stale state,
         not the concurrent consume), so the only supported mutation path is the
         locked read-modify-write in `_locked` (security re-review 2026-07-23,
-        defect 7)."""
+        defect 7).
+
+        Written atomically (temp in the same directory, then `os.replace`) because
+        `load`, `active` and `latest_pending` read WITHOUT taking the lock, so a
+        plain `write_text` let them observe a torn file mid-write. A torn read
+        already degraded safely (the JSONDecodeError path falls back to empty,
+        which keeps the caller blocked rather than approving), so this is
+        consistency with the passport helper rather than a security fix.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = {tok: ap.to_json() for tok, ap in self.approvals.items()}
-        self.path.write_text(json.dumps(body, indent=2, sort_keys=True))
-        with contextlib.suppress(OSError):
-            self.path.chmod(0o600)
+        tmp = self.path.with_name(f"{self.path.name}.tmp.{os.getpid()}")
+        try:
+            tmp.write_text(json.dumps(body, indent=2, sort_keys=True))
+            with contextlib.suppress(OSError):
+                tmp.chmod(0o600)
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[ApprovalStore]:

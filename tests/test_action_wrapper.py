@@ -479,3 +479,121 @@ def test_publish_into_clean_nested_dir_succeeds(
     published = root / "artifacts" / "notari" / "passport.json"
     assert published.is_file() and not published.is_symlink(), proc.stderr
     assert json.loads(published.read_text())["verdict"] == "BLOCK"
+
+
+def _run_wrapper_with_evidence(
+    root: Path,
+    env: dict[str, str],
+    bin_dir: Path,
+    tmp_path: Path,
+    *,
+    extra: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], str, str]:
+    """Drive the wrapper with the Actions evidence files wired up, and return the
+    process plus what actually landed in GITHUB_OUTPUT and GITHUB_STEP_SUMMARY."""
+    out_file = tmp_path / "gh_output"
+    sum_file = tmp_path / "gh_summary"
+    out_file.write_text("")
+    sum_file.write_text("")
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={
+            **env,
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": ".notari",
+            "GITHUB_OUTPUT": str(out_file),
+            "GITHUB_STEP_SUMMARY": str(sum_file),
+            **(extra or {}),
+        },
+        capture_output=True,
+        text=True,
+    )
+    return proc, out_file.read_text(), sum_file.read_text()
+
+
+class TestPublishFailureCannotSuppressTheVerdict:
+    """Round-6 finding P4: publishing the passport into the candidate-controlled
+    checkout ran BEFORE every evidence channel, unguarded under `set -euo
+    pipefail`. Committing `.notari/passport.json` as a DIRECTORY made the helper
+    raise, `set -e` aborted, and a real BLOCK reached nobody: no step output, no
+    job summary, no annotations, only a traceback that reads like broken tooling
+    and invites a maintainer override."""
+
+    def test_block_still_reaches_every_channel_when_publish_is_sabotaged(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=1, verdict="BLOCK", exit_code=1)
+        # The attack: the publish destination is already a directory.
+        sabotage = root / ".notari" / "passport.json"
+        sabotage.mkdir(parents=True, exist_ok=True)
+        (sabotage / "keep").write_text("x")
+
+        proc, output, summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        combined = proc.stdout + proc.stderr
+        # The verdict still reaches the durable channels.
+        assert "verdict=BLOCK" in output, (output, combined)
+        assert summary.strip(), combined
+        # It degrades to a warning, and exits 1 for the RIGHT reason (the BLOCK),
+        # not because a helper crashed.
+        assert "::warning::" in combined, combined
+        assert proc.returncode == 1, (proc.returncode, combined)
+        assert "Traceback" not in combined, combined
+
+    def test_pass_is_not_turned_into_a_failure_by_a_sabotaged_publish(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """The same fixture on a PASS verdict used to flip a green run red."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+        (root / ".notari" / "passport.json").mkdir(parents=True, exist_ok=True)
+
+        proc, output, _summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        assert proc.returncode == 0, (proc.returncode, proc.stdout + proc.stderr)
+        assert "verdict=PASS" in output
+
+    def test_absent_passport_markdown_does_not_abort_the_run(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """A guard on the absent-markdown path, which the `if` rewrite made
+        explicit. Note this was NOT a live bug: bash exempts non-final commands of
+        an AND-OR list from `set -e`, so the old `[[ -f md ]] && publish` yielded 1
+        without aborting. This test passes before and after that change; it exists
+        so the path stays covered, not as a regression proof."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+        # Drop the markdown passport the fake verifier writes.
+        fake = bin_dir / "notari"
+        fake.write_text(fake.read_text().replace('printf "# passport\\n" > "$dir/passport.md"\n', ""))
+        fake.chmod(0o755)
+
+        proc, output, _summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        assert proc.returncode == 0, (proc.returncode, proc.stdout + proc.stderr)
+        assert "verdict=PASS" in output
+
+    def test_temp_name_is_not_guessable_from_the_pid(self) -> None:
+        """The temp file was named `.notari.tmp.<pid>`, so a candidate who guessed
+        the pid could pre-create it as a directory and crash the publish; the
+        pre-unlink caught only FileNotFoundError."""
+        body = WRAPPER.read_text()
+        assert "os.getpid()" not in body
+        assert "os.urandom" in body
+
+    def test_backslash_is_not_treated_as_a_path_separator(self) -> None:
+        """A POSIX directory legitimately named `a\\b\\c` became three nested
+        directories."""
+        assert 'pub.replace("\\\\", "/")' not in WRAPPER.read_text()
