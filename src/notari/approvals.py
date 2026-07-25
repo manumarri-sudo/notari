@@ -219,16 +219,23 @@ class ApprovalStore:
         fd = os.open(tmp, flags, 0o600)
         # Only unlink a temp file THIS call created. Unconditional cleanup meant an
         # EEXIST collision deleted another writer's temp file, which we do not own.
+        # Descriptor ownership is explicit. Anything that fails BEFORE fdopen
+        # succeeds leaves the raw fd ours to close, and anything after belongs to
+        # the file object. Guarding only fdopen left fchmod's failure path leaking
+        # the descriptor; closing unconditionally instead risks a double close, and
+        # a reused fd number is a worse bug than a leaked one.
         try:
             os.fchmod(fd, 0o600)
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(body)
-            except BaseException:
-                # fdopen failing leaves the raw descriptor un-wrapped and unclosed.
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-                raise
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+        try:
+            with handle:
+                handle.write(body)
             os.replace(tmp, self.path)
         except BaseException:
             with contextlib.suppress(OSError):

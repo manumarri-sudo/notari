@@ -526,8 +526,15 @@ def _is_expression_value(v: str) -> bool:
     # `identifier[word]` form is left in scope deliberately, at the cost of an
     # occasional false positive that now lands as review signal rather than a block.
     has_call = "(" in rest
-    quoted_subscript = bool(re.match(r"[([]\s*[\"']", rest))
     dotted_receiver = "." in v[: lead.end()]
+    # A quoted subscript counts as code only when the RECEIVER also reads like an
+    # identifier rather than a credential: plain lowercase, no digits. Accepting a
+    # quote inside the brackets on its own suppressed `hunter2["Prod"]`, which is a
+    # password, while still needing to suppress `data["token"]`, which is code. The
+    # receiver is what separates them.
+    quoted_subscript = bool(re.match(r"[([]\s*[\"']", rest)) and bool(
+        re.fullmatch(r"[a-z_][a-z_]*\s*", v[: lead.end()])
+    )
     if not (has_call or quoted_subscript or dotted_receiver):
         return False
     # A STACK, not a depth counter: a counter treats `(` and `[` as
@@ -536,10 +543,20 @@ def _is_expression_value(v: str) -> bool:
     closer = {"(": ")", "[": "]"}
     stack: list[str] = []
     quote: str | None = None
+    escaped = False
     for i, ch in enumerate(rest):
         # Brackets inside a STRING LITERAL are data, not structure: `data["token]"]`
         # was misread as closing early and so read as a literal value rather than
         # code. Skip anything between matching quotes.
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            # An escaped quote does not end the string. Without this, `data["to\"ken]"]`
+            # was read as ending its string early, and the `]` inside the literal was
+            # then counted as structure, so valid code was reported as a credential.
+            escaped = True
+            continue
         if quote is not None:
             if ch == quote:
                 quote = None

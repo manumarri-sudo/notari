@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -647,3 +648,57 @@ class TestAbortBeforeTheTrapIsInstalled:
         proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
         assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
         assert "SIGTERM" in (proc.stdout + proc.stderr)
+
+
+class TestRunnerEnvironmentGaps:
+    """Runner-environment behaviour nobody had exercised: every review so far read
+    the script or ran the embedded helper directly, never the whole wrapper with a
+    degraded interpreter."""
+
+    def test_missing_python3_fails_closed_with_evidence(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """The wrapper shells out to `python3 -I` to read the verdict. With no
+        python3 on PATH it used to abort with the raw 127; the EXIT trap now
+        normalises that to 2 and leaves a fallback job summary saying the gate did
+        not complete, so a missing check cannot read as approval."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin_nopy"
+        _install_fake_notari(bin_dir, rc=1, verdict="BLOCK", exit_code=1)
+
+        # A curated PATH: the tools the wrapper needs, deliberately without python3.
+        clean = tmp_path / "clean"
+        clean.mkdir()
+        for tool in ("bash", "git", "mktemp", "cat", "rm", "mkdir", "chmod", "env"):
+            found = shutil.which(tool)
+            if found:
+                (clean / tool).symlink_to(found)
+        assert shutil.which("python3", path=str(clean)) is None
+
+        out_file = tmp_path / "gh_output"
+        sum_file = tmp_path / "gh_summary"
+        out_file.write_text("")
+        sum_file.write_text("")
+        proc = subprocess.run(
+            ["bash", str(WRAPPER)],
+            cwd=root,
+            env={
+                **env,
+                "PATH": str(bin_dir) + os.pathsep + str(clean),
+                "NOTARI_STRICT": "false",
+                "NOTARI_PASSPORT_DIR": ".notari",
+                "GITHUB_OUTPUT": str(out_file),
+                "GITHUB_STEP_SUMMARY": str(sum_file),
+            },
+            capture_output=True,
+            text=True,
+        )
+        combined = proc.stdout + proc.stderr
+        assert proc.returncode == 2, (proc.returncode, combined)
+        assert "::error::" in combined
+        # No verdict was ever established, so no verdict is claimed...
+        assert "verdict=" not in out_file.read_text()
+        # ...but the run explains itself rather than failing silently.
+        assert "did not complete" in sum_file.read_text()

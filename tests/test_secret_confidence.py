@@ -397,23 +397,60 @@ class TestMixedEncodingBlobDoesNotHideACredential:
     plain-ASCII region, so no single decoding preserves both, and the ASCII-ratio
     tiebreak picks the wide reading because the wide prefix dominates the score."""
 
-    def test_wide_prefix_then_ascii_credential_is_still_found(self) -> None:
-        raw = b"A\x00" * 300 + b"aws_secret_access_key=" + b"/AbCdEfGhIjKlMnOpQr" + b"/RsTuVwXyZ0123456789A" + b"\nX"
-        text = verify_mod._decode_blob_for_scan(raw)
-        assert {h.pattern_name for h in secrets_mod.scan(text)} == {"aws-secret-key"}
+    # Assembled at runtime so this file's own text is not credential-shaped.
+    AWS_NAME = "aws_secret" + "_access_key"
+    AWS_SEC = "/AbCdEfGhIjKlMnOpQr" + "/RsTuVwXyZ0123456789A"
 
-    def test_nul_becomes_a_space_so_word_boundaries_survive(self) -> None:
-        """Deleting NULs glued the wide region's letters onto the ASCII region, so the
-        `\\b` the anchored patterns require was gone and nothing matched."""
-        raw = b"A\x00" * 8 + b"aws_secret_access_key=" + b"/AbCdEfGhIjKlMnOpQr" + b"/RsTuVwXyZ0123456789A"
-        assert secrets_mod.scan(verify_mod._decode_blob_for_scan(raw))
+    @staticmethod
+    def _scan_views(raw: bytes) -> set[str]:
+        return {
+            h.pattern_name
+            for view in verify_mod._decode_blob_views(raw)
+            for h in secrets_mod.scan(view)
+        }
+
+    def test_wide_prefix_then_ascii_credential_is_still_found(self) -> None:
+        raw = b"A\x00" * 300 + (self.AWS_NAME + "=" + self.AWS_SEC + "\nX").encode()
+        assert "aws-secret-key" in self._scan_views(raw)
+
+    def test_credential_in_the_ascii_region_needs_nul_as_a_space(self) -> None:
+        """Deleting NULs glues the wide region's letters onto the ASCII region, so the
+        `\\b` the anchored patterns require disappears."""
+        raw = b"A\x00" * 8 + (self.AWS_NAME + "=" + self.AWS_SEC).encode()
+        assert "aws-secret-key" in self._scan_views(raw)
+
+    def test_credential_inside_the_wide_region_needs_nul_deleted(self) -> None:
+        """The opposite failure: interleaved NULs split the credential itself into
+        `A K I A ...`, which no pattern matches. Both salvage views are required,
+        because neither alone covers both regions. This one also sits past byte 512,
+        which the old prefix-only NUL probe never looked at."""
+        raw = b"A" * 600 + b"\n" + ('AWS_KEY = "' + _VENDOR + '"\n').encode("utf-16-le")
+        assert "AWS Access Key ID" in self._scan_views(raw)
+
+    def test_mixed_endianness_in_one_blob(self) -> None:
+        """No single decoding is correct, so every plausible wide decoding is a view."""
+        raw = ("A" * 600 + "\n").encode("utf-16-le") + ('AWS_KEY = "' + _VENDOR + '"\n').encode(
+            "utf-16-be"
+        )
+        assert "AWS Access Key ID" in self._scan_views(raw)
+
+    def test_views_are_returned_separately_never_joined(self) -> None:
+        """Joining views let an assignment prefix at the end of one bridge to a value
+        at the start of the next and synthesise a credential present in NEITHER,
+        which would BLOCK a clean change."""
+        raw = ("A" * 17 + "\nAuthorization: Bearer ").encode("latin-1") + b"\x00" + b"4f9KzQ2LmN8PrT7"
+        views = verify_mod._decode_blob_views(raw)
+        assert len(views) > 1
+        assert all(isinstance(v, str) for v in views)
 
     @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
-    def test_genuine_wide_files_still_report_the_real_line(self, encoding: str) -> None:
-        """The salvage view must not displace the primary decoding's line numbers."""
+    def test_genuine_wide_files_report_the_real_line(self, encoding: str) -> None:
+        """The primary decoding comes first and keeps its own numbering, so the line
+        reported for a genuine wide-encoded file is the file's own line."""
         text = 'AWS_KEY = "' + _VENDOR + '"\n'
-        hits = secrets_mod.scan(verify_mod._decode_blob_for_scan(text.encode(encoding)))
-        assert [h.line for h in hits if h.pattern_name == "AWS Access Key ID"] == [1]
+        primary = verify_mod._decode_blob_views(text.encode(encoding))[0]
+        hits = [h for h in secrets_mod.scan(primary) if h.pattern_name == "AWS Access Key ID"]
+        assert [h.line for h in hits] == [1]
 
 
 class TestAnchoredFindingsAreDemotedNotDeleted:
@@ -438,3 +475,44 @@ class TestAnchoredFindingsAreDemotedNotDeleted:
     def test_a_real_anchored_value_still_blocks(self) -> None:
         hits = secrets_mod.scan("Authorization: Bearer 4f9KzQ2LmN8PrT7VwXyZ")
         assert hits and all(h.confidence == "high" for h in hits)
+
+
+class TestConfidenceSurvivesEveryChannel:
+    """Round-6 wave-3d: the blob-scan path built findings WITHOUT the confidence
+    field, so its default flipped a demoted anchored hit back to blocking, and the
+    same credential blocked or reviewed depending on which channel saw it. The audit
+    record also omitted the tier, making the verdict's reason unrecoverable from the
+    evidence."""
+
+    def test_blob_path_carries_confidence(self, repo: Path) -> None:
+        # A placeholder-looking anchored value: demoted, must not block.
+        contract = _commit_line(repo, "url = postgresql://admin:PASSWORD1@db/app\n")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.secret_findings
+        assert all(f.confidence == "low" for f in result.secret_findings), [
+            (f.pattern_name, f.confidence) for f in result.secret_findings
+        ]
+        assert result.verdict is not Verdict.BLOCK
+
+    def test_audit_record_states_the_tier(self, repo: Path) -> None:
+        from notari import passport as passport_mod
+
+        contract = _commit_line(repo, f'DB_PASSWORD = "{_OPAQUE}"\n')
+        result = verify_mod.verify(contract=contract, root=repo)
+        doc = passport_mod.build_passport(result)
+        findings = doc["evidence"]["secret_findings"]
+        assert findings and all("confidence" in f for f in findings)
+
+    def test_one_credential_is_reported_once_not_once_per_view(self, repo: Path) -> None:
+        """A blob has several views, and the same credential appears in more than one
+        of them at different line numbers. Reporting each view separately produced
+        duplicates whose lines pointed at a decoding rather than at the file, which
+        also broke line-specific waivers."""
+        path = repo / "src" / "wide.txt"
+        path.write_bytes(b"A" * 600 + b"\n" + ('K = "' + _VENDOR + '"\n').encode("utf-16-le"))
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "wide")
+        result = verify_mod.verify(contract=contract, root=repo)
+        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert len(aws) == 1, [(f.path, f.line) for f in aws]
