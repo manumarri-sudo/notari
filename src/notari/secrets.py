@@ -282,7 +282,7 @@ def scan(
             # The length floor is low-confidence-only: a real DSN password can
             # legitimately be short (a brief password in a redis:// DSN), so floor only the
             # shapes whose match is loosely structured.
-            if label in _LOW_CONFIDENCE_INLINE and (
+            if label in _FLOORED_INLINE and (
                 len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN
             ):
                 continue
@@ -392,6 +392,15 @@ _LOW_CONFIDENCE_INLINE: Final[frozenset[str]] = frozenset(
 # expression-shape catches, so do not "improve" this by adding one.
 _MIN_INLINE_SECRET_LEN: Final[int] = 10
 
+# The floor applies to `env-secret` ONLY. It is the noisy rule (42 of the original
+# 48 self-scan findings) because a bare `NAME = value` assignment says nothing
+# about intent. An explicit credential CLI flag does: `--password X` and `-pX`
+# name the argument as a password, so flooring them cost real recall (an 8-char
+# password on the most explicit shape in the set scanned to nothing) for almost no
+# precision, those two rules contributing 3 of the 48. `mysql-pflag` already
+# carries its own >= 6 plus non-lowercase requirement in the regex.
+_FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
+
 # Lowercased values that are stand-ins, not secrets. Kept small and literal;
 # fuzzier stand-ins are caught by the substring list below.
 _NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
@@ -448,7 +457,7 @@ _BACKTICK_SUBST_RE = re.compile(r"`[^`]+`")
 # `data["token"]` from the real password `Sup3r[Secret]Pass99`, which has content
 # after its bracket; an earlier draft of this rule matched the bare opener and so
 # re-introduced the very suppression regression it was meant to avoid.
-_CALL_OR_SUBSCRIPT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\s*[([].*[)\]]")
+_IDENT_PREFIX_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\s*")
 # A call truncated by the value capture stopping at whitespace, e.g. the value of
 # `password = input("Password: ")` is captured as `input("Password:`. Identified by
 # a quote immediately inside the opener, which a credential does not have.
@@ -464,7 +473,48 @@ _SNAKE_IDENT_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
 # env-var NAME rather than an embedded secret: `--password PASSWORD`. Requires
 # word-shaped segments so high-entropy uppercase credentials (base32 TOTP seeds,
 # generated recovery codes) do NOT qualify.
-_UPPERCASE_REF_RE = re.compile(r"[A-Z]{2,}\d{0,3}(?:_[A-Z0-9]+)*")
+# Either multi-word (underscore-separated, which is how env-var names are spelled)
+# or a SHORT single word. The length cap is load-bearing: an earlier version
+# fullmatched any all-caps run, so a digit-free base32 TOTP seed like a 16-letter
+# uppercase string was silently suppressed, while the digit-bearing seed used in
+# the tests happened to be caught. Base32 seeds and recovery codes are >= 16
+# characters; single-word env-var names (PASSWORD, APIKEY, SECRET, CREDENTIAL) are
+# not, so 12 sits in the gap.
+_UPPERCASE_REF_MAX_SINGLE_WORD = 12
+_UPPERCASE_WORD_RE = re.compile(r"[A-Z]{2,}\d{0,3}")
+_UPPERCASE_MULTIWORD_RE = re.compile(r"[A-Z]{2,}\d{0,3}(?:_[A-Z0-9]+)+")
+
+
+def _is_expression_value(v: str) -> bool:
+    """True when `v` is code READING a credential rather than a credential itself.
+
+    Bracket structure is counted, not regex-matched. A regex that merely required
+    a closing bracket at the end was defeated by appending one more, so a real
+    bracket-bearing password fullmatched it and was silently suppressed. The real
+    property is that the bracket group opens immediately after the leading
+    identifier and closes exactly at the END of the value, with nothing trailing.
+    """
+    lead = _IDENT_PREFIX_RE.match(v)
+    if not lead:
+        return False
+    rest = v[lead.end() :]
+    if not rest or rest[0] not in "([":
+        return False
+    depth = 0
+    for i, ch in enumerate(rest):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth < 0:
+                return False
+            if depth == 0:
+                # Closed. Only an expression if nothing follows the group: a value
+                # that closes early and then continues is a literal, not code.
+                return i == len(rest) - 1
+    # Never closed: a call truncated by the value capture stopping at whitespace.
+    # Require a quote just inside the opener, which a credential does not have.
+    return bool(_TRUNCATED_CALL_RE.match(v))
 
 
 def _looks_like_nonsecret(value: str) -> bool:
@@ -500,7 +550,7 @@ def _looks_like_nonsecret(value: str) -> bool:
     # The general form of the same thing: the value is an expression, not a
     # literal. A call, a subscript, a dotted attribute chain, or a plain
     # lower_snake_case identifier is code reading a credential, not a credential.
-    if _CALL_OR_SUBSCRIPT_RE.fullmatch(v) or _TRUNCATED_CALL_RE.match(v):
+    if _is_expression_value(v):
         return True
     if _ATTRIBUTE_CHAIN_RE.fullmatch(v) or _SNAKE_IDENT_RE.fullmatch(v):
         return True
@@ -521,7 +571,9 @@ def _looks_like_nonsecret(value: str) -> bool:
     # An ALL-CAPS identifier used as the value (doc/help text, or a reference to
     # another env-var name rather than an embedded secret), as in a usage line
     # whose credential flag is followed by the variable's NAME.
-    if len(v) <= 40 and _UPPERCASE_REF_RE.fullmatch(v):
+    if _UPPERCASE_MULTIWORD_RE.fullmatch(v) and len(v) <= 40:
+        return True
+    if len(v) <= _UPPERCASE_REF_MAX_SINGLE_WORD and _UPPERCASE_WORD_RE.fullmatch(v):
         return True
     return False
 

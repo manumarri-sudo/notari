@@ -163,6 +163,37 @@ real. We do not close them with more regex.
    write path; it is the roadmap item that makes "detects trailing truncation"
    unconditional.
 
+7. **A prefix-less credential is review signal, not a block, and a short one in a
+   bare assignment is not reported at all.** The secret scanner has two tiers.
+   Vendor-format patterns (AWS, GitHub, Stripe, Slack, PEM blocks, JWTs) and the
+   anchored inline shapes (bearer header, `aws_secret_access_key`, DSN password)
+   BLOCK. The keyword-plus-assignment and credential-flag shapes (`env-secret`,
+   `password-flag`, `mysql-pflag`) surface as NEEDS_REVIEW instead, because they
+   match on a loosely-structured value and cannot be made precise enough to fail a
+   build on: before this split, scanning Notari's own sources produced 48 findings
+   with no real credential present, which made the gate unusable on any repo that
+   writes ordinary LLM or web code. This mirrors what the mature scanners ship;
+   TruffleHog's documented CI pattern (`--fail-verified`) fails only on
+   credentials verified live against the provider, and GitHub's push protection is
+   confidence-gated for the same stated reason. The cost is real and stated plainly:
+   a hand-rolled opaque password with no vendor prefix is flagged loudly but does
+   not stop a merge on its own.
+
+   Two further residuals inside that tier:
+   - **A value under 10 characters in a bare `NAME = value` assignment is not
+     reported.** The floor is `env-secret`-only and matches the number gitleaks
+     ships on the equivalent rule; without it, that one rule produced 42 of the 48
+     false positives. Explicit credential flags (`--password`, `-p`) are NOT
+     floored, because the flag names its argument as a password. Pinned by
+     `test_short_bare_assignment_is_a_documented_miss`.
+   - **Precision comes from length and expression-shape, never entropy, and that
+     is deliberate.** Measured with gitleaks' own Shannon-over-observed-alphabet
+     formula, a 16-character base32 TOTP seed scores 3.375 and
+     `correct-horse-battery-staple` scores 3.495, both *below* gitleaks' own 3.5
+     threshold, because short repetitive strings and passphrases lose to entropy.
+     An entropy gate here would miss real credentials that length plus shape
+     catches, so adding one would be a regression, not an improvement.
+
 ## What the limits mean for the claims
 
 - The audit log is **auditor-reviewable evidence**, not a guarantee of

@@ -141,3 +141,75 @@ class TestPrecisionComesFromLengthAndShape:
         """The floor lives in scan() only: over-redacting a log line is harmless,
         so redact() must stay aggressive on values the gate ignores."""
         assert "short1" not in secrets_mod.redact("PASSWORD_X = short1")
+
+
+class TestSuppressionHolesFoundByCrossVendorReview:
+    """Round-6 wave-3 review: the first cut of the precision work opened five new
+    holes of its own. Each is pinned here with the exact shape that defeated it."""
+
+    # Built by concatenation so this file's own text is not credential-shaped.
+    SEED_NO_DIGITS = "MFRGG" + "ZDFMZTW" + "QZLK"
+    BRACKETED = "Sup3r" + "[Secret]" + "Pass99"
+    OPAQUE = "9f8Xk2" + "LpQ7rT4" + "vZmN0bY6"
+
+    def test_digit_free_all_caps_seed_is_not_suppressed(self) -> None:
+        """The all-caps rule fullmatched ANY uppercase run up to 40 chars, so a
+        digit-free base32 seed was swallowed while the digit-bearing seed used in
+        the earlier tests happened to be caught. Now capped at a single short word
+        unless underscore-separated."""
+        assert secrets_mod.scan("TOTP_SECRET=" + self.SEED_NO_DIGITS)
+
+    @pytest.mark.parametrize("name", ["PASSWORD", "APIKEY", "DB_PASSWORD", "AWS_ACCESS_KEY_ID"])
+    def test_env_var_name_references_stay_suppressed(self, name: str) -> None:
+        assert secrets_mod._looks_like_nonsecret(name) is True
+
+    def test_trailing_bracket_does_not_defeat_the_expression_check(self) -> None:
+        """A regex requiring a closing bracket at the end was defeated by appending
+        one: the bracket group must close at the END with nothing trailing, which is
+        counted rather than pattern-matched."""
+        assert secrets_mod.scan("DB_PASSWORD=" + self.BRACKETED)
+        assert secrets_mod.scan("DB_PASSWORD=" + self.BRACKETED + "]")
+
+    def test_subscript_prefix_followed_by_a_real_value_is_not_suppressed(self) -> None:
+        """The truncated-call rule used match(), so anything merely STARTING with
+        `ident["` was suppressed no matter what followed."""
+        payload = 'cfg["' + self.OPAQUE + '"]==REALVALUE'
+        assert secrets_mod.scan("DB_PASSWORD=" + payload)
+
+    def test_genuine_expressions_are_still_suppressed(self) -> None:
+        for expr in ('data["token"]', "load_api_key()", "request.headers.get('x')"):
+            assert secrets_mod._looks_like_nonsecret(expr) is True, expr
+
+    def test_explicit_credential_flags_are_not_length_floored(self) -> None:
+        """The floor belongs to `env-secret` alone. A credential CLI flag names its
+        argument as a password, so flooring it cost real recall on the most explicit
+        shape in the set."""
+        assert secrets_mod.scan("--password A1b2C3d4")
+
+    def test_short_bare_assignment_is_a_documented_miss(self) -> None:
+        """The residual cost of the floor, asserted so it stays a KNOWN limit rather
+        than drifting silently: a sub-10-character value in a bare NAME=value
+        assignment is not reported. See docs/SECURITY-MODEL.md."""
+        assert secrets_mod.scan("DB_PASSWORD=A1b2C3d4") == []
+
+
+class TestWideEncodingsCannotHideACredential:
+    SOURCE = 'AWS_KEY = "' + _VENDOR + '"\n'
+
+    @pytest.mark.parametrize(
+        "encoding,bom",
+        [
+            ("utf-32-le", b""),
+            ("utf-32-be", b""),
+            ("utf-32-le", b"\xff\xfe\x00\x00"),
+            ("utf-32-be", b"\x00\x00\xfe\xff"),
+        ],
+    )
+    def test_utf32_is_decoded_and_scanned(self, encoding: str, bom: bytes) -> None:
+        """UTF-32 is NUL-bearing, so the diff channel is blind to it exactly as it
+        is to UTF-16, and decoding it as UTF-16 yields NUL-interleaved text that
+        destroys every ASCII pattern. The UTF-32-LE BOM is also a superset of the
+        UTF-16-LE BOM, so BOM order matters."""
+        decoded = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
+        found = {h.pattern_name for h in secrets_mod.scan(decoded)}
+        assert "AWS Access Key ID" in found, (encoding, decoded[:32])

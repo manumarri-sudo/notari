@@ -452,6 +452,10 @@ def _is_hex_sha(ref: str) -> bool:
 _UTF16_LE_BOM = b"\xff\xfe"
 _UTF16_BE_BOM = b"\xfe\xff"
 _UTF8_BOM = b"\xef\xbb\xbf"
+# Must be tested before the UTF-16 BOMs: the UTF-32-LE BOM is a superset of the
+# UTF-16-LE one.
+_UTF32_LE_BOM = b"\xff\xfe\x00\x00"
+_UTF32_BE_BOM = b"\x00\x00\xfe\xff"
 
 
 def _ascii_ratio(sample: str) -> float:
@@ -473,6 +477,19 @@ def _decode_blob(raw: bytes) -> str:
     Returns the decoded string so ASCII-oriented secret patterns can match.
     Falls back to latin-1 (lossless for arbitrary bytes) so we never silently
     skip content."""
+    # UTF-32 BOMs FIRST: the UTF-32-LE BOM is b"\xff\xfe\x00\x00", which STARTS
+    # with the UTF-16-LE BOM, so checking UTF-16 first sends a BOM-bearing UTF-32
+    # file down the UTF-16 path and shreds its content.
+    if raw.startswith(_UTF32_LE_BOM):
+        try:
+            return raw[4:].decode("utf-32-le")
+        except (UnicodeDecodeError, ValueError):
+            pass
+    if raw.startswith(_UTF32_BE_BOM):
+        try:
+            return raw[4:].decode("utf-32-be")
+        except (UnicodeDecodeError, ValueError):
+            pass
     if raw.startswith(_UTF16_LE_BOM):
         try:
             return raw[2:].decode("utf-16-le")
@@ -493,8 +510,13 @@ def _decode_blob(raw: bytes) -> str:
         # first that merely decodes without a replacement char sent UTF-16-BE
         # content (which iconv -t UTF-16BE emits with no BOM) down the LE path,
         # where it became CJK codepoints and every ASCII secret pattern missed.
+        # UTF-32 is in the candidate list for the same reason: it is NUL-bearing,
+        # so the diff channel is blind to it too, and decoding UTF-32 content as
+        # UTF-16 yields NUL-interleaved text that destroys every ASCII pattern.
+        # The ASCII-ratio tiebreak picks the right width because the wrong one
+        # leaves NULs, which do not count as printable ASCII.
         best: tuple[float, str] | None = None
-        for enc in ("utf-16-le", "utf-16-be"):
+        for enc in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
             try:
                 decoded = raw.decode(enc)
             except (UnicodeDecodeError, ValueError):
