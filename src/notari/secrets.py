@@ -202,6 +202,25 @@ def patterns() -> tuple[SecretPattern, ...]:
     return _PATTERNS
 
 
+def is_low_confidence(pattern_name: str) -> bool:
+    """True for the inline shapes that match on a loosely-structured VALUE.
+
+    These are keyword-plus-assignment and CLI-flag shapes with no vendor-anchored
+    prefix, so they carry real false-positive risk and are reported as review
+    signal rather than a hard block. Vendor-format patterns and the anchored
+    inline shapes (bearer header, aws_secret_access_key, DSN password) are
+    specific enough to block on.
+
+    Mirrors what the mature scanners do: TruffleHog's documented CI pattern
+    (`--fail-verified`) fails a build only on credentials verified live, and
+    GitHub push protection is confidence-gated precisely to "avoid push
+    protection blocking commits unnecessarily when a result may be a false
+    positive". Blocking on keyword-plus-entropy alone is not a posture any of
+    them ship.
+    """
+    return pattern_name in _LOW_CONFIDENCE_INLINE
+
+
 def _line_for_offset(text: str, offset: int) -> int:
     """Return the 1-indexed line number containing `offset`.
 
@@ -259,7 +278,20 @@ def scan(
             # paths, and placeholders so the blocking scanner does not fire on
             # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
             # shapes are specific enough to report unconditionally.
-            if label in _LOW_CONFIDENCE_INLINE and _looks_like_nonsecret(text[s:e]):
+            value = text[s:e]
+            # The length floor is low-confidence-only: a real DSN password can
+            # legitimately be short (a brief password in a redis:// DSN), so floor only the
+            # shapes whose match is loosely structured.
+            if label in _LOW_CONFIDENCE_INLINE and (
+                len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN
+            ):
+                continue
+            # The placeholder / expression filter applies to EVERY inline shape.
+            # The vendor-anchored ones are specific about the surrounding syntax,
+            # not about the value, so they fired on documentation prose in
+            # comments: `Authorization: Bearer ...` and `scheme://user:PASSWORD@host`
+            # were 3 of the 3 remaining BLOCK-level hits on notari's own sources.
+            if _looks_like_nonsecret(value):
                 continue
             hits.append(
                 SecretHit(
@@ -345,6 +377,21 @@ _LOW_CONFIDENCE_INLINE: Final[frozenset[str]] = frozenset(
     {"password-flag", "mysql-pflag", "env-secret"}
 )
 
+# Minimum length before a low-confidence inline VALUE is treated as credential-
+# shaped, applied in scan() only so redact() keeps over-redacting harmlessly.
+# gitleaks' shipped `generic-api-key` rule floors its capture group at 10
+# characters for this same keyword-plus-assignment class; ours floored at 1
+# (`\S{1,4096}`), which is why `max_tokens=1024`, `secret_findings=()` and
+# `api_key=api_key` all fired. The floor alone removes those.
+#
+# Deliberately NOT an entropy gate. Measured with gitleaks' own Shannon-over-
+# observed-alphabet formula, the base32 TOTP seed `JBSWY3DPEHPK3PXP` scores
+# 3.375 and `correct-horse-battery-staple` scores 3.495, both BELOW gitleaks'
+# own 3.5 threshold, because short repetitive strings and passphrases lose to
+# entropy. An entropy gate here would miss real credentials that length plus
+# expression-shape catches, so do not "improve" this by adding one.
+_MIN_INLINE_SECRET_LEN: Final[int] = 10
+
 # Lowercased values that are stand-ins, not secrets. Kept small and literal;
 # fuzzier stand-ins are caught by the substring list below.
 _NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
@@ -376,6 +423,50 @@ _CODE_REF_SIGNALS: Final[tuple[str, ...]] = (
 )
 
 
+# A WHOLE-value template or shell reference: ${VAR}, $(cmd), $VAR, %VAR%,
+# {{ jinja }}, {% tag %}. Matching the whole value (rather than testing one
+# leading character) keeps an opaque password that merely STARTS with $, % or {
+# in scope, which the leading-character test wrongly suppressed.
+_TEMPLATE_REF_RE = re.compile(
+    r"\$\{[^}]*\}"
+    r"|\$\([^)]*\)"
+    r"|\$[A-Za-z_][A-Za-z0-9_]*"
+    r"|%[A-Za-z_][A-Za-z0-9_]*%"
+    r"|\{\{.*\}\}"
+    r"|\{%.*%\}"
+)
+# A backtick command substitution anywhere in the value.
+_BACKTICK_SUBST_RE = re.compile(r"`[^`]+`")
+# A value that READS the credential from somewhere else rather than embedding it:
+# a call or a subscript (`input(...`, `data[...`, `request.headers.get(...`), or a
+# dotted attribute chain (`args.api_key`, `self.token`). Modelled on
+# detect-secrets' `is_indirect_reference` filter, whose docstring names exactly
+# this class: "Filters secrets that take the form of: secret = get_secret_key()
+# or: secret = request.headers['apikey']".
+# A COMPLETE call or subscript: an identifier (or dotted path), an opening
+# bracket, and a CLOSING bracket at the very end. Terminality is what separates
+# `data["token"]` from the real password `Sup3r[Secret]Pass99`, which has content
+# after its bracket; an earlier draft of this rule matched the bare opener and so
+# re-introduced the very suppression regression it was meant to avoid.
+_CALL_OR_SUBSCRIPT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\s*[([].*[)\]]")
+# A call truncated by the value capture stopping at whitespace, e.g. the value of
+# `password = input("Password: ")` is captured as `input("Password:`. Identified by
+# a quote immediately inside the opener, which a credential does not have.
+_TRUNCATED_CALL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\s*[([]\s*[\"']")
+_ATTRIBUTE_CHAIN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+# An unmistakable lower_snake_case Python identifier used as the value. Requires
+# an underscore and no uppercase, so a generated credential (which is mixed-case,
+# digit-bearing, or punctuated) does not qualify. The residual class this gives up
+# on is an all-lowercase underscore-separated password, which these rules now
+# surface as review rather than block anyway.
+_SNAKE_IDENT_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+# An ALL-CAPS identifier used as the value, meaning a reference to another
+# env-var NAME rather than an embedded secret: `--password PASSWORD`. Requires
+# word-shaped segments so high-entropy uppercase credentials (base32 TOTP seeds,
+# generated recovery codes) do NOT qualify.
+_UPPERCASE_REF_RE = re.compile(r"[A-Z]{2,}\d{0,3}(?:_[A-Z0-9]+)*")
+
+
 def _looks_like_nonsecret(value: str) -> bool:
     """True when a low-confidence inline VALUE is plainly not a literal secret.
 
@@ -397,7 +488,7 @@ def _looks_like_nonsecret(value: str) -> bool:
     low = v.lower()
     # Shell / template / env reference or command substitution (value STARTS as a
     # reference, or contains a command substitution / interpolation).
-    if v[0] in "$%{" or v.startswith("${") or "$(" in v or "`" in v:
+    if _TEMPLATE_REF_RE.fullmatch(v) or "$(" in v or _BACKTICK_SUBST_RE.search(v):
         return True
     # An angle-bracket placeholder: <token>, <your-password>.
     if v.startswith("<") and v.endswith(">"):
@@ -406,8 +497,17 @@ def _looks_like_nonsecret(value: str) -> bool:
     # "contains any bracket"): os.environ[...], getenv(...), config.get(...).
     if any(sig in low for sig in _CODE_REF_SIGNALS):
         return True
-    # A filesystem path (the working-directory-var class), not a credential.
-    if v.startswith(("/", "./", "../", "~/")):
+    # The general form of the same thing: the value is an expression, not a
+    # literal. A call, a subscript, a dotted attribute chain, or a plain
+    # lower_snake_case identifier is code reading a credential, not a credential.
+    if _CALL_OR_SUBSCRIPT_RE.fullmatch(v) or _TRUNCATED_CALL_RE.match(v):
+        return True
+    if _ATTRIBUTE_CHAIN_RE.fullmatch(v) or _SNAKE_IDENT_RE.fullmatch(v):
+        return True
+    # A filesystem path (the working-directory-var class), not a credential. A
+    # single leading slash is not enough: `/Kj8#mQ2vLpXr9` is a password, while
+    # a real path carries a relative prefix or a second separator.
+    if v.startswith(("./", "../", "~/")) or (v.startswith("/") and v.count("/") >= 2):
         return True
     # The WHOLE value is a known stand-in / placeholder word (not a substring).
     if low in _NONSECRET_TOKENS or low in _NONSECRET_WHOLE:
@@ -419,8 +519,9 @@ def _looks_like_nonsecret(value: str) -> bool:
     if len(set(v)) == 1:
         return True
     # An ALL-CAPS identifier used as the value (doc/help text, or a reference to
-    # another env-var name rather than an embedded secret): --password PASSWORD.
-    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", v):
+    # another env-var name rather than an embedded secret), as in a usage line
+    # whose credential flag is followed by the variable's NAME.
+    if len(v) <= 40 and _UPPERCASE_REF_RE.fullmatch(v):
         return True
     return False
 

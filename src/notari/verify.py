@@ -454,6 +454,19 @@ _UTF16_BE_BOM = b"\xfe\xff"
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
+def _ascii_ratio(sample: str) -> float:
+    """Fraction of `sample` that is printable ASCII or whitespace.
+
+    Used to pick between the two UTF-16 endiannesses when no BOM says which is
+    right. ASCII source read with the wrong endianness decodes cleanly but
+    wrongly (b"\\x00A" becomes U+4100), so a clean decode is not evidence of the
+    correct one; a high ASCII ratio is."""
+    if not sample:
+        return 0.0
+    good = sum(1 for ch in sample if ch.isspace() or 0x20 <= ord(ch) < 0x7F)
+    return good / len(sample)
+
+
 def _decode_blob(raw: bytes) -> str:
     """Decode a git blob to text, handling UTF-16 and UTF-8 (with and without BOM).
 
@@ -476,13 +489,23 @@ def _decode_blob(raw: bytes) -> str:
         except UnicodeDecodeError:
             pass
     if b"\x00" in raw[:512]:
+        # Try BOTH endiannesses and keep the more ASCII-looking one. Taking the
+        # first that merely decodes without a replacement char sent UTF-16-BE
+        # content (which iconv -t UTF-16BE emits with no BOM) down the LE path,
+        # where it became CJK codepoints and every ASCII secret pattern missed.
+        best: tuple[float, str] | None = None
         for enc in ("utf-16-le", "utf-16-be"):
             try:
                 decoded = raw.decode(enc)
-                if "�" not in decoded[:256]:
-                    return decoded
             except (UnicodeDecodeError, ValueError):
                 continue
+            if "�" in decoded[:256]:
+                continue
+            score = _ascii_ratio(decoded[:512])
+            if best is None or score > best[0]:
+                best = (score, decoded)
+        if best is not None:
+            return best[1]
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1096,7 +1119,20 @@ def verify(
     # (and always, with no perimeter), but a human who signed block_secrets=false
     # downgrades a secret hit to a review signal rather than a hard fail. The
     # config is signed, so this can only be relaxed by the approver, never the PR.
-    secrets_block = bool(unwaived_secrets) and (perimeter is None or perimeter.block_secrets)
+    #
+    # Within that, findings are split by CONFIDENCE. The low-confidence inline
+    # shapes (keyword-plus-assignment, CLI password flags) match on a loosely
+    # structured value and cannot be made precise enough to hard-block: scanning
+    # notari's own sources produced 48 of them with no real credential present.
+    # They stay fully visible as review signal, while vendor-format matches and
+    # the anchored inline shapes keep blocking. This is the TruffleHog
+    # `--fail-verified` / GitHub push-protection posture, not a relaxation of the
+    # gate against a credential with a known format.
+    from notari import secrets as secrets_mod
+
+    blocking_secrets = [f for f in unwaived_secrets if not secrets_mod.is_low_confidence(f.pattern_name)]
+    review_secrets = [f for f in unwaived_secrets if secrets_mod.is_low_confidence(f.pattern_name)]
+    secrets_block = bool(blocking_secrets) and (perimeter is None or perimeter.block_secrets)
     secrets_review = bool(unwaived_secrets) and not secrets_block
 
     reasons: list[str] = []
@@ -1114,9 +1150,14 @@ def verify(
             "warning: contract scope is unrestricted (every path is in scope); "
             "the signed perimeter is the only boundary for this change"
         )
-    if unwaived_secrets:
+    if blocking_secrets:
         tail = "" if secrets_block else " (perimeter block_secrets=false: review, not block)"
-        reasons.append(f"{len(unwaived_secrets)} secret(s) detected on added lines{tail}")
+        reasons.append(f"{len(blocking_secrets)} secret(s) detected on added lines{tail}")
+    if review_secrets:
+        reasons.append(
+            f"{len(review_secrets)} possible credential(s) on added lines in a "
+            "low-confidence shape (review, not block)"
+        )
     if unwaived_scope:
         reasons.append(f"{len(unwaived_scope)} path(s) changed outside the approved scope")
     if forbidden_hits:

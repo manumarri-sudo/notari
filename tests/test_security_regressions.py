@@ -838,3 +838,91 @@ class TestReleaseToolchainPinned:
         with open(root / "pyproject.toml", "rb") as f:
             requires = tomllib.load(f)["build-system"]["requires"]
         assert any(r.startswith("hatchling==") for r in requires), requires
+
+
+class TestUtf16EndiannessNotGuessedByFirstCleanDecode:
+    """Round-6 finding P1: a NUL-bearing blob with no BOM was decoded by taking
+    the FIRST endianness that decoded without a replacement char. ASCII content
+    stored as UTF-16-BE decodes cleanly-but-wrongly as UTF-16-LE (b"\\x00A" ->
+    U+4100), so BE files (what `iconv -t UTF-16BE` emits) became CJK codepoints
+    and every ASCII secret pattern missed. The diff channel is independently
+    blind on NUL-interleaved content, so both channels went dark at once."""
+
+    SOURCE = 'AWS_KEY = "' + "AK" + "IAIOSFODNN7EX" + "AMPLE" + '"\n'
+
+    @pytest.mark.parametrize(
+        "encoding,bom",
+        [
+            ("utf-16-be", b""),
+            ("utf-16-le", b""),
+            ("utf-16-be", b"\xfe\xff"),
+            ("utf-16-le", b"\xff\xfe"),
+        ],
+    )
+    def test_secret_is_found_whatever_the_utf16_flavour(
+        self, encoding: str, bom: bytes
+    ) -> None:
+        from notari import secrets as secrets_mod
+
+        decoded = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
+        found = {hit.pattern_name for hit in secrets_mod.scan(decoded)}
+        assert "AWS Access Key ID" in found, (encoding, decoded[:32])
+
+    def test_genuine_non_ascii_utf16_still_decodes_correctly(self) -> None:
+        """The ASCII-ratio tiebreak must not mangle real non-ASCII content."""
+        source = '説明 = "テスト"\n' * 4
+        assert verify_mod._decode_blob(source.encode("utf-16-le")).startswith("説明")
+
+
+class TestInlineSecretSuppressionStaysNarrow:
+    """Round-6 finding P2: `_looks_like_nonsecret` suppressed whole classes of
+    real credentials. `[A-Z][A-Z0-9_]{2,}` discarded every uppercase-and-digit
+    value (base32 TOTP seeds, generated recovery codes), and testing only the
+    FIRST character discarded any password starting `$`, `%`, `{`, `/`. Those
+    three inline rules are the only ones covering an opaque password with no
+    vendor prefix, so each suppression was a hole in the only net."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "JBSWY3DPEHPK3PXP",
+            "A1B2C3D4E5F6G7H8J9K0",
+            "$uper$ecretP4ssw0rd!x9",
+            "/Kj8#mQ2vLpXr9",
+            "{7Hx#kQ2mVp9zLr}",
+            "Sup3r[Secret]Pass99",
+            "my(actual)Passw0rd123",
+        ],
+    )
+    def test_real_credentials_are_not_suppressed(self, value: str) -> None:
+        from notari import secrets as secrets_mod
+
+        assert secrets_mod._looks_like_nonsecret(value) is False, value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "<your-password>",
+            "os.environ['SECRET']",
+            "os.getenv('TOKEN')",
+            "config.get('password')",
+            "${DB_PASSWORD}",
+            "$DB_PASSWORD",
+            "$(vault read secret)",
+            "%USERPROFILE%",
+            "{{ secret_value }}",
+            "changeme",
+            "PASSWORD",
+            "DB_PASSWORD",
+            "AWS_ACCESS_KEY_ID",
+            "your-api-key",
+            "xxxxxxxx",
+            "/home/runner/work/repo",
+            "./config/app.yml",
+            "~/.aws/credentials",
+        ],
+    )
+    def test_ordinary_code_and_placeholders_stay_suppressed(self, value: str) -> None:
+        from notari import secrets as secrets_mod
+
+        assert secrets_mod._looks_like_nonsecret(value) is True, value
