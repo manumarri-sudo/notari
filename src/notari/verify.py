@@ -1081,14 +1081,21 @@ def verify(
             if cp.status == "M"
             else Counter()
         )
-        # One credential legitimately appears in several VIEWS of the same blob at
-        # different line numbers, so report it once per (path, pattern) and keep the
-        # lowest line. Reporting each view separately produced duplicate findings
-        # whose line numbers pointed at a decoding rather than at the file, which
-        # also broke line-specific waivers.
-        per_pattern_line: dict[str, int] = {}
-        per_pattern_conf: dict[str, str] = {}
+        # One credential appears in SEVERAL views of the same blob at different line
+        # numbers, so the views cannot simply be summed. But collapsing to one
+        # finding per pattern is also wrong: a wide-encoded file holding TWO distinct
+        # keys of the same pattern then reported only one, and a reviewer who fixed
+        # that line would never learn about the other. The verdict still blocked, but
+        # incomplete evidence is its own failure.
+        #
+        # So for each pattern, pick the single view that saw the MOST of it, earliest
+        # view winning ties. Within one view, distinct lines are genuinely distinct
+        # credentials; across views they are the same bytes read two ways. The
+        # primary decoding is first, so a genuine wide-encoded file keeps its own
+        # line numbers.
+        per_view: list[dict[str, list[tuple[int, str]]]] = []
         for view in views:
+            found: dict[str, list[tuple[int, str]]] = {}
             seen_counts: Counter[str] = Counter()
             for lineno, line in enumerate(view.splitlines(), 1):
                 seen_counts[line] += 1
@@ -1098,26 +1105,33 @@ def verify(
                 if seen_counts[line] <= base_counts.get(line, 0):
                     continue
                 for hit in _secrets.scan(line):
-                    name = hit.pattern_name
-                    if name not in per_pattern_line or lineno < per_pattern_line[name]:
-                        per_pattern_line[name] = lineno
-                    # A blocking sighting wins over a demoted one: if ANY view sees
-                    # this credential as high confidence, it blocks.
-                    if per_pattern_conf.get(name) != "high":
-                        per_pattern_conf[name] = hit.confidence
-        for name, lineno in per_pattern_line.items():
-            blob_secret_findings.append(
-                policy.SecretFinding(
-                    path=dest,
-                    line=lineno,
-                    pattern_name=name,
-                    # Carried, not defaulted: the default "high" turned every
-                    # demoted anchored hit found on the blob path back into a
-                    # blocking one, so the same credential blocked or reviewed
-                    # depending on which channel happened to see it.
-                    confidence=per_pattern_conf.get(name, "high"),
-                )
+                    found.setdefault(hit.pattern_name, []).append((lineno, hit.confidence))
+            per_view.append(found)
+
+        for name in {n for found in per_view for n in found}:
+            best: list[tuple[int, str]] = []
+            for found in per_view:
+                if len(found.get(name, [])) > len(best):
+                    best = found[name]
+            # A blocking sighting anywhere wins over a demoted one, so a view that
+            # happens to mangle the surrounding syntax cannot downgrade a credential
+            # another view read correctly.
+            blocking = any(
+                conf != "low" for found in per_view for _, conf in found.get(name, [])
             )
+            for lineno, conf in best:
+                blob_secret_findings.append(
+                    policy.SecretFinding(
+                        path=dest,
+                        line=lineno,
+                        pattern_name=name,
+                        # Carried, not defaulted: the default "high" turned every
+                        # demoted anchored hit found on the blob path back into a
+                        # blocking one, so the same credential blocked or reviewed
+                        # depending on which channel happened to see it.
+                        confidence="high" if blocking else conf,
+                    )
+                )
 
     # Strict mode does NOT honor branch-authored exceptions (security review
     # P0-2): an unsigned .notari/exceptions.json could waive whole classes of

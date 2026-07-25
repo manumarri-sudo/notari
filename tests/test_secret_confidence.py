@@ -516,3 +516,45 @@ class TestConfidenceSurvivesEveryChannel:
         result = verify_mod.verify(contract=contract, root=repo)
         aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
         assert len(aws) == 1, [(f.path, f.line) for f in aws]
+
+
+class TestViewDedupKeepsEveryDistinctCredential:
+    """Round-6 wave-3d self-attack, found before the reviewer got to it. Collapsing
+    to one finding per (path, pattern) stopped duplicate reporting across views, but
+    it also hid a SECOND distinct credential of the same pattern in a wide-encoded
+    file, where the diff channel is blind and the blob channel is the only witness.
+    The verdict still blocked, so this was an evidence-completeness defect rather
+    than a bypass: a reviewer who fixed the reported line would never learn about
+    the other one.
+
+    The rule is now: for each pattern, take the single view that saw the MOST of it,
+    earliest view winning ties. Within one view distinct lines are distinct
+    credentials; across views they are the same bytes read two ways."""
+
+    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    K2 = "AKIA" + "1234567890" + "ABCDEF"
+
+    def _verify_file(self, repo: Path, name: str, data: bytes) -> object:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / name).write_bytes(data)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "add")
+        return verify_mod.verify(contract=contract, root=repo)
+
+    def _aws(self, result: object) -> list[object]:
+        return [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+
+    def test_two_distinct_keys_in_a_wide_file_are_both_reported(self, repo: Path) -> None:
+        data = f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode("utf-16-le")
+        found = self._aws(self._verify_file(repo, "wide.txt", data))
+        assert [f.line for f in found] == [1, 2], [(f.path, f.line) for f in found]
+
+    def test_one_key_in_a_wide_file_is_reported_once(self, repo: Path) -> None:
+        """The duplicate-across-views case the dedup exists for."""
+        data = f'a = "{self.K1}"\n'.encode("utf-16-le")
+        assert len(self._aws(self._verify_file(repo, "wide.txt", data))) == 1
+
+    def test_two_distinct_keys_in_a_plain_file_are_both_reported(self, repo: Path) -> None:
+        data = f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode()
+        found = self._aws(self._verify_file(repo, "plain.txt", data))
+        assert [f.line for f in found] == [1, 2]
