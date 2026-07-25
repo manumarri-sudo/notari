@@ -444,3 +444,27 @@ class TestTempWriteIsHardened:
         src = Path(approvals_mod.__file__).read_text()
         assert ".tmp.{os.getpid()}" not in src
         assert "O_EXCL" in src
+
+
+class TestTempWriteModeAndOwnership:
+    """Round-6 wave-3c: open()'s mode argument is masked by the process umask, so a
+    restrictive umask produced a mode-000 store rather than 0600."""
+
+    def test_mode_is_exactly_0600_under_a_restrictive_umask(self, tmp_path: Path) -> None:
+        import os
+        import stat
+
+        old = os.umask(0o600)
+        try:
+            path = tmp_path / "approvals.json"
+            approvals_mod.ApprovalStore(path=path).issue("Bash", {"command": "ls"})
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    def test_cleanup_only_unlinks_a_file_this_call_created(self) -> None:
+        """Unconditional cleanup deleted another writer's colliding temp file, and a
+        failure inside fdopen leaked the raw descriptor."""
+        src = Path(approvals_mod.__file__).read_text()
+        assert "os.fchmod(fd, 0o600)" in src
+        assert "os.close(fd)" in src

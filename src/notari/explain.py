@@ -29,6 +29,7 @@ REVIEW_CLOSER = "Ask a reviewer to look at the {n} item(s) above, then re-run: n
 # Human-facing label per finding kind, for the one-line severity/volume rollup.
 _KIND_LABEL = {
     "secret": "secret",
+    "possible_secret": "possible secret",
     "gate_tamper": "gate-tamper edit",
     "forbidden": "forbidden path",
     "out_of_scope": "out-of-scope file",

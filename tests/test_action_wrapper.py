@@ -619,9 +619,31 @@ class TestAbortBeforeTheTrapIsInstalled:
         assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
         assert "::error::" in (proc.stdout + proc.stderr)
 
-    def test_trap_covers_signals_as_well_as_exit(self) -> None:
-        """An unhandled signal bypasses an EXIT trap entirely, so a cancelled or
-        timed-out job explained nothing. Relevant to runner-side cancellation, not
-        to a candidate-forgeable verdict."""
+    def test_signals_use_a_separate_handler_and_fail_closed(self) -> None:
+        """An unhandled signal bypasses an EXIT trap entirely, so a cancelled job
+        explained nothing. But installing `on_exit` FOR the signals was worse: `$?`
+        inside a signal trap is the preceding command's status, normally 0, so a TERM
+        exited 0 and a cancelled run reported SUCCESS. Signals get their own handler
+        that always exits 2."""
         body = WRAPPER.read_text()
-        assert "trap on_exit EXIT INT TERM HUP" in body
+        assert "trap on_exit EXIT\n" in body
+        for sig in ("TERM", "INT", "HUP"):
+            assert f"trap 'on_signal {sig}' {sig}" in body
+        assert "trap on_exit EXIT INT TERM HUP" not in body
+
+    def test_a_terminated_run_exits_2_not_0(self, tmp_path: Path) -> None:
+        """Executes the real trap block, since this is exactly the case where
+        reading the code misleads."""
+        body = WRAPPER.read_text().splitlines()
+        start = next(i for i, ln in enumerate(body) if ln.startswith("on_exit()"))
+        end = next(i for i, ln in enumerate(body) if ln.startswith("trap 'on_signal HUP'"))
+        harness = tmp_path / "sig.sh"
+        harness.write_text(
+            'set -euo pipefail\nWORK=""\ncleanup(){ [[ -n "$WORK" ]] && rm -rf "$WORK"; return 0; }\n'
+            "EVIDENCE_EMITTED=0\nVERDICT_EXIT=0\n"
+            + "\n".join(body[start : end + 1])
+            + "\ntrue\nkill -TERM $$\nsleep 5\n"
+        )
+        proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+        assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
+        assert "SIGTERM" in (proc.stdout + proc.stderr)

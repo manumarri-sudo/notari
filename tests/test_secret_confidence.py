@@ -96,7 +96,10 @@ class TestOwnSourcesProduceNoBlockingFindings:
         offenders: list[str] = []
         for path in sorted(src.rglob("*.py")):
             for hit in secrets_mod.scan(path.read_text()):
-                if not secrets_mod.is_low_confidence(hit.pattern_name):
+                # The HIT's confidence, not the pattern name's: an anchored pattern
+                # whose value looks like a placeholder is demoted to review rather
+                # than dropped, so the pattern name alone would read as blocking.
+                if hit.confidence != "low":
                     offenders.append(f"{path.relative_to(src)}:{hit.line}:{hit.pattern_name}")
         assert offenders == [], offenders
 
@@ -247,12 +250,22 @@ class TestBracketCountingIsNotFooledByMalformedGroups:
             'data["token"]',
             "load_api_key()",
             "request.headers.get('Authorization')",
-            "cfg[nested[inner]]",
+            'load_api_key()["prod"]',  # chained groups
+            'data["token]"]',  # bracket inside a string literal
             "obj.attr.method(a, b)",
         ],
     )
     def test_well_formed_expressions_are_still_suppressed(self, expr: str) -> None:
         assert secrets_mod._looks_like_nonsecret(expr) is True, expr
+
+    @pytest.mark.parametrize("value", ["hunter2[Prod]", "cfg[nested[inner]]", "cfg[KEY]"])
+    def test_ambiguous_bare_subscript_stays_in_scope(self, value: str) -> None:
+        """Balanced brackets alone are NOT evidence of code. `hunter2[Prod]` is a
+        plausible password, and suppressing the bare `identifier[word]` form on
+        bracket structure alone lost it. An expression now needs a positive signal:
+        a call group, a quote just inside the opener, or a dotted receiver. The cost
+        is an occasional false positive that lands as review signal, not a block."""
+        assert secrets_mod._is_expression_value(value) is False, value
 
 
 class TestCredentialSurvivesMixedScriptEncodings:
@@ -301,10 +314,16 @@ class TestBlockTierIsNotVoidedByLowConfidenceFilters:
             "# connection string: scheme://user:PASSWORD@host",
         ],
     )
-    def test_documentation_prose_stays_suppressed(self, prose: str) -> None:
-        """The reason the filter was applied to anchored shapes in the first place;
-        it must keep working."""
-        assert secrets_mod.scan(prose) == [], prose
+    def test_documentation_prose_is_demoted_not_dropped(self, prose: str) -> None:
+        """Prose in comments must not BLOCK, which is why these were filtered at all.
+        But it must not be deleted either: suppressing anchored findings by their
+        VALUE lost real credentials, since a production password can literally be
+        `PASSWORD1` and a real token can carry a `your_token_` prefix. Demotion gets
+        both, so the assertion is "visible but non-blocking", not "absent"."""
+        hits = secrets_mod.scan(prose)
+        assert all(h.confidence == "low" for h in hits), [
+            (h.pattern_name, h.confidence) for h in hits
+        ]
 
 
 class TestConfidenceReachesTheHumanFacingOutput:
@@ -370,3 +389,52 @@ class TestConfidenceReachesTheHumanFacingOutput:
             "evidence": {"secret_findings": [{"path": "a.py", "line": 1, "pattern": "env-secret"}]},
         }
         assert explain_mod.build_remediations(passport)[0]["kind"] == "secret"
+
+
+class TestMixedEncodingBlobDoesNotHideACredential:
+    """Round-6 wave-3c. I had claimed this class did not reproduce. It does, and the
+    reviewer built the proof: a blob can be a MIXTURE of a wide-encoded region and a
+    plain-ASCII region, so no single decoding preserves both, and the ASCII-ratio
+    tiebreak picks the wide reading because the wide prefix dominates the score."""
+
+    def test_wide_prefix_then_ascii_credential_is_still_found(self) -> None:
+        raw = b"A\x00" * 300 + b"aws_secret_access_key=" + b"/AbCdEfGhIjKlMnOpQr" + b"/RsTuVwXyZ0123456789A" + b"\nX"
+        text = verify_mod._decode_blob_for_scan(raw)
+        assert {h.pattern_name for h in secrets_mod.scan(text)} == {"aws-secret-key"}
+
+    def test_nul_becomes_a_space_so_word_boundaries_survive(self) -> None:
+        """Deleting NULs glued the wide region's letters onto the ASCII region, so the
+        `\\b` the anchored patterns require was gone and nothing matched."""
+        raw = b"A\x00" * 8 + b"aws_secret_access_key=" + b"/AbCdEfGhIjKlMnOpQr" + b"/RsTuVwXyZ0123456789A"
+        assert secrets_mod.scan(verify_mod._decode_blob_for_scan(raw))
+
+    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+    def test_genuine_wide_files_still_report_the_real_line(self, encoding: str) -> None:
+        """The salvage view must not displace the primary decoding's line numbers."""
+        text = 'AWS_KEY = "' + _VENDOR + '"\n'
+        hits = secrets_mod.scan(verify_mod._decode_blob_for_scan(text.encode(encoding)))
+        assert [h.line for h in hits if h.pattern_name == "AWS Access Key ID"] == [1]
+
+
+class TestAnchoredFindingsAreDemotedNotDeleted:
+    """Round-6 wave-3c: suppressing an anchored finding on the strength of its VALUE
+    looking placeholder-like deleted real credentials outright. A production password
+    can literally be `PASSWORD1`, and an application-issued token can carry a
+    readable prefix. These now land as review signal instead of vanishing."""
+
+    @pytest.mark.parametrize(
+        "line,pattern",
+        [
+            ("Authorization: Bearer your_token_4f9KzQ2LmN8PrT7VwX", "bearer-token"),
+            ("postgresql://admin:your_password_4f9KzQ2LmN8!@db.example.com/app", "dsn-password"),
+            ("postgresql://admin:PASSWORD1@db.example.com/app", "dsn-password"),
+        ],
+    )
+    def test_placeholder_looking_anchored_values_are_still_reported(
+        self, line: str, pattern: str
+    ) -> None:
+        assert pattern in {h.pattern_name for h in secrets_mod.scan(line)}
+
+    def test_a_real_anchored_value_still_blocks(self) -> None:
+        hits = secrets_mod.scan("Authorization: Bearer 4f9KzQ2LmN8PrT7VwXyZ")
+        assert hits and all(h.confidence == "high" for h in hits)

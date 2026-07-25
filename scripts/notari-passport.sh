@@ -118,12 +118,29 @@ on_exit() {
   fi
   exit "$rc"
 }
-# INT / TERM / HUP as well as EXIT: an unhandled signal bypasses an EXIT trap
-# entirely, so a cancelled or timed-out job produced no explanation at all. A
-# candidate cannot usually signal the runner, so this is about runner-side
-# cancellation rather than a forgeable verdict, but the trap's whole purpose is
-# that an incomplete run says so.
-trap on_exit EXIT INT TERM HUP
+on_signal() {
+  # A SEPARATE handler from on_exit, and this is not cosmetic. Installing on_exit
+  # for a signal made `$?` inside it the PRECEDING command's status, normally 0, so
+  # a TERM produced exit 0: a cancelled or timed-out job reported SUCCESS, which is
+  # far worse than the bare signal exit it replaced. The signal case has no verdict
+  # by definition, so it always fails closed at 2.
+  local sig="$1"
+  echo "::error::notari wrapper received SIG${sig} before publishing a verdict; failing closed"
+  if [[ "$EVIDENCE_EMITTED" != "1" && -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '## Notari: the gate was interrupted\n\nThe wrapper received SIG%s before it could publish a verdict. This is a cancelled or timed-out run, not a review decision, so do not read the missing check as approval.\n' \
+      "$sig" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+  exit 2
+}
+
+# EXIT covers normal and `set -e` termination; the three signals get their own
+# handler because an unhandled signal bypasses an EXIT trap entirely, so a
+# cancelled job explained nothing. A candidate cannot usually signal the runner,
+# so this is about runner-side cancellation rather than a forgeable verdict.
+trap on_exit EXIT
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
+trap 'on_signal HUP' HUP
 
 if ! WORK="$(mktemp -d "${TMPDIR:-/tmp}/notari.XXXXXX")"; then
   echo "::error::could not create a private temp dir (TMPDIR=${TMPDIR:-/tmp}); failing closed"

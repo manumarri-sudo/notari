@@ -212,10 +212,23 @@ class ApprovalStore:
         ).encode()
         tmp = self.path.with_name(f"{self.path.name}.tmp.{secrets.token_hex(8)}")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        # The mode argument to open() is masked by the process umask, so a umask of
+        # 0o600 would have produced a mode-000 store rather than 0600. fchmod on the
+        # descriptor sets it exactly, and doing it on the fd (not the path) means no
+        # window where the name could be swapped.
+        fd = os.open(tmp, flags, 0o600)
+        # Only unlink a temp file THIS call created. Unconditional cleanup meant an
+        # EEXIST collision deleted another writer's temp file, which we do not own.
         try:
-            fd = os.open(tmp, flags, 0o600)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(body)
+            os.fchmod(fd, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(body)
+            except BaseException:
+                # fdopen failing leaves the raw descriptor un-wrapped and unclosed.
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
             os.replace(tmp, self.path)
         except BaseException:
             with contextlib.suppress(OSError):

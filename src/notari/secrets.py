@@ -50,6 +50,12 @@ class SecretHit:
     matched_at: int  # offset in scanned text
     length: int  # match length (we never persist the value)
     line: int = 0  # 1-indexed line where the match starts (0 = unknown)
+    # "high" blocks, "low" is review signal. Usually implied by the pattern, but
+    # carried per hit because an ANCHORED pattern whose value looks like a
+    # placeholder is demoted rather than dropped: a production password can
+    # legitimately be `PASSWORD1`, and a real token can carry a readable prefix
+    # like `your_token_...`, so deleting those findings lost real credentials.
+    confidence: str = "high"
 
 
 # Vendor-format credential patterns. Each regex is anchored to the
@@ -286,21 +292,28 @@ def scan(
                 len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN
             ):
                 continue
-            # TWO filter tiers. Every inline shape gets the placeholder checks,
-            # because the anchored ones are specific about surrounding syntax rather
-            # than about the value and so fired on documentation prose in comments
-            # (`Authorization: Bearer ...`, `scheme://user:PASSWORD@host`). Only the
-            # low-confidence shapes get the additional path and expression checks:
-            # applying those to the BLOCK tier voided the anchored `aws-secret-key`
-            # pattern outright, because a real 40-character base64 AWS secret can
-            # begin with `/` and contain more, which read as a filesystem path.
-            reject = (
-                _looks_like_nonsecret if label in _LOW_CONFIDENCE_INLINE else _looks_like_placeholder
-            )
-            if reject(value):
-                continue
+            # Two tiers, and they behave DIFFERENTLY on a placeholder-looking value.
+            #
+            # A low-confidence shape (bare assignment, credential flag) is dropped:
+            # it is the noisy tier and a suppressed guess costs little.
+            #
+            # An ANCHORED shape is DEMOTED, never dropped. Suppressing those was
+            # unsound in a way that lost real credentials, because the heuristics
+            # judge the value while the pattern's confidence comes from the
+            # surrounding syntax: a production password can literally be `PASSWORD1`,
+            # and an application-issued token can carry a readable prefix such as
+            # `your_token_<entropy>`. Both were being deleted outright. Demotion
+            # keeps the finding visible as review signal, which still fixes the
+            # documentation-prose noise that motivated filtering these at all.
+            if label in _LOW_CONFIDENCE_INLINE:
+                if _looks_like_nonsecret(value):
+                    continue
+                confidence = "low"
+            else:
+                confidence = "low" if _looks_like_placeholder(value) else "high"
             hits.append(
                 SecretHit(
+                    confidence=confidence,
                     pattern_name=label,
                     matched_at=s,
                     length=e - s,
@@ -506,21 +519,48 @@ def _is_expression_value(v: str) -> bool:
     rest = v[lead.end() :]
     if not rest or rest[0] not in "([":
         return False
+    # Balanced brackets alone are NOT evidence of code: `hunter2[Prod]` is a
+    # plausible password and was being suppressed. Require a positive signal that
+    # this is an expression: a call group anywhere, a quote just inside the opener
+    # (a string subscript), or a dotted receiver. The bare ambiguous
+    # `identifier[word]` form is left in scope deliberately, at the cost of an
+    # occasional false positive that now lands as review signal rather than a block.
+    has_call = "(" in rest
+    quoted_subscript = bool(re.match(r"[([]\s*[\"']", rest))
+    dotted_receiver = "." in v[: lead.end()]
+    if not (has_call or quoted_subscript or dotted_receiver):
+        return False
     # A STACK, not a depth counter: a counter treats `(` and `[` as
     # interchangeable, so a mismatched pair (`cfg[value)`) balanced to zero and a
     # real password containing one was suppressed. Brackets must actually pair.
     closer = {"(": ")", "[": "]"}
     stack: list[str] = []
+    quote: str | None = None
     for i, ch in enumerate(rest):
-        if ch in closer:
+        # Brackets inside a STRING LITERAL are data, not structure: `data["token]"]`
+        # was misread as closing early and so read as a literal value rather than
+        # code. Skip anything between matching quotes.
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in closer:
             stack.append(closer[ch])
         elif ch in ")]":
             if not stack or stack.pop() != ch:
                 return False
             if not stack:
-                # Closed. Only an expression if nothing follows the group: a value
-                # that closes early and then continues is a literal, not code.
-                return i == len(rest) - 1
+                if i == len(rest) - 1:
+                    return True
+                # A CHAINED group is still code: `load_api_key()["prod"]` closes its
+                # call group and immediately opens a subscript. Only bare text after
+                # a closed group means this is a literal value, which is what keeps
+                # `<password>[<x>]<password>` in scope.
+                if rest[i + 1] in "([":
+                    continue
+                return False
     # Never closed: a call truncated by the value capture stopping at whitespace.
     # Require a quote just inside the opener, which a credential does not have.
     return bool(_TRUNCATED_CALL_RE.match(v))

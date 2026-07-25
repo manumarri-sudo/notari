@@ -19,7 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from notari import attest, explain, secrets
+from notari import attest, explain
+from notari import secrets as secrets_mod
 from notari.verify import Verdict, VerifyResult
 
 SIGNATURE_KEY = "signature"
@@ -29,6 +30,20 @@ _VERDICT_BADGE = {
     Verdict.NEEDS_REVIEW: "⚠️ NEEDS REVIEW",
     Verdict.BLOCK: "⛔ BLOCK",
 }
+
+
+def _confidence_of(finding: Any) -> str:
+    """"low" for review-tier findings, "high" for blocking ones.
+
+    Prefers the confidence the scanner recorded on the finding, since an ANCHORED
+    pattern with a placeholder-looking value is demoted to review rather than
+    dropped, and that cannot be recovered from the pattern name alone. Falls back
+    to the pattern-name classification for findings built before the field existed.
+    """
+    carried = getattr(finding, "confidence", None)
+    if carried in ("low", "high"):
+        return str(carried)
+    return "low" if secrets_mod.is_low_confidence(finding.pattern_name) else "high"
 
 
 def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> dict[str, Any]:
@@ -70,7 +85,7 @@ def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> 
                     "path": f.path,
                     "line": f.line,
                     "pattern": f.pattern_name,
-                    "confidence": ("low" if secrets.is_low_confidence(f.pattern_name) else "high"),
+                    "confidence": _confidence_of(f),
                 }
                 for f in result.secret_findings
             ],
@@ -249,7 +264,14 @@ def render_markdown(
     lines.append("")
     if secrets:
         for f in secrets:
-            lines.append(f"- ⛔ `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}")
+            # The marker must match the tier. Rendering every finding with the
+            # hard-violation glyph described a low-confidence keyword match with the
+            # certainty of a matched vendor key format, in the same document whose
+            # verdict correctly said NEEDS_REVIEW.
+            marker = "⚠️ possible" if _confidence_of(f) == "low" else "⛔"
+            lines.append(
+                f"- {marker} `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}"
+            )
     else:
         lines.append("_No secrets detected on added lines._")
     lines.append("")

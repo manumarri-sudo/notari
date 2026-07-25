@@ -539,6 +539,39 @@ def _decode_blob(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
+def _decode_blob_for_scan(raw: bytes) -> str:
+    """Text to run the secret patterns over, which is NOT always one decoding.
+
+    A blob can be a MIXTURE: a long wide-encoded region followed by a plain ASCII
+    region. Any single decoding then destroys one of them, and the ASCII-ratio
+    tiebreak happily picks the wide reading because the wide prefix dominates the
+    score. Executed proof, from the wave-3 review: 300 repetitions of b"A\\x00"
+    followed by a plain-ASCII line carrying an AWS secret-key assignment scores 0.90
+    as UTF-16-LE, and the credential in the ASCII tail decodes into unrelated
+    codepoints and vanishes. I had claimed this class did not reproduce; it does.
+
+    So for NUL-bearing blobs we scan the chosen decoding AND a lossless Latin-1
+    view with NULs removed, joined by a newline. Latin-1 maps every byte, so any
+    ASCII credential survives it whatever the rest of the file is. Scanning a
+    superset can only add findings, never hide one, and duplicate hits on the same
+    credential are deduplicated by (path, line) downstream. Line numbers in the
+    appended view are offset, which is why the primary decoding comes first and
+    keeps its own numbering.
+    """
+    primary = _decode_blob(raw)
+    if b"\x00" not in raw[:512]:
+        return primary
+    # NUL becomes a SPACE, not nothing. Deleting it concatenated the wide region's
+    # letters straight onto the ASCII region, so `...AAAAaws_secret_access_key=` no
+    # longer had the word boundary the anchored patterns require and matched
+    # nothing. A space preserves the boundary without inflating line numbers the
+    # way a newline would.
+    salvage = raw.decode("latin-1").replace("\x00", " ")
+    if salvage and salvage not in primary:
+        return primary + "\n" + salvage
+    return primary
+
+
 def _read_candidate_blob(
     root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
 ) -> tuple[str | None, bool]:
@@ -566,7 +599,7 @@ def _read_candidate_blob(
             return None, True
         _log.warning("blob read failed for %s:%s, %s", candidate_sha[:12], path, e)
         return None, False
-    return _decode_blob(raw), truncated
+    return _decode_blob_for_scan(raw), truncated
 
 
 def _base_line_counts(
@@ -1157,8 +1190,17 @@ def verify(
     # gate against a credential with a known format.
     from notari import secrets as secrets_mod
 
-    blocking_secrets = [f for f in unwaived_secrets if not secrets_mod.is_low_confidence(f.pattern_name)]
-    review_secrets = [f for f in unwaived_secrets if secrets_mod.is_low_confidence(f.pattern_name)]
+    # The scanner's per-finding confidence wins over the pattern-name default,
+    # because an ANCHORED pattern whose value looks like a placeholder is demoted
+    # to review rather than dropped, and that cannot be recovered from the name.
+    def _is_low(f: policy.SecretFinding) -> bool:
+        carried = getattr(f, "confidence", None)
+        if carried in ("low", "high"):
+            return bool(carried == "low")
+        return bool(secrets_mod.is_low_confidence(f.pattern_name))
+
+    blocking_secrets = [f for f in unwaived_secrets if not _is_low(f)]
+    review_secrets = [f for f in unwaived_secrets if _is_low(f)]
     secrets_block = bool(blocking_secrets) and (perimeter is None or perimeter.block_secrets)
     secrets_review = bool(unwaived_secrets) and not secrets_block
 

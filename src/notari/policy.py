@@ -1321,6 +1321,10 @@ class SecretFinding:
     path: str
     line: int
     pattern_name: str
+    # "high" blocks, "low" is review signal. Carried per finding rather than
+    # re-derived from the pattern name, because an anchored pattern whose value
+    # looks like a placeholder is demoted to review rather than dropped.
+    confidence: str = "high"
 
 
 @dataclass(frozen=True)
@@ -1773,7 +1777,12 @@ def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluatio
         for lineno, text in f.added_lines:
             for hit in _secrets.scan(text):
                 secret_findings.append(
-                    SecretFinding(path=f.path, line=lineno, pattern_name=hit.pattern_name)
+                    SecretFinding(
+                        path=f.path,
+                        line=lineno,
+                        pattern_name=hit.pattern_name,
+                        confidence=hit.confidence,
+                    )
                 )
 
     return DiffEvaluation(
