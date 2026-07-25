@@ -526,7 +526,12 @@ def _decode_blob(raw: bytes) -> str:
             score = _ascii_ratio(decoded[:512])
             if best is None or score > best[0]:
                 best = (score, decoded)
-        if best is not None:
+        # A minimum score, so a NUL-bearing blob that is not ACTUALLY a wide
+        # encoding falls through to the UTF-8 / latin-1 path below instead of being
+        # reinterpreted into garbage. Without a floor, the best-of-four is returned
+        # however bad it is, which can destroy a credential that the plain fallback
+        # would have preserved. Real wide-encoded source scores far above this.
+        if best is not None and best[0] >= 0.5:
             return best[1]
     try:
         return raw.decode("utf-8")

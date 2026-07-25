@@ -421,3 +421,26 @@ class TestCorruptStoreDegradesSafely:
         # No temp files left behind, and the published file is complete JSON.
         assert list(tmp_path.glob("*.tmp.*")) == []
         assert json.loads(path.read_text())
+
+
+class TestTempWriteIsHardened:
+    """Round-6 wave-3b: the atomic-write temp file used a predictable
+    `.tmp.<pid>` name written through `Path.write_text`, so a pre-planted symlink
+    was followed, and the 0600 chmod happened after the write with its failure
+    suppressed. Same class already fixed in the passport publish helper. Lower
+    severity here because this store lives under NOTARI_HOME rather than a
+    candidate-controlled checkout, so it needs local co-location to exploit."""
+
+    def test_mode_is_set_at_open_and_no_temp_is_left_behind(self, tmp_path: Path) -> None:
+        import stat
+
+        path = tmp_path / "approvals.json"
+        store = approvals_mod.ApprovalStore(path=path)
+        store.issue("Bash", {"command": "ls"}, reason="r")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert list(tmp_path.glob("*.tmp.*")) == []
+
+    def test_temp_name_is_not_derived_from_the_pid(self) -> None:
+        src = Path(approvals_mod.__file__).read_text()
+        assert ".tmp.{os.getpid()}" not in src
+        assert "O_EXCL" in src

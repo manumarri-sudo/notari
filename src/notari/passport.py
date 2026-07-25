@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from notari import attest, explain
+from notari import attest, explain, secrets
 from notari.verify import Verdict, VerifyResult
 
 SIGNATURE_KEY = "signature"
@@ -61,8 +61,17 @@ def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> 
             "out_of_scope": list(result.out_of_scope),
             "forbidden_hits": list(result.forbidden_hits),
             "gate_tamper_hits": list(result.gate_tamper_hits),
+            # `confidence` is emitted so every downstream renderer can tell the
+            # BLOCK tier from the review tier. Without it the tier was discarded
+            # here, and `notari explain` then described a low-confidence
+            # keyword-match with the certainty of a matched vendor key format.
             "secret_findings": [
-                {"path": f.path, "line": f.line, "pattern": f.pattern_name}
+                {
+                    "path": f.path,
+                    "line": f.line,
+                    "pattern": f.pattern_name,
+                    "confidence": ("low" if secrets.is_low_confidence(f.pattern_name) else "high"),
+                }
                 for f in result.secret_findings
             ],
             "sensitive_surfaces": {k: list(v) for k, v in result.sensitive_surfaces.items() if v},

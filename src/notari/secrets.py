@@ -286,12 +286,18 @@ def scan(
                 len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN
             ):
                 continue
-            # The placeholder / expression filter applies to EVERY inline shape.
-            # The vendor-anchored ones are specific about the surrounding syntax,
-            # not about the value, so they fired on documentation prose in
-            # comments: `Authorization: Bearer ...` and `scheme://user:PASSWORD@host`
-            # were 3 of the 3 remaining BLOCK-level hits on notari's own sources.
-            if _looks_like_nonsecret(value):
+            # TWO filter tiers. Every inline shape gets the placeholder checks,
+            # because the anchored ones are specific about surrounding syntax rather
+            # than about the value and so fired on documentation prose in comments
+            # (`Authorization: Bearer ...`, `scheme://user:PASSWORD@host`). Only the
+            # low-confidence shapes get the additional path and expression checks:
+            # applying those to the BLOCK tier voided the anchored `aws-secret-key`
+            # pattern outright, because a real 40-character base64 AWS secret can
+            # begin with `/` and contain more, which read as a filesystem path.
+            reject = (
+                _looks_like_nonsecret if label in _LOW_CONFIDENCE_INLINE else _looks_like_placeholder
+            )
+            if reject(value):
                 continue
             hits.append(
                 SecretHit(
@@ -520,22 +526,27 @@ def _is_expression_value(v: str) -> bool:
     return bool(_TRUNCATED_CALL_RE.match(v))
 
 
-def _looks_like_nonsecret(value: str) -> bool:
-    """True when a low-confidence inline VALUE is plainly not a literal secret.
-
-    Applied only to `_LOW_CONFIDENCE_INLINE` shapes in `scan()`, so the blocking
-    gate stops false-BLOCKing ordinary code (env lookups, working-dir vars,
-    placeholders, doc flags). It is deliberately CONSERVATIVE: a genuine opaque
-    password that merely contains a bracket, a paren, or the letters of a common
-    word must still be caught, and vendor-format keys are matched by `_PATTERNS`
-    regardless of assignment form. Missing a real secret is worse than a rare
-    false positive, so only clear references and whole-value placeholders qualify.
-    """
+def _strip_one_quote_layer(value: str) -> str:
     v = value.strip()
     # Peel one layer of matching surrounding quotes so a quoted stand-in reads
     # as a stand-in, not a literal.
     if len(v) >= 2 and v[0] in "\"'`" and v[-1] == v[0]:
         v = v[1:-1].strip()
+    return v
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    """True when a value is a STAND-IN or an explicit reference, for ANY inline shape.
+
+    This is the subset of suppressions that is safe to apply to the BLOCK tier
+    (bearer header, `aws_secret_access_key`, DSN password), which is why it is
+    separated out. Those patterns are anchored on their surrounding syntax rather
+    than their value, so they fired on documentation prose in comments, and
+    suppressing an explicit placeholder there is right. Applying the FULL filter to
+    them was not: the path rule voided a real credential (see
+    `_looks_like_nonsecret`).
+    """
+    v = _strip_one_quote_layer(value)
     if not v:
         return True
     low = v.lower()
@@ -547,20 +558,9 @@ def _looks_like_nonsecret(value: str) -> bool:
     if v.startswith("<") and v.endswith(">"):
         return True
     # A code expression that reads the value from elsewhere (specific tokens, not
-    # "contains any bracket"): os.environ[...], getenv(...), config.get(...).
+    # "contains any bracket"): os.environ[...], getenv(...), config.get(...). No
+    # vendor key format contains these substrings, so this is safe on both tiers.
     if any(sig in low for sig in _CODE_REF_SIGNALS):
-        return True
-    # The general form of the same thing: the value is an expression, not a
-    # literal. A call, a subscript, a dotted attribute chain, or a plain
-    # lower_snake_case identifier is code reading a credential, not a credential.
-    if _is_expression_value(v):
-        return True
-    if _ATTRIBUTE_CHAIN_RE.fullmatch(v) or _SNAKE_IDENT_RE.fullmatch(v):
-        return True
-    # A filesystem path (the working-directory-var class), not a credential. A
-    # single leading slash is not enough: `/Kj8#mQ2vLpXr9` is a password, while
-    # a real path carries a relative prefix or a second separator.
-    if v.startswith(("./", "../", "~/")) or (v.startswith("/") and v.count("/") >= 2):
         return True
     # The WHOLE value is a known stand-in / placeholder word (not a substring).
     if low in _NONSECRET_TOKENS or low in _NONSECRET_WHOLE:
@@ -568,17 +568,43 @@ def _looks_like_nonsecret(value: str) -> bool:
     # A template placeholder spelled as a whole value: your-api-key, YOUR_TOKEN.
     if low.startswith(("your_", "your-")):
         return True
-    # Repeated filler (xxxx, ****, ----, ....).
+    # Repeated filler (xxxx, ****, ----, ....). Also catches the `...` in a
+    # documented `Authorization: Bearer ...` example.
     if len(set(v)) == 1:
         return True
-    # An ALL-CAPS identifier used as the value (doc/help text, or a reference to
-    # another env-var name rather than an embedded secret), as in a usage line
-    # whose credential flag is followed by the variable's NAME.
+    # An env-var NAME used as the value, as in `scheme://user:PASSWORD@host`.
     if _UPPERCASE_MULTIWORD_RE.fullmatch(v) and len(v) <= 40:
         return True
-    if len(v) <= _UPPERCASE_REF_MAX_SINGLE_WORD and _UPPERCASE_WORD_RE.fullmatch(v):
+    return len(v) <= _UPPERCASE_REF_MAX_SINGLE_WORD and bool(_UPPERCASE_WORD_RE.fullmatch(v))
+
+
+def _looks_like_nonsecret(value: str) -> bool:
+    """True when a LOW-CONFIDENCE inline value is plainly not a literal secret.
+
+    The placeholder checks above, PLUS shape checks that only make sense for a
+    loosely-structured value: is it an expression rather than a literal, is it a
+    filesystem path. Those extra checks must NOT reach the BLOCK tier. A real AWS
+    secret access key is 40 characters of base64 alphabet, so it can begin with `/`
+    and contain several more, and the path rule silently voided the anchored
+    `aws-secret-key` pattern on exactly that shape: the credential was never
+    classified at all, so the review-versus-block posture never even applied.
+    """
+    if _looks_like_placeholder(value):
         return True
-    return False
+    v = _strip_one_quote_layer(value)
+    if not v:
+        return True
+    # The value is an expression, not a literal. A call, a subscript, a dotted
+    # attribute chain, or a plain lower_snake_case identifier is code reading a
+    # credential, not a credential.
+    if _is_expression_value(v):
+        return True
+    if _ATTRIBUTE_CHAIN_RE.fullmatch(v) or _SNAKE_IDENT_RE.fullmatch(v):
+        return True
+    # A filesystem path (the working-directory-var class), not a credential. A
+    # single leading slash is not enough: `/Kj8#mQ2vLpXr9` is a password, while
+    # a real path carries a relative prefix or a second separator.
+    return v.startswith(("./", "../", "~/")) or (v.startswith("/") and v.count("/") >= 2)
 
 
 def redact(text: str, *, extra_patterns: Iterable[SecretPattern] = ()) -> str:

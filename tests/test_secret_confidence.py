@@ -270,3 +270,103 @@ class TestCredentialSurvivesMixedScriptEncodings:
         raw = ("AWS_KEY=" + _VENDOR + "\n").encode("utf-16-le") + "﻿more\n".encode("utf-16-le")
         decoded = verify_mod._decode_blob(raw)
         assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(decoded)}
+
+
+class TestBlockTierIsNotVoidedByLowConfidenceFilters:
+    """Round-6 wave-3b, the most serious finding of the round. Applying the FULL
+    nonsecret filter to every inline shape (done to stop the anchored patterns
+    firing on documentation prose) let the path rule void an anchored BLOCK-tier
+    pattern: a real AWS secret access key is 40 characters of base64 alphabet, so it
+    can begin with `/` and contain several more, which read as a filesystem path.
+    The credential was never classified at all, so the review-versus-block posture
+    never applied to it."""
+
+    AWS_SECRET = "/AbCdEfGhIjKlMnOpQr" + "/RsTuVwXyZ0123456789A"
+
+    def test_slash_bearing_aws_secret_key_is_caught_and_blocks(self) -> None:
+        hits = secrets_mod.scan("aws_secret_access_key=" + self.AWS_SECRET)
+        assert hits, "anchored aws-secret-key pattern was suppressed"
+        assert any(not secrets_mod.is_low_confidence(h.pattern_name) for h in hits)
+
+    def test_the_same_value_is_still_suppressed_on_the_low_confidence_tier(self) -> None:
+        """The path rule is correct for a loosely-structured value; it is only wrong
+        when applied to an anchored pattern."""
+        assert secrets_mod._looks_like_nonsecret(self.AWS_SECRET) is True
+        assert secrets_mod._looks_like_placeholder(self.AWS_SECRET) is False
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "# curl -H 'Authorization: Bearer ...'",
+            "# connection string: scheme://user:PASSWORD@host",
+        ],
+    )
+    def test_documentation_prose_stays_suppressed(self, prose: str) -> None:
+        """The reason the filter was applied to anchored shapes in the first place;
+        it must keep working."""
+        assert secrets_mod.scan(prose) == [], prose
+
+
+class TestConfidenceReachesTheHumanFacingOutput:
+    """Round-6 wave-3b: the exit-code split was right but the prose was not. The
+    tier was discarded before rendering, so a keyword match was described with the
+    certainty of a matched vendor key format and annotated as ::error::."""
+
+    def test_passport_json_carries_the_confidence_tier(self, repo: Path) -> None:
+        from notari import passport as passport_mod
+
+        contract = _commit_line(repo, f'DB_PASSWORD = "{_OPAQUE}"\n')
+        result = verify_mod.verify(contract=contract, root=repo)
+        findings = passport_mod.build_passport(result)["evidence"]["secret_findings"]
+        assert findings and all(f["confidence"] == "low" for f in findings)
+
+    def test_low_confidence_finding_is_hedged_and_annotated_as_a_warning(self) -> None:
+        from notari import explain as explain_mod
+
+        passport = {
+            "verdict": "NEEDS_REVIEW",
+            "contract": {"task": "t"},
+            "evidence": {
+                "secret_findings": [
+                    {"path": "a.py", "line": 3, "pattern": "env-secret", "confidence": "low"}
+                ]
+            },
+        }
+        rem = explain_mod.build_remediations(passport)
+        assert rem[0]["kind"] == "possible_secret"
+        assert "might be" in rem[0]["plain"]
+        assert "anyone who sees the file can steal it" not in rem[0]["plain"]
+        assert any("::warning" in a for a in explain_mod.render_github_annotations(passport))
+
+    def test_high_confidence_finding_keeps_its_certainty(self) -> None:
+        from notari import explain as explain_mod
+
+        passport = {
+            "verdict": "BLOCK",
+            "contract": {"task": "t"},
+            "evidence": {
+                "secret_findings": [
+                    {
+                        "path": "a.py",
+                        "line": 3,
+                        "pattern": "AWS Access Key ID",
+                        "confidence": "high",
+                    }
+                ]
+            },
+        }
+        rem = explain_mod.build_remediations(passport)
+        assert rem[0]["kind"] == "secret"
+        assert "anyone who sees the file can steal it" in rem[0]["plain"]
+        assert any("::error" in a for a in explain_mod.render_github_annotations(passport))
+
+    def test_a_passport_without_the_field_is_treated_as_high_confidence(self) -> None:
+        """Absence must not silently soften existing evidence in older passports."""
+        from notari import explain as explain_mod
+
+        passport = {
+            "verdict": "BLOCK",
+            "contract": {"task": "t"},
+            "evidence": {"secret_findings": [{"path": "a.py", "line": 1, "pattern": "env-secret"}]},
+        }
+        assert explain_mod.build_remediations(passport)[0]["kind"] == "secret"

@@ -197,14 +197,25 @@ class ApprovalStore:
         already degraded safely (the JSONDecodeError path falls back to empty,
         which keeps the caller blocked rather than approving), so this is
         consistency with the passport helper rather than a security fix.
+
+        The temp file is created O_EXCL|O_NOFOLLOW at an unguessable name and its
+        mode is set at open() time, carrying over the hardening already applied to
+        the passport publish helper. The predictable `.tmp.<pid>` name written via
+        `write_text` followed a pre-planted symlink and let the 0600 mode fail
+        silently. This store lives under NOTARI_HOME rather than a candidate
+        checkout, so exploiting it needs local co-location rather than PR content,
+        but the same shape should not be safe in one file and unsafe in another.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        body = {tok: ap.to_json() for tok, ap in self.approvals.items()}
-        tmp = self.path.with_name(f"{self.path.name}.tmp.{os.getpid()}")
+        body = json.dumps(
+            {tok: ap.to_json() for tok, ap in self.approvals.items()}, indent=2, sort_keys=True
+        ).encode()
+        tmp = self.path.with_name(f"{self.path.name}.tmp.{secrets.token_hex(8)}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         try:
-            tmp.write_text(json.dumps(body, indent=2, sort_keys=True))
-            with contextlib.suppress(OSError):
-                tmp.chmod(0o600)
+            fd = os.open(tmp, flags, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(body)
             os.replace(tmp, self.path)
         except BaseException:
             with contextlib.suppress(OSError):

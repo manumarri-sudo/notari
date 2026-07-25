@@ -597,3 +597,31 @@ class TestPublishFailureCannotSuppressTheVerdict:
         """A POSIX directory legitimately named `a\\b\\c` became three nested
         directories."""
         assert 'pub.replace("\\\\", "/")' not in WRAPPER.read_text()
+
+
+class TestAbortBeforeTheTrapIsInstalled:
+    """Round-6 wave-3b: `mktemp` ran BEFORE `trap on_exit EXIT`, so a failure to
+    create the private temp dir aborted with exit 1 and no trap coverage: no
+    ::error::, no fallback summary, and an exit code indistinguishable from a BLOCK
+    verdict. WORK is now declared and the trap installed first."""
+
+    def test_unusable_tmpdir_fails_closed_with_exit_2(self, repo: tuple[Path, dict[str, str]]) -> None:
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        proc = subprocess.run(
+            ["bash", str(WRAPPER)],
+            cwd=root,
+            env={**env, "TMPDIR": "/nonexistent", "NOTARI_STRICT": "false"},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
+        assert "::error::" in (proc.stdout + proc.stderr)
+
+    def test_trap_covers_signals_as_well_as_exit(self) -> None:
+        """An unhandled signal bypasses an EXIT trap entirely, so a cancelled or
+        timed-out job explained nothing. Relevant to runner-side cancellation, not
+        to a candidate-forgeable verdict."""
+        body = WRAPPER.read_text()
+        assert "trap on_exit EXIT INT TERM HUP" in body

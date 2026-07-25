@@ -88,8 +88,13 @@ fi
 
 # A private temp dir we own: the verifier writes here, and the verdict is read
 # back ONLY from here. Nothing in the repo tree can influence the decision.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/notari.XXXXXX")"
-cleanup() { rm -rf "$WORK" || true; }
+#
+# WORK is declared and the trap is installed BEFORE mktemp runs. Creating the temp
+# dir first left a window where a failure (an unwritable TMPDIR, for instance)
+# aborted with exit 1 and NO trap coverage: no "::error::", no fallback summary,
+# and an exit code indistinguishable from a BLOCK verdict.
+WORK=""
+cleanup() { [[ -n "$WORK" ]] && rm -rf "$WORK"; return 0; }
 
 # Evidence-emission state, read by the EXIT trap. `set -e` aborts with the
 # failing command's status, which is normally 1, and 1 is exactly what this
@@ -113,7 +118,17 @@ on_exit() {
   fi
   exit "$rc"
 }
-trap on_exit EXIT
+# INT / TERM / HUP as well as EXIT: an unhandled signal bypasses an EXIT trap
+# entirely, so a cancelled or timed-out job produced no explanation at all. A
+# candidate cannot usually signal the runner, so this is about runner-side
+# cancellation rather than a forgeable verdict, but the trap's whole purpose is
+# that an incomplete run says so.
+trap on_exit EXIT INT TERM HUP
+
+if ! WORK="$(mktemp -d "${TMPDIR:-/tmp}/notari.XXXXXX")"; then
+  echo "::error::could not create a private temp dir (TMPDIR=${TMPDIR:-/tmp}); failing closed"
+  exit 2
+fi
 
 # 1. Run the verifier into the temp dir. It exits 1 on BLOCK and 0 on
 #    PASS/NEEDS_REVIEW; any OTHER exit is a crash / bad invocation. Capture the
