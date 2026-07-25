@@ -680,3 +680,84 @@ class TestRedactIsNotNarrowedByScanSuppression:
         assert secrets_mod.scan(text) == [], "precondition: scan suppresses this"
         assert secrets_mod.redact(text) != text, text
         assert "REDACTED" in secrets_mod.redact(text)
+
+
+class TestBlockersFromCodexPass3:
+    """Four release blockers from the third cross-vendor pass, all reproduced before
+    fixing. Two of them turned a real credential into a clean PASS."""
+
+    K = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+    def _scenario(self, repo: Path, base: bytes, cand: bytes, exceptions: list | None = None):
+        import json
+
+        f = repo / "src" / "f.txt"
+        f.write_bytes(base)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "base")
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        if exceptions:
+            (repo / ".notari").mkdir(exist_ok=True)
+            (repo / ".notari" / "exceptions.json").write_text(json.dumps(exceptions))
+        f.write_bytes(cand)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "cand")
+        return verify_mod.verify(contract=contract, root=repo)
+
+    def test_base_counts_take_the_max_across_views_not_the_sum(self, repo: Path) -> None:
+        """Summing inflated the base's count of a secret line by the number of views
+        containing it, so a genuinely NEW duplicate was suppressed as pre-existing.
+        A UTF-16 file whose base held one copy produced a base count of 3, swallowed
+        both candidate copies, and returned a clean PASS."""
+        result = self._scenario(
+            repo,
+            ("header\n" + f"k = {self.K}\n").encode("utf-16"),
+            ("header\n" + f"k = {self.K}\n" + f"k = {self.K}\n").encode("utf-16"),
+        )
+        assert result.verdict is Verdict.BLOCK
+        assert [f.pattern_name for f in result.secret_findings] == ["AWS Access Key ID"]
+
+    def test_base_line_counts_uses_max(self) -> None:
+        counts = verify_mod.Counter()
+        views = verify_mod._decode_blob_views(
+            ("header\n" + f"k = {self.K}\n").encode("utf-16")
+        )[0]
+        line = f"k = {self.K}"
+        per_view = [v.splitlines().count(line) for v in views]
+        assert sum(per_view) > max(per_view), "precondition: the line appears in several views"
+        del counts
+
+    def test_waivers_on_fabricated_salvage_lines_cannot_hide_a_credential(
+        self, repo: Path
+    ) -> None:
+        """An alternate decoding can invent extra matches AND extra line breaks, so
+        letting the highest-count view win reported a line-2 credential at lines 1
+        and 3. Pre-existing line-specific waivers for those lines then waived it."""
+        result = self._scenario(
+            repo,
+            "x\n".encode("utf-16"),
+            ("héader\n" + f"k = {self.K}\n").encode("utf-16"),
+            exceptions=[
+                {"path": "src/f.txt", "line": 1, "reason": "r", "approved_by": "h"},
+                {"path": "src/f.txt", "line": 3, "reason": "r", "approved_by": "h"},
+            ],
+        )
+        assert result.verdict is Verdict.BLOCK
+        # Reported at the PRIMARY decoding's line, which is the file's line.
+        assert [f.line for f in result.secret_findings] == [2]
+
+    @pytest.mark.parametrize(
+        "value,is_code",
+        [
+            ("hunter2[Prod(2026)]", False),  # paren is password data, not a call
+            ('hunter2["Prod("]', False),  # paren inside a string literal
+            ('data["token]', False),  # unclosed SUBSCRIPT is ambiguous, report it
+            ('input("Password:', True),  # unclosed CALL is code
+            ('load_api_key()["prod"]', True),
+            ('a("b")["c"]', True),
+        ],
+    )
+    def test_call_signal_comes_from_the_structural_loop(self, value: str, is_code: bool) -> None:
+        """`"(" in rest` counted a parenthesis belonging to the password data, so a
+        call opener now only counts at the TOP level, outside any string."""
+        assert secrets_mod._is_expression_value(value) is is_code, value

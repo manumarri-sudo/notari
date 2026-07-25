@@ -525,7 +525,10 @@ def _is_expression_value(v: str) -> bool:
     # (a string subscript), or a dotted receiver. The bare ambiguous
     # `identifier[word]` form is left in scope deliberately, at the cost of an
     # occasional false positive that now lands as review signal rather than a block.
-    has_call = "(" in rest
+    # `has_call` is decided by the structural loop below, NOT by a substring test.
+    # `"(" in rest` counted a parenthesis that was part of the password data, so
+    # `hunter2[Prod(2026)]` and `hunter2["Prod("]` were classified as code and
+    # suppressed entirely.
     dotted_receiver = "." in v[: lead.end()]
     # A quoted subscript counts as code only when the RECEIVER also reads like an
     # identifier rather than a credential: plain lowercase, no digits. Accepting a
@@ -535,8 +538,6 @@ def _is_expression_value(v: str) -> bool:
     quoted_subscript = bool(re.match(r"[([]\s*[\"']", rest)) and bool(
         re.fullmatch(r"[a-z_][a-z_]*\s*", v[: lead.end()])
     )
-    if not (has_call or quoted_subscript or dotted_receiver):
-        return False
     # A STACK, not a depth counter: a counter treats `(` and `[` as
     # interchangeable, so a mismatched pair (`cfg[value)`) balanced to zero and a
     # real password containing one was suppressed. Brackets must actually pair.
@@ -544,6 +545,7 @@ def _is_expression_value(v: str) -> bool:
     stack: list[str] = []
     quote: str | None = None
     escaped = False
+    saw_call = False
     for i, ch in enumerate(rest):
         # Brackets inside a STRING LITERAL are data, not structure: `data["token]"]`
         # was misread as closing early and so read as a literal value rather than
@@ -564,13 +566,19 @@ def _is_expression_value(v: str) -> bool:
         if ch in "\"'":
             quote = ch
         elif ch in closer:
+            # A call signal means a call ON THE RECEIVER, so the paren must be at the
+            # TOP level, outside any string and not nested inside another group. A
+            # paren nested inside a subscript is password data: `hunter2[Prod(2026)]`
+            # was classified as code on the strength of that inner paren alone.
+            if ch == "(" and not stack:
+                saw_call = True
             stack.append(closer[ch])
         elif ch in ")]":
             if not stack or stack.pop() != ch:
                 return False
             if not stack:
                 if i == len(rest) - 1:
-                    return True
+                    return saw_call or quoted_subscript or dotted_receiver
                 # A CHAINED group is still code: `load_api_key()["prod"]` closes its
                 # call group and immediately opens a subscript. Only bare text after
                 # a closed group means this is a literal value, which is what keeps
@@ -578,9 +586,12 @@ def _is_expression_value(v: str) -> bool:
                 if rest[i + 1] in "([":
                     continue
                 return False
-    # Never closed: a call truncated by the value capture stopping at whitespace.
-    # Require a quote just inside the opener, which a credential does not have.
-    return bool(_TRUNCATED_CALL_RE.match(v))
+    # Never closed. Only a truncated CALL counts as code, meaning the first opener
+    # was a paren with a quote just inside it, which is what the value capture leaves
+    # behind for `password = input("Password: ")`. An unclosed SUBSCRIPT stays
+    # reportable: `data["token]` is ambiguous credential data, not proven code, and
+    # treating it as code suppressed it outright.
+    return rest[0] == "(" and bool(_TRUNCATED_CALL_RE.match(v))
 
 
 def _strip_one_quote_layer(value: str) -> str:

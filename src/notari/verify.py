@@ -705,11 +705,21 @@ def _base_line_counts(
     views, _, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if not views:
         return Counter()
-    # Every view of the BASE, so a base line suppresses its candidate twin no
-    # matter which view the candidate line was found in.
+    # The MAXIMUM count across views, never the sum. Summing inflated the base's
+    # count of a line by the number of views that happened to contain it, and the
+    # candidate's per-view counts were then compared against that inflated total, so
+    # a genuinely NEW duplicate of a secret line was suppressed as pre-existing. A
+    # UTF-16 file whose base held one copy produced a base count of 3, which swallowed
+    # both copies in the candidate and returned a clean PASS.
+    #
+    # Max is the right reading because the views are alternative renderings of the
+    # SAME bytes, not additional content: if any single view shows the line N times,
+    # the base genuinely contains it N times.
     counts: Counter[str] = Counter()
     for view in views:
-        counts.update(view.splitlines())
+        for line, n in Counter(view.splitlines()).items():
+            if n > counts[line]:
+                counts[line] = n
     return counts
 
 
@@ -1158,10 +1168,26 @@ def verify(
             per_view.append(found)
 
         for name in {n for found in per_view for n in found}:
-            best: list[tuple[int, str]] = []
-            for found in per_view:
-                if len(found.get(name, [])) > len(best):
-                    best = found[name]
+            # The PRIMARY decoding's line numbers are the file's line numbers. An
+            # alternate view can invent both extra matches and extra line breaks out
+            # of the raw bytes of valid characters, and letting the highest-count view
+            # win meant a genuine credential on line 2 was reported at lines 1 and 3
+            # instead. Pre-existing line-specific waivers for those fabricated lines
+            # then waived it, turning a real credential into a clean PASS.
+            #
+            # So: if the primary view saw this pattern, its hits ARE the finding.
+            # Otherwise the credential is only visible through an alternate decoding,
+            # where no line number is trustworthy, so it is reported at line 0. That
+            # keeps it visible and blocking while making it unmatchable by a
+            # line-specific waiver.
+            if per_view[0].get(name):
+                best = per_view[0][name]
+            else:
+                widest: list[tuple[int, str]] = []
+                for found in per_view[1:]:
+                    if len(found.get(name, [])) > len(widest):
+                        widest = found[name]
+                best = [(0, conf) for _, conf in widest]
             # A blocking sighting anywhere wins over a demoted one, so a view that
             # happens to mangle the surrounding syntax cannot downgrade a credential
             # another view read correctly.
