@@ -213,3 +213,60 @@ class TestWideEncodingsCannotHideACredential:
         decoded = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
         found = {h.pattern_name for h in secrets_mod.scan(decoded)}
         assert "AWS Access Key ID" in found, (encoding, decoded[:32])
+
+
+class TestBracketCountingIsNotFooledByMalformedGroups:
+    """Self-attack on the counting rewrite, before Codex saw it: a plain depth
+    counter treats `(` and `[` as interchangeable, so a mismatched pair balanced to
+    zero at the end and a real password containing one was suppressed. Pairs must
+    actually match, which needs a stack."""
+
+    PW = "Xk9" + "mQ2vLpR" + "7wZ4tB"
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "cfg[{pw})",       # mismatched: opens square, closes round
+            "cfg({pw}]",       # mismatched the other way
+            "cfg[{pw}]{pw}",   # closes early, then continues
+            "cfg[{pw}]]",      # one extra closer
+            "[{pw}]",          # no leading identifier
+            "cfg[{pw}",        # never closes, no quote inside
+            "a[b][{pw}]",      # two groups, first closes early
+            "cfg[{pw}]=x",     # closes then assigns
+            "x({pw})y",        # closes then trails
+        ],
+    )
+    def test_malformed_groups_do_not_suppress_a_real_value(self, shape: str) -> None:
+        value = shape.format(pw=self.PW)
+        assert secrets_mod._looks_like_nonsecret(value) is False, value
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            'data["token"]',
+            "load_api_key()",
+            "request.headers.get('Authorization')",
+            "cfg[nested[inner]]",
+            "obj.attr.method(a, b)",
+        ],
+    )
+    def test_well_formed_expressions_are_still_suppressed(self, expr: str) -> None:
+        assert secrets_mod._looks_like_nonsecret(expr) is True, expr
+
+
+class TestCredentialSurvivesMixedScriptEncodings:
+    """The ASCII-ratio tiebreak must not lose an ASCII credential embedded in
+    genuinely non-ASCII content, which is where a ratio heuristic could plausibly
+    pick the wrong width."""
+
+    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+    def test_ascii_credential_inside_cjk_content_is_found(self, encoding: str) -> None:
+        text = "説明テスト日本語テキスト\nAWS_KEY=" + _VENDOR + "\n"
+        decoded = verify_mod._decode_blob(text.encode(encoding))
+        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(decoded)}
+
+    def test_a_bom_appearing_mid_file_does_not_break_decoding(self) -> None:
+        raw = ("AWS_KEY=" + _VENDOR + "\n").encode("utf-16-le") + "﻿more\n".encode("utf-16-le")
+        decoded = verify_mod._decode_blob(raw)
+        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(decoded)}

@@ -500,15 +500,18 @@ def _is_expression_value(v: str) -> bool:
     rest = v[lead.end() :]
     if not rest or rest[0] not in "([":
         return False
-    depth = 0
+    # A STACK, not a depth counter: a counter treats `(` and `[` as
+    # interchangeable, so a mismatched pair (`cfg[value)`) balanced to zero and a
+    # real password containing one was suppressed. Brackets must actually pair.
+    closer = {"(": ")", "[": "]"}
+    stack: list[str] = []
     for i, ch in enumerate(rest):
-        if ch in "([":
-            depth += 1
+        if ch in closer:
+            stack.append(closer[ch])
         elif ch in ")]":
-            depth -= 1
-            if depth < 0:
+            if not stack or stack.pop() != ch:
                 return False
-            if depth == 0:
+            if not stack:
                 # Closed. Only an expression if nothing follows the group: a value
                 # that closes early and then continues is a literal, not code.
                 return i == len(rest) - 1
