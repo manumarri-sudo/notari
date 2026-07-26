@@ -586,12 +586,18 @@ def _is_expression_value(v: str) -> bool:
                 if rest[i + 1] in "([":
                     continue
                 return False
-    # Never closed. Only a truncated CALL counts as code, meaning the first opener
-    # was a paren with a quote just inside it, which is what the value capture leaves
-    # behind for `password = input("Password: ")`. An unclosed SUBSCRIPT stays
-    # reportable: `data["token]` is ambiguous credential data, not proven code, and
-    # treating it as code suppressed it outright.
-    return rest[0] == "(" and bool(_TRUNCATED_CALL_RE.match(v))
+    # Never closed, so this is a PREFIX and structure alone proves nothing. Only a
+    # truncated call on an identifier-shaped receiver counts as code, which is what
+    # the value capture leaves behind for `password = input("Password: ")`. The
+    # receiver test is load-bearing: without it `DB_PASSWORD='hunter2("Prod2026'` was
+    # read as a truncated call and a real credential vanished from both channels for
+    # a clean PASS. An unclosed SUBSCRIPT stays reportable either way, since
+    # `data["token]` is ambiguous credential data rather than proven code.
+    return (
+        rest[0] == "("
+        and bool(_TRUNCATED_CALL_RE.match(v))
+        and bool(re.fullmatch(r"[a-z_][a-z_.]*\s*", v[: lead.end()]))
+    )
 
 
 def _strip_one_quote_layer(value: str) -> str:

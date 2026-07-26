@@ -567,7 +567,9 @@ def _confidence_of(finding: policy.SecretFinding) -> str:
 DEFAULT_MAX_VIEW_CHARS = 24 * 1024 * 1024
 
 
-def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[list[str], bool]:
+def _decode_blob_views(
+    raw: bytes, *, max_chars: int | None = None
+) -> tuple[list[tuple[str, str]], bool]:
     """Every text view of a blob the secret patterns should run over.
 
     A blob is not always ONE encoding. It can carry a wide-encoded region and a
@@ -590,16 +592,21 @@ def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[lis
     stopped extra views being built, so the caller can record that the scan covered
     less than it wanted rather than passing quietly.
     """
-    views = [_decode_blob(raw)]
+    views = [("primary", _decode_blob(raw))]
     if b"\x00" not in raw:
         return views, True
-    seen = {views[0]}
+    seen = {views[0][1]}
     # Resolved here, not as a default argument: a default binds at definition time,
     # so the module constant could not be tuned by a caller or a test.
-    budget = (DEFAULT_MAX_VIEW_CHARS if max_chars is None else max_chars) - len(views[0])
+    budget = (DEFAULT_MAX_VIEW_CHARS if max_chars is None else max_chars) - len(views[0][1])
 
-    def _take(candidate: str) -> bool:
-        """Add a view if it is new and the budget allows. False means out of budget."""
+    def _take(label: str, candidate: str) -> bool:
+        """Add a labelled view if it is new and the budget allows.
+
+        The LABEL matters: base and candidate line counts are compared per view, and
+        a global comparison across alternative interpretations is unsound (a salvage
+        view of the base can fabricate more copies of a line than the file holds).
+        """
         nonlocal budget
         if candidate in seen:
             return True
@@ -607,7 +614,7 @@ def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[lis
             return False
         budget -= len(candidate)
         seen.add(candidate)
-        views.append(candidate)
+        views.append((label, candidate))
         return True
 
     # Every wide decoding that yields plausible text, not just the winner: a blob
@@ -628,7 +635,7 @@ def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[lis
             continue
         if "�" in decoded[:256]:
             continue
-        if not _take(decoded):
+        if not _take(enc, decoded):
             complete = False
     # Latin-1 maps every byte, so an ASCII credential survives it whatever the rest
     # of the file is. NUL becomes a SPACE rather than nothing: deleting it glued the
@@ -646,15 +653,18 @@ def _decode_blob_views(raw: bytes, *, max_chars: int | None = None) -> tuple[lis
     if len(raw) > budget:
         return views, False
     latin = raw.decode("latin-1")
-    for salvage in (latin.replace("\x00", " "), latin.replace("\x00", "")):
-        if not _take(salvage):
+    for label, salvage in (
+        ("latin1-nul-space", latin.replace("\x00", " ")),
+        ("latin1-nul-strip", latin.replace("\x00", "")),
+    ):
+        if not _take(label, salvage):
             complete = False
     return views, complete
 
 
 def _read_candidate_blob(
     root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
-) -> tuple[list[str] | None, bool, bool]:
+) -> tuple[list[tuple[str, str]] | None, bool, bool]:
     """Read a file from the candidate commit's tree, not the worktree.
 
     Returns ``(views, truncated, views_complete)``: the text VIEWS to scan (see
@@ -686,7 +696,7 @@ def _read_candidate_blob(
 
 def _base_line_counts(
     root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
-) -> Counter[str]:
+) -> dict[str, Counter[str]]:
     """Multiset of lines already present in `path` at the base commit.
 
     Used to keep the blob-level secret scan from BLOCKing a pre-existing
@@ -701,26 +711,25 @@ def _base_line_counts(
     `git cat-file` reads any `<sha>:<path>` tree blob, so the candidate-blob
     reader is reused against the base here."""
     if not base_sha or base_sha == _EMPTY_TREE:
-        return Counter()
+        return {}
     views, _, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if not views:
-        return Counter()
-    # The MAXIMUM count across views, never the sum. Summing inflated the base's
-    # count of a line by the number of views that happened to contain it, and the
-    # candidate's per-view counts were then compared against that inflated total, so
-    # a genuinely NEW duplicate of a secret line was suppressed as pre-existing. A
-    # UTF-16 file whose base held one copy produced a base count of 3, which swallowed
-    # both copies in the candidate and returned a clean PASS.
+        return {}
+    # PER VIEW, keyed by the decoding that produced it. Neither aggregate works:
+    # summing inflated the base's count by however many views contained a line, and
+    # taking the maximum is just as unsound in the other direction, because a salvage
+    # view of the base can FABRICATE copies. A base holding one real key plus two
+    # NUL-corrupted near-misses normalises, under the NUL-stripping view, into three
+    # identical lines, and a max of 3 then suppressed two genuinely new copies in the
+    # candidate and returned a clean PASS.
     #
-    # Max is the right reading because the views are alternative renderings of the
-    # SAME bytes, not additional content: if any single view shows the line N times,
-    # the base genuinely contains it N times.
-    counts: Counter[str] = Counter()
-    for view in views:
-        for line, n in Counter(view.splitlines()).items():
-            if n > counts[line]:
-                counts[line] = n
-    return counts
+    # A candidate view is only comparable to the base view produced by the SAME
+    # decoding, so the comparison is label-aligned and an unmatched label means no
+    # suppression at all, which fails toward reporting.
+    per_label: dict[str, Counter[str]] = {}
+    for label, view in views:
+        per_label[label] = Counter(view.splitlines())
+    return per_label
 
 
 def _block_result(
@@ -1136,9 +1145,7 @@ def verify(
         # what catches a secret in a 100%-rename that has no added diff lines
         # (H-4) or in a brand-new file.
         base_counts = (
-            _base_line_counts(root, base, dest, limits=limits)
-            if cp.status == "M"
-            else Counter()
+            _base_line_counts(root, base, dest, limits=limits) if cp.status == "M" else {}
         )
         # One credential appears in SEVERAL views of the same blob at different line
         # numbers, so the views cannot simply be summed. But collapsing to one
@@ -1153,7 +1160,10 @@ def verify(
         # primary decoding is first, so a genuine wide-encoded file keeps its own
         # line numbers.
         per_view: list[dict[str, list[tuple[int, str]]]] = []
-        for view in views:
+        for label, view in views:
+            # Label-aligned: only the base view from the SAME decoding can suppress a
+            # line in this one. An unmatched label suppresses nothing.
+            base_for_view = base_counts.get(label, Counter())
             found: dict[str, list[tuple[int, str]]] = {}
             seen_counts: Counter[str] = Counter()
             for lineno, line in enumerate(view.splitlines(), 1):
@@ -1161,7 +1171,7 @@ def verify(
                 # Suppress only as many occurrences of a line as the base had; the
                 # (N+1)th identical line is newly introduced and must be scanned, so
                 # a duplicated secret line cannot hide behind its pre-existing twin.
-                if seen_counts[line] <= base_counts.get(line, 0):
+                if seen_counts[line] <= base_for_view.get(line, 0):
                     continue
                 for hit in _secrets.scan(line):
                     found.setdefault(hit.pattern_name, []).append((lineno, hit.confidence))
@@ -1177,9 +1187,13 @@ def verify(
             #
             # So: if the primary view saw this pattern, its hits ARE the finding.
             # Otherwise the credential is only visible through an alternate decoding,
-            # where no line number is trustworthy, so it is reported at line 0. That
-            # keeps it visible and blocking while making it unmatchable by a
-            # line-specific waiver.
+            # where no line number is trustworthy, so it is reported at line 0.
+            #
+            # Note what line 0 does NOT do: a path-only waiver still waives it, which
+            # is correct since a path-only waiver means "waive every secret in this
+            # path", and an explicit `line: 0` waiver matches it too. It only stops a
+            # waiver written for a REAL line number from silently matching a finding
+            # whose line came from a different decoding.
             #
             # Taking ONLY the primary view's hits is not enough either: a file can
             # hold one credential the primary view reads and a second one that only
@@ -1247,6 +1261,14 @@ def verify(
     }
     for f in blob_secret_findings:
         key = (f.path, f.line, f.pattern_name)
+        # Line 0 means "found through an alternate decoding, real line unknown", so
+        # it is NOT an identity: two distinct alternate-only credentials of the same
+        # pattern in one file share the key and the second was silently dropped,
+        # collapsing two real credentials into one finding. Unknown-line findings are
+        # therefore never deduplicated against each other.
+        if f.line == 0:
+            all_secret_findings.append(f)
+            continue
         if key not in seen_secrets:
             all_secret_findings.append(f)
             seen_secrets.add(key)

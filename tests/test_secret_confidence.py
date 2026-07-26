@@ -405,7 +405,7 @@ class TestMixedEncodingBlobDoesNotHideACredential:
     def _scan_views(raw: bytes) -> set[str]:
         return {
             h.pattern_name
-            for view in verify_mod._decode_blob_views(raw)[0]
+            for _label, view in verify_mod._decode_blob_views(raw)[0]
             for h in secrets_mod.scan(view)
         }
 
@@ -441,14 +441,15 @@ class TestMixedEncodingBlobDoesNotHideACredential:
         raw = ("A" * 17 + "\nAuthorization: Bearer ").encode("latin-1") + b"\x00" + b"4f9KzQ2LmN8PrT7"
         views, _complete = verify_mod._decode_blob_views(raw)
         assert len(views) > 1
-        assert all(isinstance(v, str) for v in views)
+        # Labelled, so base and candidate counts can be compared per decoding.
+        assert all(isinstance(label, str) and isinstance(v, str) for label, v in views)
 
     @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
     def test_genuine_wide_files_report_the_real_line(self, encoding: str) -> None:
         """The primary decoding comes first and keeps its own numbering, so the line
         reported for a genuine wide-encoded file is the file's own line."""
         text = 'AWS_KEY = "' + _VENDOR + '"\n'
-        primary = verify_mod._decode_blob_views(text.encode(encoding))[0][0]
+        primary = verify_mod._decode_blob_views(text.encode(encoding))[0][0][1]
         hits = [h for h in secrets_mod.scan(primary) if h.pattern_name == "AWS Access Key ID"]
         assert [h.line for h in hits] == [1]
 
@@ -717,15 +718,16 @@ class TestBlockersFromCodexPass3:
         assert result.verdict is Verdict.BLOCK
         assert [f.pattern_name for f in result.secret_findings] == ["AWS Access Key ID"]
 
-    def test_base_line_counts_uses_max(self) -> None:
-        counts = verify_mod.Counter()
-        views = verify_mod._decode_blob_views(
+    def test_base_counts_are_keyed_by_decoding_label(self) -> None:
+        """Neither summing nor maxing across views is sound: summing over-counts, and
+        a salvage view can FABRICATE copies so maxing over-counts too. Counts are
+        per decoding label, and only the same label may suppress."""
+        views, _ = verify_mod._decode_blob_views(
             ("header\n" + f"k = {self.K}\n").encode("utf-16")
-        )[0]
-        line = f"k = {self.K}"
-        per_view = [v.splitlines().count(line) for v in views]
-        assert sum(per_view) > max(per_view), "precondition: the line appears in several views"
-        del counts
+        )
+        labels = [label for label, _v in views]
+        assert labels[0] == "primary"
+        assert len(set(labels)) == len(labels), labels
 
     def test_waivers_on_fabricated_salvage_lines_cannot_hide_a_credential(
         self, repo: Path
@@ -737,9 +739,11 @@ class TestBlockersFromCodexPass3:
             repo,
             "x\n".encode("utf-16"),
             ("héader\n" + f"k = {self.K}\n").encode("utf-16"),
+            # `type: secret` is REQUIRED by _waived_secret. Without it no waiver ever
+            # applied and this test passed for the wrong reason, exercising nothing.
             exceptions=[
-                {"path": "src/f.txt", "line": 1, "reason": "r", "approved_by": "h"},
-                {"path": "src/f.txt", "line": 3, "reason": "r", "approved_by": "h"},
+                {"type": "secret", "path": "src/f.txt", "line": 1, "reason": "r", "approved_by": "h"},
+                {"type": "secret", "path": "src/f.txt", "line": 3, "reason": "r", "approved_by": "h"},
             ],
         )
         assert result.verdict is Verdict.BLOCK
