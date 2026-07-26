@@ -790,7 +790,10 @@ class TestPrimaryViewSelectionDoesNotLoseASecondCredential:
         result = verify_mod.verify(contract=contract, root=repo)
         aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
         assert result.verdict is Verdict.BLOCK
-        assert len(aws) >= 2, [(f.path, f.line) for f in aws]
+        # EXACTLY two: the file holds two credentials. `>= 2` passed while
+        # reconciliation was wrong and emitted three, so it proved nothing about the
+        # property it names.
+        assert len(aws) == 2, [(f.path, f.line) for f in aws]
 
     def test_a_single_credential_does_not_gain_a_phantom(self, repo: Path) -> None:
         """The surplus rule must not invent findings when the views agree."""
@@ -888,4 +891,6 @@ class TestFindingOrderIsDeterministic:
         _git(repo, "commit", "-qm", "wide")
         result = verify_mod.verify(contract=contract, root=repo)
         aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-        assert [f.line for f in aws] == sorted(f.line for f in aws), [f.line for f in aws]
+        # EXACT lines, not "equals its own sorted form", which is trivially true for
+        # zero or one finding and so would pass even if a credential were lost.
+        assert [f.line for f in aws] == [1, 2], [f.line for f in aws]

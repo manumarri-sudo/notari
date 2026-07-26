@@ -1115,6 +1115,8 @@ def verify(
     from notari import secrets as _secrets
 
     blob_secret_findings: list[policy.SecretFinding] = []
+    # (path, pattern) -> how many DISTINCT credentials the blob channel identified.
+    blob_cred_counts: Counter[tuple[str, str]] = Counter()
     for cp in inventory:
         if cp.status == "D":
             continue
@@ -1161,6 +1163,7 @@ def verify(
         # primary decoding is first, so a genuine wide-encoded file keeps its own
         # line numbers.
         per_view: list[dict[tuple[str, str], list[tuple[int, str]]]] = []
+        values: dict[tuple[str, str], str] = {}
         for label, view in views:
             # Label-aligned: only the base view from the SAME decoding can suppress a
             # line in this one. An unmatched label suppresses nothing.
@@ -1186,6 +1189,7 @@ def verify(
                     found.setdefault((hit.pattern_name, ident), []).append(
                         (lineno, hit.confidence)
                     )
+                    values[(hit.pattern_name, ident)] = value
             per_view.append(found)
 
         # One entry per DISTINCT credential (pattern plus value digest), not per
@@ -1197,9 +1201,26 @@ def verify(
         # SORTED, because iterating a set makes the finding order depend on hash
         # ordering, and a gate whose whole claim is a reproducible verdict must not
         # emit its evidence in a different order from run to run.
+        primary_values = {
+            cred: values[cred] for cred in per_view[0] if cred in values
+        }
         for cred in sorted({k for found in per_view for k in found}):
             name, _ident = cred
             primary_hits = per_view[0].get(cred, [])
+            if not primary_hits:
+                # Seen only through an alternate decoding. Before reporting it at an
+                # unknown line, check it is not just a re-reading of a credential the
+                # PRIMARY view already reported at its real line: the NUL-stripping
+                # view can absorb a neighbouring character, so one physical credential
+                # becomes two digests, and the phantom then survived a valid waiver on
+                # the real one. Prefix either way, since the difference is always a
+                # boundary character rather than a different secret.
+                mine = values.get(cred, "")
+                if any(
+                    pname == name and (mine.startswith(pval) or pval.startswith(mine))
+                    for (pname, _pi), pval in primary_values.items()
+                ):
+                    continue
             # A blocking sighting in ANY view wins, so a view that mangled the
             # surrounding syntax cannot downgrade a credential another view read
             # correctly.
@@ -1217,6 +1238,9 @@ def verify(
             # this path", and an explicit `line: 0` waiver matches too. It only stops a
             # waiver written for a REAL line from matching a finding whose line came
             # from a different decoding.
+            # Distinct credentials of this pattern in this file, so the merge can
+            # tell how many findings SHOULD exist once both channels are combined.
+            blob_cred_counts[(dest, name)] += 1
             placements = [line for line, _conf in primary_hits] if primary_hits else [0]
             for lineno in placements:
                 blob_secret_findings.append(
@@ -1260,24 +1284,33 @@ def verify(
         else:
             applied.append(e)
 
-    # Merge diff-based and blob-based secret findings, dedup by (path, line, pattern).
+    # Merge diff-based and blob-based secret findings.
+    #
+    # (path, line, pattern) is NOT an identity, in two directions. Two DIFFERENT
+    # credentials of the same pattern can share a line, and collapsing them dropped a
+    # real one from the evidence. And line 0 means "real line unknown", so every
+    # alternate-only credential in a file shares that key too. The blob loop already
+    # emits exactly one finding per distinct credential, so its own output needs no
+    # deduplication at all; the only thing worth suppressing here is a blob finding
+    # that restates a sighting the DIFF channel already reported at the same line,
+    # and even then only when the diff channel has as many of them.
     all_secret_findings = list(evaluation.secret_findings)
-    seen_secrets: set[tuple[str, int, str]] = {
+    diff_counts: Counter[tuple[str, int, str]] = Counter(
         (f.path, f.line, f.pattern_name) for f in all_secret_findings
-    }
+    )
+    blob_seen: Counter[tuple[str, int, str]] = Counter()
+    unknown_line: list[policy.SecretFinding] = []
     for f in blob_secret_findings:
         key = (f.path, f.line, f.pattern_name)
-        # Line 0 means "found through an alternate decoding, real line unknown", so
-        # it is NOT an identity: two distinct alternate-only credentials of the same
-        # pattern in one file share the key and the second was silently dropped,
-        # collapsing two real credentials into one finding. Unknown-line findings are
-        # therefore never deduplicated against each other.
         if f.line == 0:
-            all_secret_findings.append(f)
+            # Held back: how many unknown-line findings are warranted depends on what
+            # the DIFF channel already reported at real lines, which is only known
+            # once every blob finding has been merged.
+            unknown_line.append(f)
             continue
-        if key not in seen_secrets:
+        blob_seen[key] += 1
+        if blob_seen[key] > diff_counts.get(key, 0):
             all_secret_findings.append(f)
-            seen_secrets.add(key)
         elif _confidence_of(f) != "low":
             # Same finding from both channels with DIFFERENT confidence: the
             # blocking reading wins. Keeping whichever channel happened to run
@@ -1288,6 +1321,28 @@ def verify(
                     if _confidence_of(existing) == "low":
                         all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
                     break
+
+    # Unknown-line findings fill the GAP between the number of distinct credentials
+    # the blob channel identified and the number already reported at a real line by
+    # either channel. Emitting them unconditionally double-counted a credential the
+    # diff channel had already located, so two credentials produced three findings;
+    # dropping them whenever the diff channel saw anything would have lost a
+    # salvage-only credential instead.
+    for (path_key, pattern_key), distinct in sorted(blob_cred_counts.items()):
+        located = sum(
+            1
+            for f in all_secret_findings
+            if f.path == path_key and f.pattern_name == pattern_key and f.line != 0
+        )
+        gap = distinct - located
+        if gap <= 0:
+            continue
+        for f in unknown_line:
+            if gap <= 0:
+                break
+            if f.path == path_key and f.pattern_name == pattern_key:
+                all_secret_findings.append(f)
+                gap -= 1
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:
