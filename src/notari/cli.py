@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -148,6 +149,41 @@ app.add_typer(suggestions_app, name="suggestions", hidden=True)
 # --------------------------------------------------------------------------
 # Change Control: begin (capture the contract) + verify (gate the diff)
 # --------------------------------------------------------------------------
+
+
+def _paths_notari_init_touched(root: Path) -> list[str]:
+    """Top-level paths `notari init` created or modified, straight from git.
+
+    Derived, not hand-listed. Two consecutive hand-written versions of the commit
+    instruction were wrong: one omitted the workflow file, so it landed in the user's
+    first CHANGE commit and the first verify BLOCKed on gate-tamper; correcting that by
+    hand then omitted `.gitignore`, which BLOCKed as an out-of-scope edit instead. A
+    list a human maintains drifts from the code that writes the files. Returns [] if
+    git cannot answer, and the caller falls back to a static hint.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in proc.stdout.splitlines():
+        entry = line[3:].strip().strip('"')
+        if not entry:
+            continue
+        top = entry.split("/", 1)[0]
+        # Only what init itself owns; never sweep the user's own work into the commit.
+        if top in (".notari", ".github", ".gitignore") and top not in paths:
+            paths.append(top)
+    return paths
 
 
 @app.command("begin", rich_help_panel="Core")
@@ -1340,8 +1376,30 @@ def init_cmd(
     )
     out.print("  3. Make the [bold]notari/change-control[/bold] status check REQUIRED in branch")
     out.print("     protection on main (admin-bypass + force-push off).")
+    # Name EVERY file init wrote. Saying only ".notari/" left the workflow init also
+    # created untracked, so it landed in the user's first work commit instead, and the
+    # first verify BLOCKed on gate-tamper against Notari's own workflow. A tool that
+    # tells you to commit its output must list all of its output.
+    # ASK GIT what init touched rather than listing it from memory. The hand-written
+    # list said ".notari/" and missed the workflow, so it landed in the user's first
+    # work commit and the first verify BLOCKed on gate-tamper. Correcting it by hand
+    # then missed `.gitignore`, which BLOCKed as out-of-scope instead. A list a human
+    # maintains will drift from the code that writes the files; this one cannot.
+    untracked = _paths_notari_init_touched(root)
+    add_args = " ".join(untracked) if untracked else ".notari .github/workflows .gitignore"
     out.print(
-        "\n[bold]Now:[/bold] commit .notari/ (NOT .notari/keys/), then run [bold]notari status[/bold]."
+        "\n[bold]Now:[/bold] commit everything init just wrote, in ONE commit, then run "
+        "[bold]notari status[/bold]:"
+    )
+    out.print(f"  [dim]git add {add_args}[/dim]")
+    out.print(
+        "  [dim]git commit -m 'add notari change control'[/dim]   "
+        "[yellow](never commit .notari/keys/)[/yellow]"
+    )
+    out.print(
+        "[dim]All of it is gate surface. Left for your first CHANGE commit instead, it "
+        "reads as tampering or as an out-of-scope edit, which is the check doing its "
+        "job on the wrong thing.[/dim]"
     )
     report = readiness.assess(root, env=dict(__import__("os").environ))
     out.print(f"\ncurrent posture: {_posture_badge(report.posture)}")

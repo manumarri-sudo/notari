@@ -38,9 +38,15 @@ Prefer a persistent install? `pipx install notari` or `pip install notari`, then
 `notari init`. Either way the next two commands are the whole daily loop:
 
 ```bash
-notari begin "add rate limiting" --scope "src/auth/**"   # sign what the agent may touch
+notari begin "add rate limiting" --scope "src/api/**"    # sign what the agent may touch
 notari verify --strict                                    # in CI: PASS, NEEDS_REVIEW, or BLOCK
 ```
+
+> `notari init` automatically forbids directories that look sensitive (`auth`,
+> `migrations`, `infra`, `terraform`, `deploy`, and similar). Forbidden beats contract
+> scope, so scoping a task *into* one of them returns BLOCK by design. When you really
+> do need to touch one, set the boundary explicitly and sign it:
+> `notari guard --key approver.pem --allow "src/**" --forbid "migrations/**"`.
 
 ## What you actually get
 
