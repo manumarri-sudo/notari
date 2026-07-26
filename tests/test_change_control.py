@@ -306,3 +306,33 @@ def test_passport_markdown_pass_stays_short(repo: Path) -> None:
     # PASS has nothing to remediate, so no noisy action block.
     assert "## What to do next" not in md
     assert "## Prompt to give Claude Code" not in md
+
+
+def test_naive_contract_expiry_does_not_crash_verify(tmp_path: Path) -> None:
+    """A timezone-naive `expires_at` parses cleanly, so `expiry_is_malformed` returned
+    False for it while `is_expired` raised TypeError comparing it against an aware
+    now(). `notari verify` died with an unhandled traceback and no passport, on both
+    the strict and cooperative paths, since the call sits before the strict branch.
+
+    The identical defect was found and fixed in `approvals.py` earlier and never
+    carried across to `contract.py`. Same bug, two modules, one patched."""
+    import dataclasses
+
+    from notari import contract as contract_mod
+
+    kwargs: dict[str, object] = {}
+    for f in dataclasses.fields(contract_mod.Contract):
+        if f.default is not dataclasses.MISSING:
+            kwargs[f.name] = f.default
+        elif f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
+            kwargs[f.name] = f.default_factory()  # type: ignore[misc]
+        else:
+            kwargs[f.name] = "x"
+    kwargs["expires_at"] = "2027-01-01T00:00:00"
+    c = contract_mod.Contract(**kwargs)  # type: ignore[arg-type]
+
+    assert c.is_expired() is False, "must not raise, and must not claim expired"
+    assert c.expiry_is_malformed() is True, (
+        "the control that exists to stop a misread expiry must cover the case that "
+        "actually breaks it"
+    )

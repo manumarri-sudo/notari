@@ -58,6 +58,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import sys
 from collections.abc import Mapping
@@ -211,6 +212,18 @@ def classify_event(
         c = classify_command(cmd)
         risk = c.risk
         reason = c.reason
+        # `classify_command` matches on TEXT, so it recognises the gate's state
+        # directory only by its literal name. NOTARI_HOME can relocate that
+        # directory anywhere, and a relocated install was therefore unprotected
+        # against a Bash redirect while the default install was covered. Re-check
+        # every token that looks like a path against the RESOLVED gate paths, which
+        # do know where NOTARI_HOME points.
+        if risk is not Risk.CRITICAL and _writes_to_gate_state(cmd):
+            return (
+                Risk.CRITICAL,
+                "write targeting the gate's own config/state (resolved path)",
+                "Change gate policy through `notari` commands, not by writing its state files.",
+            )
         # Bypass-mode downshift: high -> low. Critical never softens.
         if bypass_mode and risk is Risk.HIGH:
             return Risk.LOW, f"bypass mode: silent log (was high: {reason})", ""
@@ -357,28 +370,121 @@ _GATE_CONFIG_SUFFIXES: Final[tuple[str, ...]] = (
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".cursor/hooks.json",
-    ".notari/config.toml",
-    ".notari/overrides.toml",
-    ".notari/key",
-    ".notari/pause.json",  # the gate-off state; agent must not flip it directly
 )
+
+# The gate's own state directory, protected WHOLESALE rather than file by file.
+#
+# The enumeration approach shipped a full bypass. `pause.json` was listed, but
+# `approvals.json` and `overnight.json` were not, and those are the two files that
+# actually turn a refusal into an allow: writing a forged record into approvals.json
+# flipped a CRITICAL `git push --force` from deny to allow, with no Touch ID and no
+# `notari approve`. Reproduced end to end. The asymmetry proves it was an oversight,
+# since `notari night` is CRITICAL as a command and `overnight.turn_on()` is CRITICAL
+# as a python payload, while writing the file both converge on was LOW.
+#
+# So the rule is now the directory, not a list. Any new state file is covered the day
+# it is added rather than the day someone notices it is missing, which is the failure
+# this list has now had twice.
+_GATE_STATE_DIRS: Final[tuple[str, ...]] = (".notari",)
+
+
+_WRITE_VERBS: Final[tuple[str, ...]] = (
+    ">",
+    ">>",
+    "tee",
+    "sed",
+    "cp",
+    "mv",
+    "dd",
+    "install",
+    "rm",
+    "ln",
+    "truncate",
+    "python",
+    "python3",
+)
+
+
+def _writes_to_gate_state(cmd: str) -> bool:
+    """True when a shell command looks like it WRITES to a resolved gate path.
+
+    Deliberately coarse. It only fires when the command contains a write-ish verb or
+    redirect AND some token resolves to the gate's own config or state, so reading
+    those files stays allowed. The point is to catch a relocated NOTARI_HOME, which a
+    text-matching classifier cannot see, not to re-implement shell parsing.
+    """
+    if not cmd:
+        return False
+    if not any(verb in cmd for verb in _WRITE_VERBS):
+        return False
+    for token in re.split(r"[\s;|&()<>\"']+", cmd):
+        candidate = token.strip()
+        if len(candidate) < 2 or "/" not in candidate:
+            continue
+        # Expand the two shell forms a path is usually written in; anything more
+        # exotic is the text classifier's job.
+        candidate = candidate.replace("$HOME", str(Path.home())).replace(
+            "${HOME}", str(Path.home())
+        )
+        if _is_gate_config_path(candidate):
+            return True
+    return False
 
 
 def _is_gate_config_path(raw: str) -> bool:
     """True if `raw` points at Notari's own config or the host agent's hook
     settings - the files an agent would rewrite to neuter the gate.
 
-    Compares on a normalised, forward-slashed path suffix so `~`, relative,
-    and absolute forms all match. Best-effort: any error → False (we never
-    want a path-parsing quirk to crash the gate)."""
+    Two checks. Named agent-config files are matched by path SUFFIX so `~`,
+    relative and absolute forms all match. Notari's own state is matched by
+    DIRECTORY, so every file under `.notari/` counts, including ones added later.
+
+    The path is RESOLVED before comparison, not just normalised. A textual suffix
+    test compares the name rather than the target, so a write to an innocuous-looking
+    symlink pointing at `~/.claude/settings.json` slipped through, as did a relative
+    `settings.json` sent with a cwd inside `~/.claude`. Resolution follows both to the
+    real file. The unresolved form is checked too, so a path that cannot be resolved
+    (a broken link, a permissions error) still matches on its text rather than
+    silently passing.
+
+    Best-effort: any error → False, since a path-parsing quirk must never crash the
+    gate."""
     if not raw or not isinstance(raw, str):
         return False
+
+    def _norm(value: str) -> str:
+        return value.replace("\\", "/").rstrip("/")
+
+    candidates: list[str] = [_norm(raw)]
     try:
-        norm = str(Path(raw).expanduser()).replace("\\", "/")
-    except (OSError, ValueError):
-        norm = raw.replace("\\", "/")
-    norm = norm.rstrip("/")
-    return any(norm.endswith(suffix) for suffix in _GATE_CONFIG_SUFFIXES)
+        expanded = Path(raw).expanduser()
+        candidates.append(_norm(str(expanded)))
+        # strict=False so a not-yet-created file still resolves through its parents,
+        # which is the common case for a write.
+        candidates.append(_norm(str(expanded.resolve(strict=False))))
+        candidates.append(_norm(str((Path.cwd() / expanded).resolve(strict=False))))
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+    # The REAL state directory, not just the literal name `.notari`. NOTARI_HOME can
+    # relocate it anywhere, and a name-only check protected the default install while
+    # leaving a relocated one wide open.
+    try:
+        from notari.paths import notari_home
+
+        home_norm = _norm(str(notari_home().resolve(strict=False)))
+    except (OSError, ValueError, RuntimeError, ImportError):
+        home_norm = ""
+
+    for norm in candidates:
+        if any(norm.endswith(suffix) for suffix in _GATE_CONFIG_SUFFIXES):
+            return True
+        parts = norm.split("/")
+        if any(state_dir in parts for state_dir in _GATE_STATE_DIRS):
+            return True
+        if home_norm and (norm == home_norm or norm.startswith(home_norm + "/")):
+            return True
+    return False
 
 
 def _sensitive_path_hit(raw: str) -> str | None:

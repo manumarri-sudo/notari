@@ -649,9 +649,14 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
     # is the gate-off switch and was previously reachable through a bare Bash
     # redirect. (audit: 2nd-review gap #2.)
     (
+        # `.notari/<anything>` rather than a list of filenames. Enumerating them
+        # shipped a full bypass: pause.json was covered but approvals.json and
+        # overnight.json were not, and writing a forged record into approvals.json
+        # flipped a CRITICAL deny to allow with no human in the loop. Any file under
+        # the gate's own state directory is self-tamper, including ones added later.
         r"(?:>>?|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\bdd\b|\binstall\b|\brm\b|\bln\b)[^|\n]*"
         r"(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
-        r"\.notari/(?:config\.toml|key|overrides\.toml|pause\.json))",
+        r"\.notari/[^\s\"';|&]+)",
         "write/delete targeting the gate's own config/state (quoted-path form)",
         "Rewriting the gate's state files to disable it is a self-tamper shape. "
         "Change policy via `notari` commands, not by rewriting the files.",

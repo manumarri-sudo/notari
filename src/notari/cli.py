@@ -719,6 +719,15 @@ def verify_passport_cmd(
         except ValueError:
             out.print(f"[red]✗ contract expiry malformed[/red] ({expires_at!r})")
             raise typer.Exit(code=1) from None
+        if exp.tzinfo is None:
+            # Valid ISO-8601 but unusable: comparing it against an aware now() raises
+            # TypeError. A reviewer command must refuse rather than crash, and must
+            # not treat an expiry it cannot evaluate as "not expired".
+            out.print(
+                f"[red]✗ contract expiry has no timezone[/red] ({expires_at!r}); "
+                "cannot determine whether it has passed"
+            )
+            raise typer.Exit(code=1)
         if datetime.now(UTC) >= exp:
             out.print(f"[red]✗ contract expired[/red] at {expires_at}")
             raise typer.Exit(code=1)
@@ -775,6 +784,37 @@ def verify_passport_cmd(
         f"[green]✓ passport verified[/green] · verdict [bold]{passport.get('verdict')}[/bold] "
         f"· signed by gate {signer}"
     )
+
+    # The signature being real does NOT mean the verdict was enforced. A cooperative
+    # run prints a warning at verify time that the contract could have been forged by
+    # the same agent that wrote the diff, and records `strict: false` with
+    # `contract_provenance: unsigned`. This command never read either field, so the
+    # one command the docs point a reviewer at rendered "a human signed this boundary"
+    # and "the agent could have forged the contract" identically, both as a green tick.
+    #
+    # It stays exit 0, because the passport IS authentic and that is what this command
+    # verifies. What changes is that the reviewer is told what they are looking at.
+    trust = passport.get("trust") or {}
+    caveats: list[str] = []
+    if trust.get("strict") is False:
+        caveats.append("run in COOPERATIVE mode, so the boundary was advisory, not enforced")
+    contract_prov = trust.get("contract_provenance")
+    if contract_prov and contract_prov != "verified":
+        caveats.append(
+            f"contract provenance is {contract_prov}, so the task and scope were not "
+            "provably approved by a human"
+        )
+    provenance = trust.get("provenance")
+    if provenance and provenance not in ("verified", None):
+        caveats.append(f"perimeter provenance is {provenance}")
+    if caveats:
+        out.print("[yellow]⚠ the verdict is not an enforced boundary:[/yellow]")
+        for c in caveats:
+            out.print(f"  [yellow]·[/yellow] {c}")
+        out.print(
+            "  [dim]The signature proves the passport is authentic and unmodified. "
+            "It does not prove a human approved the change.[/dim]"
+        )
 
 
 @app.command("explain", rich_help_panel="Core")
