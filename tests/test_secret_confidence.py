@@ -402,10 +402,10 @@ class TestConfidenceSurvivesEveryChannel:
         findings = doc["evidence"]["secret_findings"]
         assert findings and all("confidence" in f for f in findings)
 
-class TestBaseLineSuppressionSurvivesTheViewsChange:
-    """`_base_line_counts` now sums every VIEW of the base blob, which risks
-    over-suppressing: if the base's salvage views contribute extra copies of a line,
-    a genuinely new candidate copy could be swallowed. Both directions pinned."""
+class TestBaseLineSuppression:
+    """Both directions of the pre-existing-line rule, which has broken more than once:
+    an untouched secret must not block an unrelated edit, and the (N+1)th newly
+    duplicated secret line must still be caught."""
 
     K = "AKIA" + "IOSFODNN7" + "EXAMPLE"
 
@@ -725,3 +725,66 @@ class TestQuotedValuesAreLiteralsNotCode:
         """Placeholder checks run BEFORE the quote test, because a quoted stand-in is
         still a stand-in."""
         assert secrets_mod.scan(line) == [], line
+
+
+class TestDeletionBlockersFromCodexPass8:
+    """Two defects the multi-view DELETION introduced. Removing code is exactly where
+    a reviewer earns its keep."""
+
+    K = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+    @pytest.mark.parametrize(
+        "encoding,bom",
+        [
+            ("utf-16-le", b"\xff\xfe"),
+            ("utf-16-be", b"\xfe\xff"),
+            ("utf-32-le", b"\xff\xfe\x00\x00"),
+            ("utf-32-be", b"\x00\x00\xfe\xff"),
+        ],
+    )
+    def test_a_bom_commits_even_when_the_payload_is_malformed(
+        self, encoding: str, bom: bytes
+    ) -> None:
+        """A BOM must be a COMMITMENT. Falling through a failed decode into the next
+        BOM test and finally into the binary rule meant ONE junk byte appended to a
+        BOM-bearing wide file made the credential invisible with a clean PASS, a bypass
+        broader than documented limit 8 and available to anyone who can append a byte."""
+        raw = bom + f"AWS_KEY={self.K}\n".encode(encoding) + b"X"
+        text = verify_mod._decode_blob(raw)
+        assert text is not None, "a BOM must never fall through to the binary rule"
+        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(text)}
+
+    def test_malformed_region_does_not_cost_the_valid_text_around_it(self) -> None:
+        """`errors="replace"` rather than a hard failure: the replacement character is
+        in no credential alphabet, so a damaged region simply does not match while the
+        rest of the file is still scanned."""
+        raw = b"\xff\xfe" + f"AWS_KEY={self.K}\n".encode("utf-16-le") + b"\xd8\x00"
+        text = verify_mod._decode_blob(raw)
+        assert text is not None and self.K in text
+
+    def test_binary_base_becoming_text_does_not_blame_untouched_lines(
+        self, repo: Path
+    ) -> None:
+        """A base blob with one stray NUL returned an empty line-count, so when the
+        candidate removed that NUL every line read as newly introduced and an untouched
+        pre-existing credential BLOCKED an unrelated edit. `_base_line_counts` now
+        distinguishes "no base" from "base unreadable"."""
+        f = repo / "src" / "f.txt"
+        f.write_bytes(b"AWS_KEY=" + self.K.encode() + b"\nmarker=\x00\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "base with a NUL")
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        f.write_bytes(b"AWS_KEY=" + self.K.encode() + b"\nmarker=clean\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "remove the NUL")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.verdict is Verdict.PASS, (result.verdict, result.reasons)
+
+    def test_base_line_counts_signals_unreadable_separately_from_absent(self) -> None:
+        """None and an empty Counter mean different things: "cannot attribute" versus
+        "everything is new". Collapsing them caused the false BLOCK above."""
+        import inspect
+
+        src = inspect.getsource(verify_mod._base_line_counts)
+        assert "return None" in src
+        assert "Counter[str] | None" in inspect.getsource(verify_mod)[:200_000]

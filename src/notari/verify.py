@@ -500,31 +500,26 @@ def _decode_blob(raw: bytes) -> str | None:
     reported as scanned. Git itself treats such a blob as binary and shows no diff,
     and gitleaks and its peers make the same trade.
     """
-    if raw.startswith(_UTF32_LE_BOM):
-        try:
-            return raw[4:].decode("utf-32-le")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF32_BE_BOM):
-        try:
-            return raw[4:].decode("utf-32-be")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF16_LE_BOM):
-        try:
-            return raw[2:].decode("utf-16-le")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF16_BE_BOM):
-        try:
-            return raw[2:].decode("utf-16-be")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF8_BOM):
-        try:
-            return raw[3:].decode("utf-8")
-        except UnicodeDecodeError:
-            pass
+    # A BOM is a COMMITMENT. Once one matches, decode that encoding and never fall
+    # through to another BOM test or to the binary rule. The previous version let a
+    # malformed payload fall past every branch into the NUL check, so appending ONE
+    # junk byte to a BOM-bearing UTF-16 file made it read as binary and skip the scan
+    # entirely: a bypass strictly broader than the documented limit, and available to
+    # anyone who can append a byte.
+    #
+    # `errors="replace"` rather than a hard failure, because a malformed sequence
+    # somewhere in the file must not cost the scan of the valid ASCII around it. The
+    # replacement character is not in any credential pattern's alphabet, so a damaged
+    # region simply does not match.
+    for bom, encoding in (
+        (_UTF32_LE_BOM, "utf-32-le"),
+        (_UTF32_BE_BOM, "utf-32-be"),
+        (_UTF16_LE_BOM, "utf-16-le"),
+        (_UTF16_BE_BOM, "utf-16-be"),
+        (_UTF8_BOM, "utf-8"),
+    ):
+        if raw.startswith(bom):
+            return raw[len(bom) :].decode(encoding, errors="replace")
     if b"\x00" in raw:
         return None
     try:
@@ -566,8 +561,8 @@ def _read_candidate_blob(
 
 def _base_line_counts(
     root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
-) -> Counter[str]:
-    """Multiset of lines already present in `path` at the base commit.
+) -> Counter[str] | None:
+    """Multiset of lines already present in `path` at the base commit, or None.
 
     Used to keep the blob-level secret scan from BLOCKing a pre-existing credential
     (or a false-positive-shaped line) that this change never touched: an unrelated
@@ -586,12 +581,18 @@ def _base_line_counts(
     scanner, and both aggregates it tried (sum, then max) produced a clean-PASS
     defect: summing over-counted the base, and max let a salvage view fabricate
     copies that suppressed genuinely new ones.
+
+    None means the base blob EXISTS but has no readable text, which is different from
+    having no base at all: the first says "cannot attribute", the second says
+    "everything is new". Collapsing them into an empty Counter made a binary-to-text
+    transition treat every candidate line as introduced, so an untouched pre-existing
+    credential blocked an unrelated edit.
     """
     if not base_sha or base_sha == _EMPTY_TREE:
         return Counter()
     text, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
     if text is None:
-        return Counter()
+        return None
     return Counter(text.splitlines())
 
 
@@ -970,7 +971,9 @@ def verify(
     # (not the worktree) and run secret patterns over the decoded content. This
     # catches secrets that the diff-based scanner misses:
     #   - 100% renames (no added lines in the diff), H-4
-    #   - UTF-16/UTF-16BE files (diff --text garbles NUL bytes), round-6 H-1
+    #   - BOM-bearing UTF-16 / UTF-32 files (diff --text garbles NUL bytes),
+    #     round-6 H-1. Only BOM-bearing: a BOM-less wide encoding is indistinguishable
+    #     from binary and is skipped by both channels, documented as limit 8.
     #   - worktree != candidate divergence, round-6 H-2
     # Covers A (added), M (modified), R (renamed), C (copied). D (deleted) is
     # skipped since the file no longer exists in the candidate.
@@ -1008,11 +1011,25 @@ def verify(
         # content into (or across) scope, so they stay fully scanned - that is
         # what catches a secret in a 100%-rename that has no added diff lines
         # (H-4) or in a brand-new file.
-        base_counts = (
-            _base_line_counts(root, base, dest, limits=limits)
-            if cp.status == "M"
-            else Counter()
-        )
+        if cp.status == "M":
+            base_counts = _base_line_counts(root, base, dest, limits=limits)
+            if base_counts is None:
+                # The base blob exists but has no readable text (it was binary, or a
+                # BOM-less wide encoding). We cannot tell which candidate lines are
+                # NEW, and assuming "all of them" is a false positive with teeth: a
+                # file whose base carried one stray NUL, edited only to remove that
+                # NUL, made an untouched pre-existing credential read as introduced
+                # and BLOCK an unrelated change.
+                #
+                # So the blob channel sits this file out. The diff channel still runs
+                # and still reports what it can attribute to this change, which is
+                # exactly the evidence we are missing here.
+                _log.info("blob scan skipped for %s: base blob has no readable text", dest)
+                continue
+        else:
+            # Adds, renames and copies bring the whole file into (or across) scope,
+            # so every line is introduced by definition.
+            base_counts = Counter()
         seen_counts: Counter[str] = Counter()
         for lineno, line in enumerate(text.splitlines(), 1):
             seen_counts[line] += 1
@@ -1062,14 +1079,11 @@ def verify(
 
     # Merge diff-based and blob-based secret findings.
     #
-    # (path, line, pattern) is NOT an identity, in two directions. Two DIFFERENT
-    # credentials of the same pattern can share a line, and collapsing them dropped a
-    # real one from the evidence. And line 0 means "real line unknown", so every
-    # alternate-only credential in a file shares that key too. The blob loop already
-    # emits exactly one finding per distinct credential, so its own output needs no
-    # deduplication at all; the only thing worth suppressing here is a blob finding
-    # that restates a sighting the DIFF channel already reported at the same line,
-    # and even then only when the diff channel has as many of them.
+    # (path, line, pattern) is NOT an identity: two DIFFERENT credentials of the same
+    # pattern can share a line, and set-deduplicating them dropped a real one from the
+    # evidence. So the merge COUNTS instead, suppressing a blob finding only as a
+    # restatement of a diff-channel sighting at the same line, and only up to the diff
+    # channel's own count for that key.
     all_secret_findings = list(evaluation.secret_findings)
     diff_counts: Counter[tuple[str, int, str]] = Counter(
         (f.path, f.line, f.pattern_name) for f in all_secret_findings
