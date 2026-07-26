@@ -111,8 +111,6 @@ class TestPrecisionComesFromLengthAndShape:
             "max_tokens=1024",
             "secret_findings=()",
             "client = Anthropic(api_key=api_key)",
-            'token = data["token"]',
-            'password = input("Password: ")',
             "token = request.headers.get('Authorization')",
             "api_key = load_api_key()",
             "api_key = args.api_key",
@@ -180,7 +178,11 @@ class TestSuppressionHolesFoundByCrossVendorReview:
         assert secrets_mod.scan("DB_PASSWORD=" + payload)
 
     def test_genuine_expressions_are_still_suppressed(self) -> None:
-        for expr in ('data["token"]', "load_api_key()", "request.headers.get('x')"):
+        """Only UNAMBIGUOUS code: an empty call, a dotted receiver, or an explicit
+        reference signal. A bare `ident["x"]` is no longer suppressed, because the
+        same shape is a plausible password and every structural rule tried for
+        telling them apart lost a real credential."""
+        for expr in ("load_api_key()", "request.headers.get('x')", "os.environ['S']"):
             assert secrets_mod._looks_like_nonsecret(expr) is True, expr
 
     def test_explicit_credential_flags_are_not_length_floored(self) -> None:
@@ -247,11 +249,9 @@ class TestBracketCountingIsNotFooledByMalformedGroups:
     @pytest.mark.parametrize(
         "expr",
         [
-            'data["token"]',
             "load_api_key()",
             "request.headers.get('Authorization')",
-            'load_api_key()["prod"]',  # chained groups
-            'data["token]"]',  # bracket inside a string literal
+            'load_api_key()["prod"]',  # chained, dotted-free but starts with an empty call
             "obj.attr.method(a, b)",
         ],
     )
@@ -672,7 +672,7 @@ class TestRedactIsNotNarrowedByScanSuppression:
         [
             "DB_PASSWORD=short1",  # under the scan length floor
             "DB_PASSWORD=PASSWORD",  # env-var-name reference
-            'DB_PASSWORD=data["token"]',  # expression, not a literal
+            "DB_PASSWORD=os.environ['S']",  # explicit reference signal
             "DB_PASSWORD=<your-password>",  # placeholder
             "DB_PASSWORD=${DB_PASSWORD}",  # template reference
         ],
@@ -756,14 +756,14 @@ class TestBlockersFromCodexPass3:
             ("hunter2[Prod(2026)]", False),  # paren is password data, not a call
             ('hunter2["Prod("]', False),  # paren inside a string literal
             ('data["token]', False),  # unclosed SUBSCRIPT is ambiguous, report it
-            ('input("Password:', True),  # unclosed CALL is code
-            ('load_api_key()["prod"]', True),
-            ('a("b")["c"]', True),
+            ('input("Password:', False),  # unclosed anything is a PREFIX, proves nothing
+            ('load_api_key()["prod"]', True),  # opens with an empty call
         ],
     )
     def test_call_signal_comes_from_the_structural_loop(self, value: str, is_code: bool) -> None:
         """`"(" in rest` counted a parenthesis belonging to the password data, so a
-        call opener now only counts at the TOP level, outside any string."""
+        call opener now only counts at the TOP level, outside any string, AND must be
+        an empty call before it proves anything."""
         assert secrets_mod._is_expression_value(value) is is_code, value
 
 
@@ -801,3 +801,91 @@ class TestPrimaryViewSelectionDoesNotLoseASecondCredential:
         result = verify_mod.verify(contract=contract, root=repo)
         aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
         assert len(aws) == 1, [(f.path, f.line) for f in aws]
+
+
+class TestBlockersFromCodexPass5:
+    """Three more clean-PASS defects. Two show the same lesson from opposite sides:
+    bracket structure is not evidence of code, in ANY of the forms tried."""
+
+    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    K2 = "AKIA" + "1234567890" + "ABCDEF"
+
+    def test_disjoint_equal_sized_view_hits_keep_both_credentials(self, repo: Path) -> None:
+        """Cardinality subtraction assumed the views' hit sets OVERLAPPED. Two views
+        each holding one DIFFERENT credential gave a surplus of zero, so one was
+        dropped, and a line-specific waiver on the other turned it into a clean PASS.
+        Reconciliation is now per distinct credential, not per count."""
+        import json
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "mixed.bin").write_bytes(
+            b"P" * 600 + b"\n" + self.K1.encode() + b"\x00" + ("x " + self.K2).encode("utf-16-le")
+        )
+        (repo / ".notari").mkdir(exist_ok=True)
+        (repo / ".notari" / "exceptions.json").write_text(
+            json.dumps([{"type": "secret", "path": "src/mixed.bin", "line": 2, "reason": "r"}])
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "mixed")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.verdict is Verdict.BLOCK, (result.verdict, result.reasons)
+        assert result.secret_findings
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'DB_PASSWORD="hunter(Prod2026)"',  # balanced top-level call shape
+            "DB_PASSWORD='hunter(\"Prod2026'",  # unclosed, lowercase receiver
+            "DB_PASSWORD='hunter2(\"Prod2026'",  # unclosed, digit in receiver
+            "DB_PASSWORD=hunter2[Prod(2026)]",  # paren nested in the data
+            'DB_PASSWORD=hunter2["Prod"]',  # quote inside the subscript
+        ],
+    )
+    def test_call_shaped_passwords_are_reported(self, line: str) -> None:
+        """Every one of these was a real credential suppressed by a rule that looked
+        structural but was not. Ambiguity now resolves toward reporting, because these
+        feed the non-blocking tier where a false positive costs review noise and a
+        false negative ships a credential."""
+        assert secrets_mod.scan(line), line
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "api_key = load_api_key()",  # empty call
+            "token = request.headers.get('Authorization')",  # dotted receiver
+            "api_key = os.environ['SECRET']",  # explicit reference signal
+            "api_key = args.api_key",  # attribute chain
+            "client = Anthropic(api_key=api_key)",
+        ],
+    )
+    def test_unambiguous_code_is_still_suppressed(self, line: str) -> None:
+        assert secrets_mod.scan(line) == [], line
+
+    def test_ambiguous_code_is_now_review_noise_not_a_block(self) -> None:
+        """The accepted cost: `data["token"]` and a whitespace-truncated
+        `input("Password:` land as review signal. Non-blocking, and the direction the
+        asymmetry favours."""
+        for line in ('token = data["token"]', 'password = input("Password: ")'):
+            hits = secrets_mod.scan(line)
+            assert hits and all(h.confidence == "low" for h in hits), line
+
+
+class TestFindingOrderIsDeterministic:
+    """Credential identity is a digest, and iterating a set of digests made the
+    finding ORDER depend on hash ordering. A gate whose whole claim is a reproducible
+    verdict must not emit its evidence in a different order run to run. Found by a
+    test that failed on ordering alone while both credentials were present."""
+
+    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    K2 = "AKIA" + "1234567890" + "ABCDEF"
+
+    def test_two_credentials_report_in_file_order(self, repo: Path) -> None:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "wide.txt").write_bytes(
+            f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode("utf-16-le")
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "wide")
+        result = verify_mod.verify(contract=contract, root=repo)
+        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert [f.line for f in aws] == sorted(f.line for f in aws), [f.line for f in aws]

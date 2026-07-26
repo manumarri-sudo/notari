@@ -519,25 +519,22 @@ def _is_expression_value(v: str) -> bool:
     rest = v[lead.end() :]
     if not rest or rest[0] not in "([":
         return False
-    # Balanced brackets alone are NOT evidence of code: `hunter2[Prod]` is a
-    # plausible password and was being suppressed. Require a positive signal that
-    # this is an expression: a call group anywhere, a quote just inside the opener
-    # (a string subscript), or a dotted receiver. The bare ambiguous
-    # `identifier[word]` form is left in scope deliberately, at the cost of an
-    # occasional false positive that now lands as review signal rather than a block.
-    # `has_call` is decided by the structural loop below, NOT by a substring test.
-    # `"(" in rest` counted a parenthesis that was part of the password data, so
-    # `hunter2[Prod(2026)]` and `hunter2["Prod("]` were classified as code and
-    # suppressed entirely.
+    # Bracket structure is NOT evidence of code, in any of the forms tried so far.
+    # Each of these was a real credential suppressed by a rule that looked structural
+    # but was not: `hunter2[Prod]` (balanced brackets), `hunter2[Prod(2026)]` (a paren
+    # in the data), `hunter("Prod2026"` (a quote inside an opener), `hunter(Prod2026)`
+    # (a balanced top-level call shape).
+    #
+    # A bare `identifier(...)` or `identifier[...]` is genuinely ambiguous: it is how
+    # both a function call and a punctuated password look. These rules feed the
+    # LOW-CONFIDENCE tier, where a false positive costs review noise and a false
+    # negative ships a credential, so ambiguity now resolves toward reporting and
+    # only UNAMBIGUOUS code is suppressed:
+    #   - a dotted receiver (`os.environ[...]`, `request.headers.get(...)`)
+    #   - an empty call (`load_api_key()`), which no password looks like
+    #   - the explicit reference signals already handled by `_CODE_REF_SIGNALS`
     dotted_receiver = "." in v[: lead.end()]
-    # A quoted subscript counts as code only when the RECEIVER also reads like an
-    # identifier rather than a credential: plain lowercase, no digits. Accepting a
-    # quote inside the brackets on its own suppressed `hunter2["Prod"]`, which is a
-    # password, while still needing to suppress `data["token"]`, which is code. The
-    # receiver is what separates them.
-    quoted_subscript = bool(re.match(r"[([]\s*[\"']", rest)) and bool(
-        re.fullmatch(r"[a-z_][a-z_]*\s*", v[: lead.end()])
-    )
+    empty_call = bool(re.match(r"\(\s*\)", rest))
     # A STACK, not a depth counter: a counter treats `(` and `[` as
     # interchangeable, so a mismatched pair (`cfg[value)`) balanced to zero and a
     # real password containing one was suppressed. Brackets must actually pair.
@@ -578,7 +575,7 @@ def _is_expression_value(v: str) -> bool:
                 return False
             if not stack:
                 if i == len(rest) - 1:
-                    return saw_call or quoted_subscript or dotted_receiver
+                    return (saw_call and empty_call) or dotted_receiver
                 # A CHAINED group is still code: `load_api_key()["prod"]` closes its
                 # call group and immediately opens a subscript. Only bare text after
                 # a closed group means this is a literal value, which is what keeps
@@ -586,18 +583,13 @@ def _is_expression_value(v: str) -> bool:
                 if rest[i + 1] in "([":
                     continue
                 return False
-    # Never closed, so this is a PREFIX and structure alone proves nothing. Only a
-    # truncated call on an identifier-shaped receiver counts as code, which is what
-    # the value capture leaves behind for `password = input("Password: ")`. The
-    # receiver test is load-bearing: without it `DB_PASSWORD='hunter2("Prod2026'` was
-    # read as a truncated call and a real credential vanished from both channels for
-    # a clean PASS. An unclosed SUBSCRIPT stays reportable either way, since
-    # `data["token]` is ambiguous credential data rather than proven code.
-    return (
-        rest[0] == "("
-        and bool(_TRUNCATED_CALL_RE.match(v))
-        and bool(re.fullmatch(r"[a-z_][a-z_.]*\s*", v[: lead.end()]))
-    )
+    # Never closed, so this is a PREFIX and structure proves nothing at all. The
+    # unclosed-call fallback is gone: it suppressed `hunter2("Prod2026` and then, once
+    # tightened to require a lowercase receiver, still suppressed `hunter("Prod2026`.
+    # Both are plausible passwords and both produced a clean PASS. A truncated
+    # `input("Password:` now lands as review signal instead, which is noise in a
+    # non-blocking tier rather than a missed credential.
+    return dotted_receiver
 
 
 def _strip_one_quote_layer(value: str) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import hashlib
 import json
 import logging
 import os
@@ -1159,12 +1160,12 @@ def verify(
         # credentials; across views they are the same bytes read two ways. The
         # primary decoding is first, so a genuine wide-encoded file keeps its own
         # line numbers.
-        per_view: list[dict[str, list[tuple[int, str]]]] = []
+        per_view: list[dict[tuple[str, str], list[tuple[int, str]]]] = []
         for label, view in views:
             # Label-aligned: only the base view from the SAME decoding can suppress a
             # line in this one. An unmatched label suppresses nothing.
             base_for_view = base_counts.get(label, Counter())
-            found: dict[str, list[tuple[int, str]]] = {}
+            found: dict[tuple[str, str], list[tuple[int, str]]] = {}
             seen_counts: Counter[str] = Counter()
             for lineno, line in enumerate(view.splitlines(), 1):
                 seen_counts[line] += 1
@@ -1174,50 +1175,50 @@ def verify(
                 if seen_counts[line] <= base_for_view.get(line, 0):
                     continue
                 for hit in _secrets.scan(line):
-                    found.setdefault(hit.pattern_name, []).append((lineno, hit.confidence))
+                    # Identity is the matched VALUE, reduced to a digest that lives
+                    # only for the length of this loop and is never stored on the
+                    # finding, logged, or written to the passport. Counting was not
+                    # enough: two views can each see ONE DIFFERENT credential, so a
+                    # cardinality comparison found a surplus of zero and dropped one
+                    # of them.
+                    value = line[hit.matched_at : hit.matched_at + hit.length]
+                    ident = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+                    found.setdefault((hit.pattern_name, ident), []).append(
+                        (lineno, hit.confidence)
+                    )
             per_view.append(found)
 
-        for name in {n for found in per_view for n in found}:
-            # The PRIMARY decoding's line numbers are the file's line numbers. An
-            # alternate view can invent both extra matches and extra line breaks out
-            # of the raw bytes of valid characters, and letting the highest-count view
-            # win meant a genuine credential on line 2 was reported at lines 1 and 3
-            # instead. Pre-existing line-specific waivers for those fabricated lines
-            # then waived it, turning a real credential into a clean PASS.
-            #
-            # So: if the primary view saw this pattern, its hits ARE the finding.
-            # Otherwise the credential is only visible through an alternate decoding,
-            # where no line number is trustworthy, so it is reported at line 0.
-            #
-            # Note what line 0 does NOT do: a path-only waiver still waives it, which
-            # is correct since a path-only waiver means "waive every secret in this
-            # path", and an explicit `line: 0` waiver matches it too. It only stops a
-            # waiver written for a REAL line number from silently matching a finding
-            # whose line came from a different decoding.
-            #
-            # Taking ONLY the primary view's hits is not enough either: a file can
-            # hold one credential the primary view reads and a second one that only
-            # an alternate decoding reveals, and the primary's hits alone lose the
-            # second. So the primary's hits are reported with their real lines, and
-            # any SURPLUS count from the widest alternate view is reported at line 0.
-            # Over-reporting a phantom at an unknown line is the safe direction; the
-            # alternative is dropping a real credential.
-            widest: list[tuple[int, str]] = []
-            for found in per_view[1:]:
-                if len(found.get(name, [])) > len(widest):
-                    widest = found[name]
-            primary_hits = per_view[0].get(name, [])
-            best = list(primary_hits)
-            surplus = len(widest) - len(primary_hits)
-            if surplus > 0:
-                best += [(0, conf) for _, conf in widest[-surplus:]]
-            # A blocking sighting anywhere wins over a demoted one, so a view that
-            # happens to mangle the surrounding syntax cannot downgrade a credential
-            # another view read correctly.
+        # One entry per DISTINCT credential (pattern plus value digest), not per
+        # pattern and not per view. Cardinality logic was structurally wrong: it
+        # assumed the views' hit sets overlapped, so two views each holding one
+        # DIFFERENT credential produced a surplus of zero and one real credential was
+        # dropped, which a line-specific waiver on the other then turned into a clean
+        # PASS.
+        # SORTED, because iterating a set makes the finding order depend on hash
+        # ordering, and a gate whose whole claim is a reproducible verdict must not
+        # emit its evidence in a different order from run to run.
+        for cred in sorted({k for found in per_view for k in found}):
+            name, _ident = cred
+            primary_hits = per_view[0].get(cred, [])
+            # A blocking sighting in ANY view wins, so a view that mangled the
+            # surrounding syntax cannot downgrade a credential another view read
+            # correctly.
             blocking = any(
-                conf != "low" for found in per_view for _, conf in found.get(name, [])
+                conf != "low" for found in per_view for _, conf in found.get(cred, [])
             )
-            for lineno, conf in best:
+            # The primary decoding's line numbers are the FILE's line numbers. An
+            # alternate view can invent both extra matches and extra line breaks, and
+            # reporting those fabricated lines let pre-existing line-specific waivers
+            # written for them hide the real credential.
+            #
+            # Line 0 means "seen only through an alternate decoding, real line
+            # unknown". Note what it does NOT do: a path-only waiver still waives it,
+            # which is correct because a path-only waiver means "waive every secret in
+            # this path", and an explicit `line: 0` waiver matches too. It only stops a
+            # waiver written for a REAL line from matching a finding whose line came
+            # from a different decoding.
+            placements = [line for line, _conf in primary_hits] if primary_hits else [0]
+            for lineno in placements:
                 blob_secret_findings.append(
                     policy.SecretFinding(
                         path=dest,
@@ -1227,9 +1228,14 @@ def verify(
                         # demoted anchored hit found on the blob path back into a
                         # blocking one, so the same credential blocked or reviewed
                         # depending on which channel happened to see it.
-                        confidence="high" if blocking else conf,
+                        confidence="high" if blocking else "low",
                     )
                 )
+
+    # One more ordering guarantee: the digest that gives each credential its identity
+    # is stable but arbitrary, so sort the emitted findings the way a human reads a
+    # file rather than the way a hash happens to fall.
+    blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
     # Strict mode does NOT honor branch-authored exceptions (security review
     # P0-2): an unsigned .notari/exceptions.json could waive whole classes of
