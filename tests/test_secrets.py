@@ -465,9 +465,7 @@ def test_scan_does_not_suppress_secrets_with_brackets_or_common_words():
         "API_TOKEN=Example_Xy91Kf22Qz",
     ):
         assert any(h.pattern_name == "env-secret" for h in scan(s)), s
-    assert any(
-        h.pattern_name == "password-flag" for h in scan("svc --password token(value)7xK9")
-    )
+    assert any(h.pattern_name == "password-flag" for h in scan("svc --password token(value)7xK9"))
 
 
 def test_scan_env_secret_regex_is_not_redos():

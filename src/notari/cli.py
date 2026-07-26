@@ -2895,9 +2895,7 @@ def audit_verify(
             f"high-water-mark ({seal_error}); truncation detection was not updated"
         )
     sealed_note = (
-        " (sealed a high-water-mark for truncation detection)"
-        if sealed_ok and not head
-        else ""
+        " (sealed a high-water-mark for truncation detection)" if sealed_ok and not head else ""
     )
     console.print(f"[green]chain intact[/green]: {total} entries verified.{sealed_note}")
 

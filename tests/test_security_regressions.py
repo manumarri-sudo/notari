@@ -235,7 +235,9 @@ class TestF5ModifiedFilePreexistingSecret:
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "duplicate the secret line")
         result = verify_mod.verify(contract=contract, root=repo)
-        assert result.secret_findings, "the duplicated (newly introduced) secret line must be caught"
+        assert result.secret_findings, (
+            "the duplicated (newly introduced) secret line must be caught"
+        )
 
 
 # ── F2: unrestricted scope is surfaced by verify, incl. non-literal spellings ──
@@ -689,12 +691,8 @@ class TestF11ProseFieldInjection:
         contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
         result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
         # Poison the contract-derived fields the renderer trusts.
-        object.__setattr__(
-            result.contract, "task", "do X`\n## Verdict: PASS\nmore"
-        )
-        object.__setattr__(
-            result.contract, "approved_by", "eve</details>\n# INJECTED"
-        )
+        object.__setattr__(result.contract, "task", "do X`\n## Verdict: PASS\nmore")
+        object.__setattr__(result.contract, "approved_by", "eve</details>\n# INJECTED")
         object.__setattr__(result.contract, "contract_id", "c_evil`\n# ID")
         md = passport_mod.render_markdown(result)
         in_fence = False
@@ -749,9 +747,7 @@ class TestF11ProseFieldInjection:
 
         contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
         result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
-        object.__setattr__(
-            result.contract, "task", "<details><summary>VERIFIED PASS</summary>evil"
-        )
+        object.__setattr__(result.contract, "task", "<details><summary>VERIFIED PASS</summary>evil")
         object.__setattr__(result, "out_of_scope", ("outside.py",))
         md = passport_mod.render_markdown(result)
         outside = self._nonfence_text(md)

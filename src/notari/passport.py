@@ -33,7 +33,7 @@ _VERDICT_BADGE = {
 
 
 def _confidence_of(finding: Any) -> str:
-    """"low" for review-tier findings, "high" for blocking ones.
+    """ "low" for review-tier findings, "high" for blocking ones.
 
     Prefers the confidence the scanner recorded on the finding, since an ANCHORED
     pattern with a placeholder-looking value is demoted to review rather than
@@ -269,9 +269,7 @@ def render_markdown(
             # certainty of a matched vendor key format, in the same document whose
             # verdict correctly said NEEDS_REVIEW.
             marker = "⚠️ possible" if _confidence_of(f) == "low" else "⛔"
-            lines.append(
-                f"- {marker} `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}"
-            )
+            lines.append(f"- {marker} `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}")
     else:
         lines.append("_No secrets detected on added lines._")
     lines.append("")

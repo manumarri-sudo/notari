@@ -288,9 +288,7 @@ def scan(
             # The length floor is low-confidence-only: a real DSN password can
             # legitimately be short (a brief password in a redis:// DSN), so floor only the
             # shapes whose match is loosely structured.
-            if label in _FLOORED_INLINE and (
-                len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN
-            ):
+            if label in _FLOORED_INLINE and (len(value.strip("\"'`")) < _MIN_INLINE_SECRET_LEN):
                 continue
             # Two tiers, and they behave DIFFERENTLY on a placeholder-looking value.
             #
@@ -424,9 +422,30 @@ _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
 # fuzzier stand-ins are caught by the substring list below.
 _NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
     {
-        "none", "null", "nil", "true", "false", "na", "n/a", "tbd", "todo",
-        "password", "passwd", "secret", "token", "pwd", "apikey", "api_key",
-        "key", "xxx", "test", "foo", "bar", "baz", "value", "string",
+        "none",
+        "null",
+        "nil",
+        "true",
+        "false",
+        "na",
+        "n/a",
+        "tbd",
+        "todo",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "pwd",
+        "apikey",
+        "api_key",
+        "key",
+        "xxx",
+        "test",
+        "foo",
+        "bar",
+        "baz",
+        "value",
+        "string",
     }
 )
 
@@ -437,8 +456,18 @@ _NONSECRET_TOKENS: Final[frozenset[str]] = frozenset(
 # that IS a placeholder counts.
 _NONSECRET_WHOLE: Final[frozenset[str]] = frozenset(
     {
-        "changeme", "change_me", "change-me", "placeholder", "redacted",
-        "example", "sample", "dummy", "todo", "tbd", "value", "string",
+        "changeme",
+        "change_me",
+        "change-me",
+        "placeholder",
+        "redacted",
+        "example",
+        "sample",
+        "dummy",
+        "todo",
+        "tbd",
+        "value",
+        "string",
     }
 )
 
@@ -446,8 +475,15 @@ _NONSECRET_WHOLE: Final[frozenset[str]] = frozenset(
 # literal. These are specific tokens, not "contains a bracket" (a real secret
 # can contain brackets or parens).
 _CODE_REF_SIGNALS: Final[tuple[str, ...]] = (
-    "os.environ", "os.getenv", "getenv(", "process.env", "config.get(",
-    "settings.", "secrets.get", "vault.", ".env[",
+    "os.environ",
+    "os.getenv",
+    "getenv(",
+    "process.env",
+    "config.get(",
+    "settings.",
+    "secrets.get",
+    "vault.",
+    ".env[",
 )
 
 

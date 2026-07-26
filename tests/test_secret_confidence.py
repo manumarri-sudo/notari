@@ -209,15 +209,15 @@ class TestBracketCountingIsNotFooledByMalformedGroups:
     @pytest.mark.parametrize(
         "shape",
         [
-            "cfg[{pw})",       # mismatched: opens square, closes round
-            "cfg({pw}]",       # mismatched the other way
-            "cfg[{pw}]{pw}",   # closes early, then continues
-            "cfg[{pw}]]",      # one extra closer
-            "[{pw}]",          # no leading identifier
-            "cfg[{pw}",        # never closes, no quote inside
-            "a[b][{pw}]",      # two groups, first closes early
-            "cfg[{pw}]=x",     # closes then assigns
-            "x({pw})y",        # closes then trails
+            "cfg[{pw})",  # mismatched: opens square, closes round
+            "cfg({pw}]",  # mismatched the other way
+            "cfg[{pw}]{pw}",  # closes early, then continues
+            "cfg[{pw}]]",  # one extra closer
+            "[{pw}]",  # no leading identifier
+            "cfg[{pw}",  # never closes, no quote inside
+            "a[b][{pw}]",  # two groups, first closes early
+            "cfg[{pw}]=x",  # closes then assigns
+            "x({pw})y",  # closes then trails
         ],
     )
     def test_malformed_groups_do_not_suppress_a_real_value(self, shape: str) -> None:
@@ -402,6 +402,7 @@ class TestConfidenceSurvivesEveryChannel:
         findings = doc["evidence"]["secret_findings"]
         assert findings and all("confidence" in f for f in findings)
 
+
 class TestBaseLineSuppression:
     """Both directions of the pre-existing-line rule, which has broken more than once:
     an untouched secret must not block an unrelated edit, and the (N+1)th newly
@@ -518,9 +519,7 @@ class TestBlockersFromCodexPass3:
         assert result.verdict is Verdict.BLOCK
         assert [f.pattern_name for f in result.secret_findings] == ["AWS Access Key ID"]
 
-    def test_waivers_on_fabricated_salvage_lines_cannot_hide_a_credential(
-        self, repo: Path
-    ) -> None:
+    def test_waivers_on_fabricated_salvage_lines_cannot_hide_a_credential(self, repo: Path) -> None:
         """An alternate decoding can invent extra matches AND extra line breaks, so
         letting the highest-count view win reported a line-2 credential at lines 1
         and 3. Pre-existing line-specific waivers for those lines then waived it."""
@@ -531,8 +530,20 @@ class TestBlockersFromCodexPass3:
             # `type: secret` is REQUIRED by _waived_secret. Without it no waiver ever
             # applied and this test passed for the wrong reason, exercising nothing.
             exceptions=[
-                {"type": "secret", "path": "src/f.txt", "line": 1, "reason": "r", "approved_by": "h"},
-                {"type": "secret", "path": "src/f.txt", "line": 3, "reason": "r", "approved_by": "h"},
+                {
+                    "type": "secret",
+                    "path": "src/f.txt",
+                    "line": 1,
+                    "reason": "r",
+                    "approved_by": "h",
+                },
+                {
+                    "type": "secret",
+                    "path": "src/f.txt",
+                    "line": 3,
+                    "reason": "r",
+                    "approved_by": "h",
+                },
             ],
         )
         assert result.verdict is Verdict.BLOCK
@@ -602,7 +613,6 @@ class TestBlockersFromCodexPass5:
             assert hits and all(h.confidence == "low" for h in hits), line
 
 
-
 class TestEncodingIsDecidedByBomOrNotAtAll:
     """The multi-view scanner is GONE, and this is the contract that replaced it.
 
@@ -630,9 +640,7 @@ class TestEncodingIsDecidedByBomOrNotAtAll:
             ("utf-8", b""),
         ],
     )
-    def test_a_bom_or_plain_text_is_decoded_and_scanned(
-        self, encoding: str, bom: bytes
-    ) -> None:
+    def test_a_bom_or_plain_text_is_decoded_and_scanned(self, encoding: str, bom: bytes) -> None:
         text = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
         assert text is not None
         assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(text)}
@@ -762,9 +770,7 @@ class TestDeletionBlockersFromCodexPass8:
         text = verify_mod._decode_blob(raw)
         assert text is not None and self.K in text
 
-    def test_binary_base_becoming_text_does_not_blame_untouched_lines(
-        self, repo: Path
-    ) -> None:
+    def test_binary_base_becoming_text_does_not_blame_untouched_lines(self, repo: Path) -> None:
         """A base blob with one stray NUL returned an empty line-count, so when the
         candidate removed that NUL every line read as newly introduced and an untouched
         pre-existing credential BLOCKED an unrelated edit. `_base_line_counts` now

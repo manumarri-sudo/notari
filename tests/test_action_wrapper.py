@@ -453,9 +453,7 @@ def test_symlinked_dest_to_outside_directory_is_not_followed(
     assert json.loads(published.read_text())["verdict"] == "BLOCK"
 
 
-def test_publish_into_clean_nested_dir_succeeds(
-    repo: tuple[Path, dict[str, str]]
-) -> None:
+def test_publish_into_clean_nested_dir_succeeds(repo: tuple[Path, dict[str, str]]) -> None:
     """The hardening must not regress the ordinary case: publishing into a
     real nested dir that does not yet exist works and lands a real file."""
     if not WRAPPER.exists():
@@ -578,7 +576,9 @@ class TestPublishFailureCannotSuppressTheVerdict:
         _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
         # Drop the markdown passport the fake verifier writes.
         fake = bin_dir / "notari"
-        fake.write_text(fake.read_text().replace('printf "# passport\\n" > "$dir/passport.md"\n', ""))
+        fake.write_text(
+            fake.read_text().replace('printf "# passport\\n" > "$dir/passport.md"\n', "")
+        )
         fake.chmod(0o755)
 
         proc, output, _summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
@@ -606,7 +606,9 @@ class TestAbortBeforeTheTrapIsInstalled:
     ::error::, no fallback summary, and an exit code indistinguishable from a BLOCK
     verdict. WORK is now declared and the trap installed first."""
 
-    def test_unusable_tmpdir_fails_closed_with_exit_2(self, repo: tuple[Path, dict[str, str]]) -> None:
+    def test_unusable_tmpdir_fails_closed_with_exit_2(
+        self, repo: tuple[Path, dict[str, str]]
+    ) -> None:
         if not WRAPPER.exists():
             pytest.skip("wrapper script not present")
         root, env = repo

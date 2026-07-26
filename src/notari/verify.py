@@ -460,7 +460,7 @@ _UTF32_BE_BOM = b"\x00\x00\xfe\xff"
 
 
 def _confidence_of(finding: policy.SecretFinding) -> str:
-    """"low" for review-tier findings, "high" for blocking ones.
+    """ "low" for review-tier findings, "high" for blocking ones.
 
     Prefers the confidence recorded on the finding, since an anchored pattern with a
     placeholder-looking value is demoted rather than dropped and that cannot be
@@ -986,9 +986,7 @@ def verify(
         dest = cp.path
         if dest.startswith(".notari/"):
             continue
-        text, blob_truncated = _read_candidate_blob(
-            root, candidate_sha, dest, limits=limits
-        )
+        text, blob_truncated = _read_candidate_blob(root, candidate_sha, dest, limits=limits)
         if blob_truncated:
             scan_dispositions.append(
                 f"oversized-blob: {dest} exceeded {limits.max_diff_bytes} bytes (or the "
