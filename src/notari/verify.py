@@ -567,6 +567,18 @@ def _confidence_of(finding: policy.SecretFinding) -> str:
 # as a disposition, so an incomplete scan is never reported as a clean PASS.
 DEFAULT_MAX_VIEW_CHARS = 24 * 1024 * 1024
 
+# How many characters a salvage view may absorb from either side before two digests
+# stop counting as ONE physical credential. The NUL-stripping view can pull a
+# neighbouring character into a match, so `<token>` and `<token>x` are the same
+# secret read two ways. The bound matters because a bare prefix test is unsound:
+# several patterns are variable-length (Stripe `sk_live_[A-Za-z0-9]{24,}`,
+# HuggingFace `hf_[A-Za-z0-9]{30,}`), so two GENUINELY different credentials can sit
+# in a prefix relationship, and collapsing those would drop a real secret. Requiring
+# a near-identical length as well means a false collapse would need two real
+# credentials sharing a 24-character-plus prefix, which is not a thing that happens
+# by accident.
+_BOUNDARY_ABSORB_CHARS = 4
+
 
 def _decode_blob_views(
     raw: bytes, *, max_chars: int | None = None
@@ -1217,7 +1229,9 @@ def verify(
                 # boundary character rather than a different secret.
                 mine = values.get(cred, "")
                 if any(
-                    pname == name and (mine.startswith(pval) or pval.startswith(mine))
+                    pname == name
+                    and (mine.startswith(pval) or pval.startswith(mine))
+                    and abs(len(mine) - len(pval)) <= _BOUNDARY_ABSORB_CHARS
                     for (pname, _pi), pval in primary_values.items()
                 ):
                     continue

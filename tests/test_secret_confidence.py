@@ -894,3 +894,45 @@ class TestFindingOrderIsDeterministic:
         # EXACT lines, not "equals its own sorted form", which is trivially true for
         # zero or one finding and so would pass even if a credential were lost.
         assert [f.line for f in aws] == [1, 2], [f.line for f in aws]
+
+
+class TestPrefixCollapseIsBounded:
+    """Self-attack on the pass-6 fix, run while pass 7 was still going. Collapsing
+    two digests when one value is a PREFIX of the other is how a single physical
+    credential absorbed into a salvage view stops being counted twice. But a bare
+    prefix test is unsound: several patterns are variable-length (Stripe
+    `sk_live_[A-Za-z0-9]{24,}`, HuggingFace `hf_[A-Za-z0-9]{30,}`), so two GENUINELY
+    different credentials can sit in a prefix relationship and the second would be
+    dropped. The collapse also requires a near-identical length."""
+
+    SK_A = "sk_live_" + "A" * 24
+    SK_B = "sk_live_" + "A" * 24 + "B" * 6
+    BEARER = "4f9KzQ2LmN8PrT7"
+
+    def _verify(self, repo: Path, data: bytes, name: str) -> object:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / name).write_bytes(data)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "add")
+        return verify_mod.verify(contract=contract, root=repo)
+
+    def test_two_prefix_related_credentials_are_both_reported(self, repo: Path) -> None:
+        result = self._verify(
+            repo,
+            ('a = "' + self.SK_A + '"\n').encode()
+            + b"\x00"
+            + ('b = "' + self.SK_B + '"\n').encode("utf-16-le"),
+            "two.bin",
+        )
+        stripe = [f for f in result.secret_findings if f.pattern_name == "Stripe Live Secret Key"]
+        assert len(stripe) == 2, [(f.line) for f in stripe]
+
+    def test_one_credential_absorbing_a_boundary_char_is_reported_once(
+        self, repo: Path
+    ) -> None:
+        result = self._verify(
+            repo, b"Authorization: Bearer " + self.BEARER.encode() + b"\x00x\x00", "one.bin"
+        )
+        bearer = [f for f in result.secret_findings if f.pattern_name == "bearer-token"]
+        assert len(bearer) == 1, [(f.line) for f in bearer]
+        assert bearer[0].line == 1
