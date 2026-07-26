@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import hashlib
 import json
 import logging
 import os
@@ -460,28 +459,47 @@ _UTF32_LE_BOM = b"\xff\xfe\x00\x00"
 _UTF32_BE_BOM = b"\x00\x00\xfe\xff"
 
 
-def _ascii_ratio(sample: str) -> float:
-    """Fraction of `sample` that is printable ASCII or whitespace.
+def _confidence_of(finding: policy.SecretFinding) -> str:
+    """"low" for review-tier findings, "high" for blocking ones.
 
-    Used to pick between the two UTF-16 endiannesses when no BOM says which is
-    right. ASCII source read with the wrong endianness decodes cleanly but
-    wrongly (b"\\x00A" becomes U+4100), so a clean decode is not evidence of the
-    correct one; a high ASCII ratio is."""
-    if not sample:
-        return 0.0
-    good = sum(1 for ch in sample if ch.isspace() or 0x20 <= ord(ch) < 0x7F)
-    return good / len(sample)
+    Prefers the confidence recorded on the finding, since an anchored pattern with a
+    placeholder-looking value is demoted rather than dropped and that cannot be
+    recovered from the pattern name. Falls back to the pattern-name classification for
+    findings built before the field existed, which defaults to blocking.
+    """
+    from notari import secrets as _secrets_mod
+
+    carried = getattr(finding, "confidence", None)
+    if carried in ("low", "high"):
+        return str(carried)
+    return "low" if _secrets_mod.is_low_confidence(finding.pattern_name) else "high"
 
 
-def _decode_blob(raw: bytes) -> str:
-    """Decode a git blob to text, handling UTF-16 and UTF-8 (with and without BOM).
+def _decode_blob(raw: bytes) -> str | None:
+    """Text to scan, or None when the blob has no text to scan.
 
-    Returns the decoded string so ASCII-oriented secret patterns can match.
-    Falls back to latin-1 (lossless for arbitrary bytes) so we never silently
-    skip content."""
-    # UTF-32 BOMs FIRST: the UTF-32-LE BOM is b"\xff\xfe\x00\x00", which STARTS
-    # with the UTF-16-LE BOM, so checking UTF-16 first sends a BOM-bearing UTF-32
-    # file down the UTF-16 path and shreds its content.
+    Three cases, and the ordering matters:
+
+      1. An explicit BOM says the encoding unambiguously, so decode exactly that.
+         UTF-32 BOMs are tested FIRST because the UTF-32-LE BOM begins with the
+         UTF-16-LE BOM, and checking UTF-16 first shreds a UTF-32 file.
+      2. No NUL bytes: ordinary text. UTF-8, falling back to latin-1, which maps
+         every byte and so never silently drops content.
+      3. NUL bytes and no BOM: BINARY, and None means "there is no text here".
+
+    Case 3 is a deliberate retreat from a previous design that tried to GUESS the
+    encoding of BOM-less NUL-bearing blobs by decoding them several ways and
+    reconciling the results. That machinery was the source of a clean-PASS defect in
+    seven consecutive review rounds, and the measurements said why: of 1,879
+    NUL-bearing files in this repository, TWO were genuinely wide-encoded text and
+    1,877 were PNGs, wheels and caches, on which it manufactured 867 phantom
+    credential matches. Guessing was strictly worse than declining.
+
+    What this gives up is stated in SECURITY-MODEL.md: a credential inside a
+    BOM-less UTF-16 file, or embedded in a binary, is not scanned. It is also not
+    reported as scanned. Git itself treats such a blob as binary and shows no diff,
+    and gitleaks and its peers make the same trade.
+    """
     if raw.startswith(_UTF32_LE_BOM):
         try:
             return raw[4:].decode("utf-32-le")
@@ -507,182 +525,22 @@ def _decode_blob(raw: bytes) -> str:
             return raw[3:].decode("utf-8")
         except UnicodeDecodeError:
             pass
-    if b"\x00" in raw[:512]:
-        # Try BOTH endiannesses and keep the more ASCII-looking one. Taking the
-        # first that merely decodes without a replacement char sent UTF-16-BE
-        # content (which iconv -t UTF-16BE emits with no BOM) down the LE path,
-        # where it became CJK codepoints and every ASCII secret pattern missed.
-        # UTF-32 is in the candidate list for the same reason: it is NUL-bearing,
-        # so the diff channel is blind to it too, and decoding UTF-32 content as
-        # UTF-16 yields NUL-interleaved text that destroys every ASCII pattern.
-        # The ASCII-ratio tiebreak picks the right width because the wrong one
-        # leaves NULs, which do not count as printable ASCII.
-        best: tuple[float, str] | None = None
-        for enc in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
-            try:
-                decoded = raw.decode(enc)
-            except (UnicodeDecodeError, ValueError):
-                continue
-            if "�" in decoded[:256]:
-                continue
-            score = _ascii_ratio(decoded[:512])
-            if best is None or score > best[0]:
-                best = (score, decoded)
-        # A minimum score, so a NUL-bearing blob that is not ACTUALLY a wide
-        # encoding falls through to the UTF-8 / latin-1 path below instead of being
-        # reinterpreted into garbage. Without a floor, the best-of-four is returned
-        # however bad it is, which can destroy a credential that the plain fallback
-        # would have preserved. Real wide-encoded source scores far above this.
-        if best is not None and best[0] >= 0.5:
-            return best[1]
+    if b"\x00" in raw:
+        return None
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("latin-1")
 
 
-def _confidence_of(finding: policy.SecretFinding) -> str:
-    """"low" for review-tier findings, "high" for blocking ones.
-
-    Prefers the confidence recorded on the finding, since an anchored pattern with
-    a placeholder-looking value is demoted rather than dropped and that cannot be
-    recovered from the pattern name. Falls back to the pattern-name classification
-    for findings built before the field existed, which defaults to blocking.
-    """
-    carried = getattr(finding, "confidence", None)
-    if carried in ("low", "high"):
-        return str(carried)
-    from notari import secrets as _secrets_mod
-
-    return "low" if _secrets_mod.is_low_confidence(finding.pattern_name) else "high"
-
-
-# Total decoded characters across all views of ONE blob. Views multiply scanning
-# work: measured on this machine, a 52 MB UTF-16 blob yields 3 views, 16.2s of
-# scanning and 288 MB peak RSS, against roughly 5s for the single-view path. A
-# candidate can submit many such files, and while that only DELAYS a verdict rather
-# than forging one (no verdict means the required check never turns green), a gate
-# that can be stalled for minutes per file is a denial-of-service worth bounding.
-# Past the budget the extra views are dropped and the reduced coverage is recorded
-# as a disposition, so an incomplete scan is never reported as a clean PASS.
-DEFAULT_MAX_VIEW_CHARS = 24 * 1024 * 1024
-
-# How many characters a salvage view may absorb from either side before two digests
-# stop counting as ONE physical credential. The NUL-stripping view can pull a
-# neighbouring character into a match, so `<token>` and `<token>x` are the same
-# secret read two ways. The bound matters because a bare prefix test is unsound:
-# several patterns are variable-length (Stripe `sk_live_[A-Za-z0-9]{24,}`,
-# HuggingFace `hf_[A-Za-z0-9]{30,}`), so two GENUINELY different credentials can sit
-# in a prefix relationship, and collapsing those would drop a real secret. Requiring
-# a near-identical length as well means a false collapse would need two real
-# credentials sharing a 24-character-plus prefix, which is not a thing that happens
-# by accident.
-_BOUNDARY_ABSORB_CHARS = 4
-
-
-def _decode_blob_views(
-    raw: bytes, *, max_chars: int | None = None
-) -> tuple[list[tuple[str, str]], bool]:
-    """Every text view of a blob the secret patterns should run over.
-
-    A blob is not always ONE encoding. It can carry a wide-encoded region and a
-    plain-ASCII region, or two different endiannesses, and any single decoding
-    destroys whatever it did not describe. So this returns a LIST of views and the
-    caller scans each one, rather than trying to pick a winner.
-
-    Views are returned separately and never concatenated. Joining them was worse
-    than the problem it solved: the join point let an assignment prefix at the end
-    of one view bridge to a value at the start of the next and synthesise a
-    credential present in NEITHER view, which would BLOCK a clean change. The
-    caller deduplicates by (path, pattern) because the same credential legitimately
-    appears in several views at different line numbers.
-
-    The NUL probe covers the WHOLE blob, not the first 512 bytes: a wide-encoded
-    region beginning after that offset was previously invisible to every view but
-    the primary one, which is a false negative rather than a cosmetic gap.
-
-    Returns ``(views, complete)``. ``complete`` is False when the character budget
-    stopped extra views being built, so the caller can record that the scan covered
-    less than it wanted rather than passing quietly.
-    """
-    views = [("primary", _decode_blob(raw))]
-    if b"\x00" not in raw:
-        return views, True
-    seen = {views[0][1]}
-    # Resolved here, not as a default argument: a default binds at definition time,
-    # so the module constant could not be tuned by a caller or a test.
-    budget = (DEFAULT_MAX_VIEW_CHARS if max_chars is None else max_chars) - len(views[0][1])
-
-    def _take(label: str, candidate: str) -> bool:
-        """Add a labelled view if it is new and the budget allows.
-
-        The LABEL matters: base and candidate line counts are compared per view, and
-        a global comparison across alternative interpretations is unsound (a salvage
-        view of the base can fabricate more copies of a line than the file holds).
-        """
-        nonlocal budget
-        if candidate in seen:
-            return True
-        if len(candidate) > budget:
-            return False
-        budget -= len(candidate)
-        seen.add(candidate)
-        views.append((label, candidate))
-        return True
-
-    # Every wide decoding that yields plausible text, not just the winner: a blob
-    # holding one region in UTF-16-LE and another in UTF-16-BE has no single
-    # correct answer, and Latin-1 cannot reconstruct either of them.
-    complete = True
-    for enc, width in (("utf-16-le", 2), ("utf-16-be", 2), ("utf-32-le", 4), ("utf-32-be", 4)):
-        # Check the budget against the ESTIMATED size before decoding. Decoding and
-        # then discarding still materialises the whole string, which is where the
-        # peak memory goes; the estimate is exact for BMP text and an upper bound
-        # otherwise, since surrogate pairs only ever shorten the result.
-        if len(raw) // width > budget:
-            complete = False
-            continue
-        try:
-            decoded = raw.decode(enc)
-        except (UnicodeDecodeError, ValueError):
-            continue
-        if "�" in decoded[:256]:
-            continue
-        if not _take(enc, decoded):
-            complete = False
-    # Latin-1 maps every byte, so an ASCII credential survives it whatever the rest
-    # of the file is. NUL becomes a SPACE rather than nothing: deleting it glued the
-    # neighbouring regions together and destroyed the word boundary the anchored
-    # patterns require.
-    # TWO salvage views, because the two failure modes need opposite treatments and
-    # neither alone is sufficient:
-    #   - NUL to SPACE keeps the word boundary when the credential sits in a plain
-    #     ASCII region next to a wide one. Deleting the NULs there glued the regions
-    #     together and killed the \b the anchored patterns need.
-    #   - NUL DELETED reassembles a credential that sits INSIDE the wide region,
-    #     where the interleaved NULs would otherwise split `AKIA...` into `A K I A`
-    #     and no pattern would match.
-    # Latin-1 is one char per byte, so the size is known without decoding.
-    if len(raw) > budget:
-        return views, False
-    latin = raw.decode("latin-1")
-    for label, salvage in (
-        ("latin1-nul-space", latin.replace("\x00", " ")),
-        ("latin1-nul-strip", latin.replace("\x00", "")),
-    ):
-        if not _take(label, salvage):
-            complete = False
-    return views, complete
-
-
 def _read_candidate_blob(
     root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
-) -> tuple[list[tuple[str, str]] | None, bool, bool]:
+) -> tuple[str | None, bool]:
     """Read a file from the candidate commit's tree, not the worktree.
 
-    Returns ``(views, truncated, views_complete)``: the text VIEWS to scan (see
-    ``_decode_blob_views``, a blob may need more than one) or None
-    if the blob doesn't exist at that commit, and whether the read hit the byte
+    Returns ``(text, truncated)``. `text` is None when the blob does not exist at
+    that commit OR when it has no text to scan (see `_decode_blob`: a BOM-less
+    NUL-bearing blob is binary), and `truncated` says whether the read hit the byte
     ceiling. The read is bounded by the SAME size + timeout ceilings as the diff
     (via ``_git_capture_bytes``): previously this was an unbounded
     ``subprocess.run`` per touched file, so a single multi-gigabyte blob could
@@ -700,49 +558,41 @@ def _read_candidate_blob(
     except VerifyError as e:
         if "timed out" in str(e):
             # Flag it incomplete rather than silently skipping the scan.
-            return None, True, True
+            return None, True
         _log.warning("blob read failed for %s:%s, %s", candidate_sha[:12], path, e)
-        return None, False, True
-    views, views_complete = _decode_blob_views(raw)
-    return views, truncated, views_complete
+        return None, False
+    return _decode_blob(raw), truncated
 
 
 def _base_line_counts(
     root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
-) -> dict[str, Counter[str]]:
+) -> Counter[str]:
     """Multiset of lines already present in `path` at the base commit.
 
-    Used to keep the blob-level secret scan from BLOCKing a pre-existing
-    credential (or a false-positive-shaped line) that this change never touched:
-    an unrelated one-line edit must not fail because a secret sits elsewhere in
-    the same file (security re-review 2026-07-23, F5). A candidate line counts as
-    introduced only once its running occurrence count EXCEEDS the base count, so
-    duplicating a secret line (base has one, candidate adds a second identical
-    one) is still caught, a plain set would have swallowed the copy (re-review
-    defect 4). Called only for in-place modifications; for an initial commit or a
-    path with no base blob the multiset is empty, so every line is introduced.
-    `git cat-file` reads any `<sha>:<path>` tree blob, so the candidate-blob
-    reader is reused against the base here."""
+    Used to keep the blob-level secret scan from BLOCKing a pre-existing credential
+    (or a false-positive-shaped line) that this change never touched: an unrelated
+    one-line edit must not fail because a secret sits elsewhere in the same file
+    (security re-review 2026-07-23, F5). A candidate line counts as introduced only
+    once its running occurrence count EXCEEDS the base count, so duplicating a secret
+    line (base has one, candidate adds a second identical one) is still caught, where
+    a plain set would have swallowed the copy (re-review defect 4). Called only for
+    in-place modifications; for an initial commit, a path with no base blob, or a base
+    that is binary, the multiset is empty and every candidate line is introduced.
+    `git cat-file` reads any `<sha>:<path>` tree blob, so the candidate-blob reader is
+    reused against the base here.
+
+    One multiset, because there is now exactly one decoding of a blob. The
+    per-decoding version of this function existed only to serve the multi-view
+    scanner, and both aggregates it tried (sum, then max) produced a clean-PASS
+    defect: summing over-counted the base, and max let a salvage view fabricate
+    copies that suppressed genuinely new ones.
+    """
     if not base_sha or base_sha == _EMPTY_TREE:
-        return {}
-    views, _, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
-    if not views:
-        return {}
-    # PER VIEW, keyed by the decoding that produced it. Neither aggregate works:
-    # summing inflated the base's count by however many views contained a line, and
-    # taking the maximum is just as unsound in the other direction, because a salvage
-    # view of the base can FABRICATE copies. A base holding one real key plus two
-    # NUL-corrupted near-misses normalises, under the NUL-stripping view, into three
-    # identical lines, and a max of 3 then suppressed two genuinely new copies in the
-    # candidate and returned a clean PASS.
-    #
-    # A candidate view is only comparable to the base view produced by the SAME
-    # decoding, so the comparison is label-aligned and an unmatched label means no
-    # suppression at all, which fails toward reporting.
-    per_label: dict[str, Counter[str]] = {}
-    for label, view in views:
-        per_label[label] = Counter(view.splitlines())
-    return per_label
+        return Counter()
+    text, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
+    if text is None:
+        return Counter()
+    return Counter(text.splitlines())
 
 
 def _block_result(
@@ -1127,15 +977,13 @@ def verify(
     from notari import secrets as _secrets
 
     blob_secret_findings: list[policy.SecretFinding] = []
-    # (path, pattern) -> how many DISTINCT credentials the blob channel identified.
-    blob_cred_counts: Counter[tuple[str, str]] = Counter()
     for cp in inventory:
         if cp.status == "D":
             continue
         dest = cp.path
         if dest.startswith(".notari/"):
             continue
-        views, blob_truncated, views_complete = _read_candidate_blob(
+        text, blob_truncated = _read_candidate_blob(
             root, candidate_sha, dest, limits=limits
         )
         if blob_truncated:
@@ -1144,13 +992,14 @@ def verify(
                 "read timed out) and was truncated; secret scanning did not cover the "
                 "whole file"
             )
-        if not views_complete:
-            scan_dispositions.append(
-                f"partial-decoding-coverage: {dest} needed more decoding views than the "
-                f"{DEFAULT_MAX_VIEW_CHARS}-character budget allows, so some encodings of "
-                "this file were not scanned"
-            )
-        if not views:
+        if text is None:
+            # No text to scan: the blob is absent, or it is binary (NUL bytes and no
+            # BOM to say otherwise). Deliberately NOT a scan disposition. A
+            # disposition means "incomplete coverage" and fails closed in strict mode,
+            # so raising one per binary would block every pull request that adds a
+            # logo or a test fixture. The residual, that a credential inside a binary
+            # or a BOM-less wide-encoded file is not scanned, is recorded in
+            # SECURITY-MODEL.md instead of being paid for on every PR.
             continue
         # For an IN-PLACE modification, only lines this change INTRODUCED can
         # BLOCK: a pre-existing credential on an untouched line is not this
@@ -1160,119 +1009,32 @@ def verify(
         # what catches a secret in a 100%-rename that has no added diff lines
         # (H-4) or in a brand-new file.
         base_counts = (
-            _base_line_counts(root, base, dest, limits=limits) if cp.status == "M" else {}
+            _base_line_counts(root, base, dest, limits=limits)
+            if cp.status == "M"
+            else Counter()
         )
-        # One credential appears in SEVERAL views of the same blob at different line
-        # numbers, so the views cannot simply be summed. But collapsing to one
-        # finding per pattern is also wrong: a wide-encoded file holding TWO distinct
-        # keys of the same pattern then reported only one, and a reviewer who fixed
-        # that line would never learn about the other. The verdict still blocked, but
-        # incomplete evidence is its own failure.
-        #
-        # So for each pattern, pick the single view that saw the MOST of it, earliest
-        # view winning ties. Within one view, distinct lines are genuinely distinct
-        # credentials; across views they are the same bytes read two ways. The
-        # primary decoding is first, so a genuine wide-encoded file keeps its own
-        # line numbers.
-        per_view: list[dict[tuple[str, str], list[tuple[int, str]]]] = []
-        values: dict[tuple[str, str], str] = {}
-        for label, view in views:
-            # Label-aligned: only the base view from the SAME decoding can suppress a
-            # line in this one. An unmatched label suppresses nothing.
-            base_for_view = base_counts.get(label, Counter())
-            found: dict[tuple[str, str], list[tuple[int, str]]] = {}
-            seen_counts: Counter[str] = Counter()
-            for lineno, line in enumerate(view.splitlines(), 1):
-                seen_counts[line] += 1
-                # Suppress only as many occurrences of a line as the base had; the
-                # (N+1)th identical line is newly introduced and must be scanned, so
-                # a duplicated secret line cannot hide behind its pre-existing twin.
-                if seen_counts[line] <= base_for_view.get(line, 0):
-                    continue
-                for hit in _secrets.scan(line):
-                    # Identity is the matched VALUE, reduced to a digest that lives
-                    # only for the length of this loop and is never stored on the
-                    # finding, logged, or written to the passport. Counting was not
-                    # enough: two views can each see ONE DIFFERENT credential, so a
-                    # cardinality comparison found a surplus of zero and dropped one
-                    # of them.
-                    value = line[hit.matched_at : hit.matched_at + hit.length]
-                    ident = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
-                    found.setdefault((hit.pattern_name, ident), []).append(
-                        (lineno, hit.confidence)
-                    )
-                    values[(hit.pattern_name, ident)] = value
-            per_view.append(found)
-
-        # One entry per DISTINCT credential (pattern plus value digest), not per
-        # pattern and not per view. Cardinality logic was structurally wrong: it
-        # assumed the views' hit sets overlapped, so two views each holding one
-        # DIFFERENT credential produced a surplus of zero and one real credential was
-        # dropped, which a line-specific waiver on the other then turned into a clean
-        # PASS.
-        # SORTED, because iterating a set makes the finding order depend on hash
-        # ordering, and a gate whose whole claim is a reproducible verdict must not
-        # emit its evidence in a different order from run to run.
-        primary_values = {
-            cred: values[cred] for cred in per_view[0] if cred in values
-        }
-        for cred in sorted({k for found in per_view for k in found}):
-            name, _ident = cred
-            primary_hits = per_view[0].get(cred, [])
-            if not primary_hits:
-                # Seen only through an alternate decoding. Before reporting it at an
-                # unknown line, check it is not just a re-reading of a credential the
-                # PRIMARY view already reported at its real line: the NUL-stripping
-                # view can absorb a neighbouring character, so one physical credential
-                # becomes two digests, and the phantom then survived a valid waiver on
-                # the real one. Prefix either way, since the difference is always a
-                # boundary character rather than a different secret.
-                mine = values.get(cred, "")
-                if any(
-                    pname == name
-                    and (mine.startswith(pval) or pval.startswith(mine))
-                    and abs(len(mine) - len(pval)) <= _BOUNDARY_ABSORB_CHARS
-                    for (pname, _pi), pval in primary_values.items()
-                ):
-                    continue
-            # A blocking sighting in ANY view wins, so a view that mangled the
-            # surrounding syntax cannot downgrade a credential another view read
-            # correctly.
-            blocking = any(
-                conf != "low" for found in per_view for _, conf in found.get(cred, [])
-            )
-            # The primary decoding's line numbers are the FILE's line numbers. An
-            # alternate view can invent both extra matches and extra line breaks, and
-            # reporting those fabricated lines let pre-existing line-specific waivers
-            # written for them hide the real credential.
-            #
-            # Line 0 means "seen only through an alternate decoding, real line
-            # unknown". Note what it does NOT do: a path-only waiver still waives it,
-            # which is correct because a path-only waiver means "waive every secret in
-            # this path", and an explicit `line: 0` waiver matches too. It only stops a
-            # waiver written for a REAL line from matching a finding whose line came
-            # from a different decoding.
-            # Distinct credentials of this pattern in this file, so the merge can
-            # tell how many findings SHOULD exist once both channels are combined.
-            blob_cred_counts[(dest, name)] += 1
-            placements = [line for line, _conf in primary_hits] if primary_hits else [0]
-            for lineno in placements:
+        seen_counts: Counter[str] = Counter()
+        for lineno, line in enumerate(text.splitlines(), 1):
+            seen_counts[line] += 1
+            # Suppress only as many occurrences of a line as the base had; the
+            # (N+1)th identical line is newly introduced and must be scanned, so a
+            # duplicated secret line cannot hide behind its pre-existing twin.
+            if seen_counts[line] <= base_counts.get(line, 0):
+                continue
+            for hit in _secrets.scan(line):
                 blob_secret_findings.append(
                     policy.SecretFinding(
                         path=dest,
                         line=lineno,
-                        pattern_name=name,
+                        pattern_name=hit.pattern_name,
                         # Carried, not defaulted: the default "high" turned every
                         # demoted anchored hit found on the blob path back into a
                         # blocking one, so the same credential blocked or reviewed
                         # depending on which channel happened to see it.
-                        confidence="high" if blocking else "low",
+                        confidence=hit.confidence,
                     )
                 )
 
-    # One more ordering guarantee: the digest that gives each credential its identity
-    # is stable but arbitrary, so sort the emitted findings the way a human reads a
-    # file rather than the way a hash happens to fall.
     blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
     # Strict mode does NOT honor branch-authored exceptions (security review
@@ -1313,50 +1075,24 @@ def verify(
         (f.path, f.line, f.pattern_name) for f in all_secret_findings
     )
     blob_seen: Counter[tuple[str, int, str]] = Counter()
-    unknown_line: list[policy.SecretFinding] = []
     for f in blob_secret_findings:
         key = (f.path, f.line, f.pattern_name)
-        if f.line == 0:
-            # Held back: how many unknown-line findings are warranted depends on what
-            # the DIFF channel already reported at real lines, which is only known
-            # once every blob finding has been merged.
-            unknown_line.append(f)
-            continue
+        # COUNTED, not set-deduplicated. Two DIFFERENT credentials of the same pattern
+        # can share a line, and collapsing them by (path, line, pattern) dropped a
+        # real one from the evidence. A blob finding is only suppressed as a restatement
+        # of a diff-channel sighting up to the diff channel's own count for that key.
         blob_seen[key] += 1
         if blob_seen[key] > diff_counts.get(key, 0):
             all_secret_findings.append(f)
         elif _confidence_of(f) != "low":
-            # Same finding from both channels with DIFFERENT confidence: the
-            # blocking reading wins. Keeping whichever channel happened to run
-            # first would let a view that mangled the surrounding syntax downgrade
-            # a credential the other channel read correctly.
+            # Same finding from both channels with DIFFERENT confidence: the blocking
+            # reading wins. Keeping whichever channel happened to run first would let
+            # one channel's reading downgrade a credential the other read correctly.
             for i, existing in enumerate(all_secret_findings):
                 if (existing.path, existing.line, existing.pattern_name) == key:
                     if _confidence_of(existing) == "low":
                         all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
                     break
-
-    # Unknown-line findings fill the GAP between the number of distinct credentials
-    # the blob channel identified and the number already reported at a real line by
-    # either channel. Emitting them unconditionally double-counted a credential the
-    # diff channel had already located, so two credentials produced three findings;
-    # dropping them whenever the diff channel saw anything would have lost a
-    # salvage-only credential instead.
-    for (path_key, pattern_key), distinct in sorted(blob_cred_counts.items()):
-        located = sum(
-            1
-            for f in all_secret_findings
-            if f.path == path_key and f.pattern_name == pattern_key and f.line != 0
-        )
-        gap = distinct - located
-        if gap <= 0:
-            continue
-        for f in unknown_line:
-            if gap <= 0:
-                break
-            if f.path == path_key and f.pattern_name == pattern_key:
-                all_secret_findings.append(f)
-                gap -= 1
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:

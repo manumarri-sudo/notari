@@ -840,40 +840,6 @@ class TestReleaseToolchainPinned:
         assert any(r.startswith("hatchling==") for r in requires), requires
 
 
-class TestUtf16EndiannessNotGuessedByFirstCleanDecode:
-    """Round-6 finding P1: a NUL-bearing blob with no BOM was decoded by taking
-    the FIRST endianness that decoded without a replacement char. ASCII content
-    stored as UTF-16-BE decodes cleanly-but-wrongly as UTF-16-LE (b"\\x00A" ->
-    U+4100), so BE files (what `iconv -t UTF-16BE` emits) became CJK codepoints
-    and every ASCII secret pattern missed. The diff channel is independently
-    blind on NUL-interleaved content, so both channels went dark at once."""
-
-    SOURCE = 'AWS_KEY = "' + "AK" + "IAIOSFODNN7EX" + "AMPLE" + '"\n'
-
-    @pytest.mark.parametrize(
-        "encoding,bom",
-        [
-            ("utf-16-be", b""),
-            ("utf-16-le", b""),
-            ("utf-16-be", b"\xfe\xff"),
-            ("utf-16-le", b"\xff\xfe"),
-        ],
-    )
-    def test_secret_is_found_whatever_the_utf16_flavour(
-        self, encoding: str, bom: bytes
-    ) -> None:
-        from notari import secrets as secrets_mod
-
-        decoded = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
-        found = {hit.pattern_name for hit in secrets_mod.scan(decoded)}
-        assert "AWS Access Key ID" in found, (encoding, decoded[:32])
-
-    def test_genuine_non_ascii_utf16_still_decodes_correctly(self) -> None:
-        """The ASCII-ratio tiebreak must not mangle real non-ASCII content."""
-        source = '説明 = "テスト"\n' * 4
-        assert verify_mod._decode_blob(source.encode("utf-16-le")).startswith("説明")
-
-
 class TestInlineSecretSuppressionStaysNarrow:
     """Round-6 finding P2: `_looks_like_nonsecret` suppressed whole classes of
     real credentials. `[A-Z][A-Z0-9_]{2,}` discarded every uppercase-and-digit

@@ -198,28 +198,6 @@ class TestSuppressionHolesFoundByCrossVendorReview:
         assert secrets_mod.scan("DB_PASSWORD=A1b2C3d4") == []
 
 
-class TestWideEncodingsCannotHideACredential:
-    SOURCE = 'AWS_KEY = "' + _VENDOR + '"\n'
-
-    @pytest.mark.parametrize(
-        "encoding,bom",
-        [
-            ("utf-32-le", b""),
-            ("utf-32-be", b""),
-            ("utf-32-le", b"\xff\xfe\x00\x00"),
-            ("utf-32-be", b"\x00\x00\xfe\xff"),
-        ],
-    )
-    def test_utf32_is_decoded_and_scanned(self, encoding: str, bom: bytes) -> None:
-        """UTF-32 is NUL-bearing, so the diff channel is blind to it exactly as it
-        is to UTF-16, and decoding it as UTF-16 yields NUL-interleaved text that
-        destroys every ASCII pattern. The UTF-32-LE BOM is also a superset of the
-        UTF-16-LE BOM, so BOM order matters."""
-        decoded = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
-        found = {h.pattern_name for h in secrets_mod.scan(decoded)}
-        assert "AWS Access Key ID" in found, (encoding, decoded[:32])
-
-
 class TestBracketCountingIsNotFooledByMalformedGroups:
     """Self-attack on the counting rewrite, before Codex saw it: a plain depth
     counter treats `(` and `[` as interchangeable, so a mismatched pair balanced to
@@ -266,23 +244,6 @@ class TestBracketCountingIsNotFooledByMalformedGroups:
         a call group, a quote just inside the opener, or a dotted receiver. The cost
         is an occasional false positive that lands as review signal, not a block."""
         assert secrets_mod._is_expression_value(value) is False, value
-
-
-class TestCredentialSurvivesMixedScriptEncodings:
-    """The ASCII-ratio tiebreak must not lose an ASCII credential embedded in
-    genuinely non-ASCII content, which is where a ratio heuristic could plausibly
-    pick the wrong width."""
-
-    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
-    def test_ascii_credential_inside_cjk_content_is_found(self, encoding: str) -> None:
-        text = "説明テスト日本語テキスト\nAWS_KEY=" + _VENDOR + "\n"
-        decoded = verify_mod._decode_blob(text.encode(encoding))
-        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(decoded)}
-
-    def test_a_bom_appearing_mid_file_does_not_break_decoding(self) -> None:
-        raw = ("AWS_KEY=" + _VENDOR + "\n").encode("utf-16-le") + "﻿more\n".encode("utf-16-le")
-        decoded = verify_mod._decode_blob(raw)
-        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(decoded)}
 
 
 class TestBlockTierIsNotVoidedByLowConfidenceFilters:
@@ -391,69 +352,6 @@ class TestConfidenceReachesTheHumanFacingOutput:
         assert explain_mod.build_remediations(passport)[0]["kind"] == "secret"
 
 
-class TestMixedEncodingBlobDoesNotHideACredential:
-    """Round-6 wave-3c. I had claimed this class did not reproduce. It does, and the
-    reviewer built the proof: a blob can be a MIXTURE of a wide-encoded region and a
-    plain-ASCII region, so no single decoding preserves both, and the ASCII-ratio
-    tiebreak picks the wide reading because the wide prefix dominates the score."""
-
-    # Assembled at runtime so this file's own text is not credential-shaped.
-    AWS_NAME = "aws_secret" + "_access_key"
-    AWS_SEC = "/AbCdEfGhIjKlMnOpQr" + "/RsTuVwXyZ0123456789A"
-
-    @staticmethod
-    def _scan_views(raw: bytes) -> set[str]:
-        return {
-            h.pattern_name
-            for _label, view in verify_mod._decode_blob_views(raw)[0]
-            for h in secrets_mod.scan(view)
-        }
-
-    def test_wide_prefix_then_ascii_credential_is_still_found(self) -> None:
-        raw = b"A\x00" * 300 + (self.AWS_NAME + "=" + self.AWS_SEC + "\nX").encode()
-        assert "aws-secret-key" in self._scan_views(raw)
-
-    def test_credential_in_the_ascii_region_needs_nul_as_a_space(self) -> None:
-        """Deleting NULs glues the wide region's letters onto the ASCII region, so the
-        `\\b` the anchored patterns require disappears."""
-        raw = b"A\x00" * 8 + (self.AWS_NAME + "=" + self.AWS_SEC).encode()
-        assert "aws-secret-key" in self._scan_views(raw)
-
-    def test_credential_inside_the_wide_region_needs_nul_deleted(self) -> None:
-        """The opposite failure: interleaved NULs split the credential itself into
-        `A K I A ...`, which no pattern matches. Both salvage views are required,
-        because neither alone covers both regions. This one also sits past byte 512,
-        which the old prefix-only NUL probe never looked at."""
-        raw = b"A" * 600 + b"\n" + ('AWS_KEY = "' + _VENDOR + '"\n').encode("utf-16-le")
-        assert "AWS Access Key ID" in self._scan_views(raw)
-
-    def test_mixed_endianness_in_one_blob(self) -> None:
-        """No single decoding is correct, so every plausible wide decoding is a view."""
-        raw = ("A" * 600 + "\n").encode("utf-16-le") + ('AWS_KEY = "' + _VENDOR + '"\n').encode(
-            "utf-16-be"
-        )
-        assert "AWS Access Key ID" in self._scan_views(raw)
-
-    def test_views_are_returned_separately_never_joined(self) -> None:
-        """Joining views let an assignment prefix at the end of one bridge to a value
-        at the start of the next and synthesise a credential present in NEITHER,
-        which would BLOCK a clean change."""
-        raw = ("A" * 17 + "\nAuthorization: Bearer ").encode("latin-1") + b"\x00" + b"4f9KzQ2LmN8PrT7"
-        views, _complete = verify_mod._decode_blob_views(raw)
-        assert len(views) > 1
-        # Labelled, so base and candidate counts can be compared per decoding.
-        assert all(isinstance(label, str) and isinstance(v, str) for label, v in views)
-
-    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
-    def test_genuine_wide_files_report_the_real_line(self, encoding: str) -> None:
-        """The primary decoding comes first and keeps its own numbering, so the line
-        reported for a genuine wide-encoded file is the file's own line."""
-        text = 'AWS_KEY = "' + _VENDOR + '"\n'
-        primary = verify_mod._decode_blob_views(text.encode(encoding))[0][0][1]
-        hits = [h for h in secrets_mod.scan(primary) if h.pattern_name == "AWS Access Key ID"]
-        assert [h.line for h in hits] == [1]
-
-
 class TestAnchoredFindingsAreDemotedNotDeleted:
     """Round-6 wave-3c: suppressing an anchored finding on the strength of its VALUE
     looking placeholder-like deleted real credentials outright. A production password
@@ -504,63 +402,6 @@ class TestConfidenceSurvivesEveryChannel:
         findings = doc["evidence"]["secret_findings"]
         assert findings and all("confidence" in f for f in findings)
 
-    def test_one_credential_is_reported_once_not_once_per_view(self, repo: Path) -> None:
-        """A blob has several views, and the same credential appears in more than one
-        of them at different line numbers. Reporting each view separately produced
-        duplicates whose lines pointed at a decoding rather than at the file, which
-        also broke line-specific waivers."""
-        path = repo / "src" / "wide.txt"
-        path.write_bytes(b"A" * 600 + b"\n" + ('K = "' + _VENDOR + '"\n').encode("utf-16-le"))
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "wide")
-        result = verify_mod.verify(contract=contract, root=repo)
-        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-        assert len(aws) == 1, [(f.path, f.line) for f in aws]
-
-
-class TestViewDedupKeepsEveryDistinctCredential:
-    """Round-6 wave-3d self-attack, found before the reviewer got to it. Collapsing
-    to one finding per (path, pattern) stopped duplicate reporting across views, but
-    it also hid a SECOND distinct credential of the same pattern in a wide-encoded
-    file, where the diff channel is blind and the blob channel is the only witness.
-    The verdict still blocked, so this was an evidence-completeness defect rather
-    than a bypass: a reviewer who fixed the reported line would never learn about
-    the other one.
-
-    The rule is now: for each pattern, take the single view that saw the MOST of it,
-    earliest view winning ties. Within one view distinct lines are distinct
-    credentials; across views they are the same bytes read two ways."""
-
-    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    K2 = "AKIA" + "1234567890" + "ABCDEF"
-
-    def _verify_file(self, repo: Path, name: str, data: bytes) -> object:
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / name).write_bytes(data)
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "add")
-        return verify_mod.verify(contract=contract, root=repo)
-
-    def _aws(self, result: object) -> list[object]:
-        return [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-
-    def test_two_distinct_keys_in_a_wide_file_are_both_reported(self, repo: Path) -> None:
-        data = f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode("utf-16-le")
-        found = self._aws(self._verify_file(repo, "wide.txt", data))
-        assert [f.line for f in found] == [1, 2], [(f.path, f.line) for f in found]
-
-    def test_one_key_in_a_wide_file_is_reported_once(self, repo: Path) -> None:
-        """The duplicate-across-views case the dedup exists for."""
-        data = f'a = "{self.K1}"\n'.encode("utf-16-le")
-        assert len(self._aws(self._verify_file(repo, "wide.txt", data))) == 1
-
-    def test_two_distinct_keys_in_a_plain_file_are_both_reported(self, repo: Path) -> None:
-        data = f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode()
-        found = self._aws(self._verify_file(repo, "plain.txt", data))
-        assert [f.line for f in found] == [1, 2]
-
-
 class TestBaseLineSuppressionSurvivesTheViewsChange:
     """`_base_line_counts` now sums every VIEW of the base blob, which risks
     over-suppressing: if the base's salvage views contribute extra copies of a line,
@@ -592,47 +433,6 @@ class TestBaseLineSuppressionSurvivesTheViewsChange:
         """The reason base-line counting exists at all."""
         result = self._modify(repo, f'a = "{self.K}"\n', f'a = "{self.K}"\nunrelated = 1\n')
         assert not [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-
-
-class TestViewBudgetBoundsTheScanCost:
-    """Views multiply scanning work, and a candidate controls how many large
-    NUL-bearing files a PR touches. Measured before the budget: a 52 MB UTF-16 blob
-    produced 3 views, 16.2s of scanning and 288 MB peak RSS, against roughly 5s for
-    the single-view path. That only DELAYS a verdict rather than forging one, since
-    no verdict means the required check never turns green, but a gate that can be
-    stalled for minutes per file is a denial-of-service worth bounding.
-
-    The budget must degrade LOUDLY: dropped views are reported as a disposition so
-    an incomplete scan is never presented as a clean pass."""
-
-    def test_small_blobs_keep_every_view(self) -> None:
-        raw = ('AWS = "x"\n' * 5).encode("utf-16-le")
-        views, complete = verify_mod._decode_blob_views(raw)
-        assert complete is True
-        assert len(views) > 1
-
-    def test_oversized_blob_drops_views_and_says_so(self) -> None:
-        raw = ("hello world\n" * 300_000).encode("utf-16-le")
-        views, complete = verify_mod._decode_blob_views(raw, max_chars=1024)
-        assert complete is False
-        # The primary decoding is always kept: the budget reduces coverage, it never
-        # leaves the file unscanned.
-        assert len(views) == 1
-
-    def test_dropped_views_are_recorded_as_a_disposition(self, repo: Path) -> None:
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / "big.txt").write_bytes(("hello world\n" * 200_000).encode("utf-16-le"))
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "big")
-        original = verify_mod.DEFAULT_MAX_VIEW_CHARS
-        try:
-            verify_mod.DEFAULT_MAX_VIEW_CHARS = 1024
-            result = verify_mod.verify(contract=contract, root=repo)
-        finally:
-            verify_mod.DEFAULT_MAX_VIEW_CHARS = original
-        assert any("partial-decoding-coverage" in d for d in result.scan_dispositions), (
-            result.scan_dispositions
-        )
 
 
 class TestChannelMergePrefersTheBlockingReading:
@@ -718,17 +518,6 @@ class TestBlockersFromCodexPass3:
         assert result.verdict is Verdict.BLOCK
         assert [f.pattern_name for f in result.secret_findings] == ["AWS Access Key ID"]
 
-    def test_base_counts_are_keyed_by_decoding_label(self) -> None:
-        """Neither summing nor maxing across views is sound: summing over-counts, and
-        a salvage view can FABRICATE copies so maxing over-counts too. Counts are
-        per decoding label, and only the same label may suppress."""
-        views, _ = verify_mod._decode_blob_views(
-            ("header\n" + f"k = {self.K}\n").encode("utf-16")
-        )
-        labels = [label for label, _v in views]
-        assert labels[0] == "primary"
-        assert len(set(labels)) == len(labels), labels
-
     def test_waivers_on_fabricated_salvage_lines_cannot_hide_a_credential(
         self, repo: Path
     ) -> None:
@@ -767,72 +556,12 @@ class TestBlockersFromCodexPass3:
         assert secrets_mod._is_expression_value(value) is is_code, value
 
 
-class TestPrimaryViewSelectionDoesNotLoseASecondCredential:
-    """Self-attack on the pass-3 fix, run while the next review was still going.
-    Making the PRIMARY view authoritative for line numbers fixed the fabricated-line
-    waiver hole, but taking only its hits lost a credential that a file holds in a
-    region the primary decoding cannot read. The primary's hits keep their real
-    lines, and any SURPLUS count from the widest alternate view is reported at line 0:
-    over-reporting at an unknown line is the safe direction, dropping a real
-    credential is not."""
-
-    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    K2 = "AKIA" + "1234567890" + "ABCDEF"
-
-    def test_a_salvage_only_second_credential_is_still_reported(self, repo: Path) -> None:
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        # One key the primary view reads, one only an alternate decoding reveals.
-        (repo / "src" / "mixed.txt").write_bytes(
-            ('a = "' + self.K1 + '"\n').encode() + b"\x00" + ('b = "' + self.K2 + '"\n').encode("utf-16-le")
-        )
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "mixed")
-        result = verify_mod.verify(contract=contract, root=repo)
-        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-        assert result.verdict is Verdict.BLOCK
-        # EXACTLY two: the file holds two credentials. `>= 2` passed while
-        # reconciliation was wrong and emitted three, so it proved nothing about the
-        # property it names.
-        assert len(aws) == 2, [(f.path, f.line) for f in aws]
-
-    def test_a_single_credential_does_not_gain_a_phantom(self, repo: Path) -> None:
-        """The surplus rule must not invent findings when the views agree."""
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / "wide.txt").write_bytes(('a = "' + self.K1 + '"\n').encode("utf-16-le"))
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "wide")
-        result = verify_mod.verify(contract=contract, root=repo)
-        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-        assert len(aws) == 1, [(f.path, f.line) for f in aws]
-
-
 class TestBlockersFromCodexPass5:
     """Three more clean-PASS defects. Two show the same lesson from opposite sides:
     bracket structure is not evidence of code, in ANY of the forms tried."""
 
     K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
     K2 = "AKIA" + "1234567890" + "ABCDEF"
-
-    def test_disjoint_equal_sized_view_hits_keep_both_credentials(self, repo: Path) -> None:
-        """Cardinality subtraction assumed the views' hit sets OVERLAPPED. Two views
-        each holding one DIFFERENT credential gave a surplus of zero, so one was
-        dropped, and a line-specific waiver on the other turned it into a clean PASS.
-        Reconciliation is now per distinct credential, not per count."""
-        import json
-
-        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / "mixed.bin").write_bytes(
-            b"P" * 600 + b"\n" + self.K1.encode() + b"\x00" + ("x " + self.K2).encode("utf-16-le")
-        )
-        (repo / ".notari").mkdir(exist_ok=True)
-        (repo / ".notari" / "exceptions.json").write_text(
-            json.dumps([{"type": "secret", "path": "src/mixed.bin", "line": 2, "reason": "r"}])
-        )
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "mixed")
-        result = verify_mod.verify(contract=contract, root=repo)
-        assert result.verdict is Verdict.BLOCK, (result.verdict, result.reasons)
-        assert result.secret_findings
 
     @pytest.mark.parametrize(
         "line",
@@ -873,66 +602,126 @@ class TestBlockersFromCodexPass5:
             assert hits and all(h.confidence == "low" for h in hits), line
 
 
-class TestFindingOrderIsDeterministic:
-    """Credential identity is a digest, and iterating a set of digests made the
-    finding ORDER depend on hash ordering. A gate whose whole claim is a reproducible
-    verdict must not emit its evidence in a different order run to run. Found by a
-    test that failed on ordering alone while both credentials were present."""
 
-    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    K2 = "AKIA" + "1234567890" + "ABCDEF"
+class TestEncodingIsDecidedByBomOrNotAtAll:
+    """The multi-view scanner is GONE, and this is the contract that replaced it.
 
-    def test_two_credentials_report_in_file_order(self, repo: Path) -> None:
+    It tried to guess the encoding of BOM-less NUL-bearing blobs by decoding them
+    several ways and reconciling the results, and it produced a clean-PASS defect in
+    seven consecutive cross-vendor review rounds. The measurements said why: of 1,879
+    NUL-bearing files in this repository, TWO were genuinely wide-encoded text and
+    1,877 were PNGs, wheels and caches, on which it manufactured 867 phantom
+    credential matches in 45 seconds. Guessing was strictly worse than declining.
+
+    Now: a BOM decides the encoding, no NULs means ordinary text, and NULs without a
+    BOM means binary with no text to scan. The residual is documented in
+    SECURITY-MODEL.md rather than papered over."""
+
+    SOURCE = 'AWS_KEY = "' + _VENDOR + '"\n'
+
+    @pytest.mark.parametrize(
+        "encoding,bom",
+        [
+            ("utf-16-le", b"\xff\xfe"),
+            ("utf-16-be", b"\xfe\xff"),
+            ("utf-32-le", b"\xff\xfe\x00\x00"),
+            ("utf-32-be", b"\x00\x00\xfe\xff"),
+            ("utf-8", b"\xef\xbb\xbf"),
+            ("utf-8", b""),
+        ],
+    )
+    def test_a_bom_or_plain_text_is_decoded_and_scanned(
+        self, encoding: str, bom: bytes
+    ) -> None:
+        text = verify_mod._decode_blob(bom + self.SOURCE.encode(encoding))
+        assert text is not None
+        assert "AWS Access Key ID" in {h.pattern_name for h in secrets_mod.scan(text)}
+
+    def test_utf32_bom_is_tested_before_utf16(self) -> None:
+        """The UTF-32-LE BOM begins with the UTF-16-LE BOM, so checking UTF-16 first
+        would shred a UTF-32 file."""
+        raw = b"\xff\xfe\x00\x00" + self.SOURCE.encode("utf-32-le")
+        text = verify_mod._decode_blob(raw)
+        assert text is not None and text.startswith("AWS_KEY")
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 64,  # a real binary header
+            b"PK\x03\x04" + b"\x00" * 64,  # zip / wheel
+            ('AWS_KEY = "' + _VENDOR + '"\n').encode("utf-16-le"),  # BOM-less wide
+        ],
+    )
+    def test_nul_without_a_bom_has_no_text_to_scan(self, raw: bytes) -> None:
+        assert verify_mod._decode_blob(raw) is None
+
+    def test_binary_does_not_raise_a_scan_disposition(self, repo: Path) -> None:
+        """Load-bearing. A disposition means "incomplete coverage" and fails closed in
+        strict mode, so raising one per binary would block every pull request that
+        adds a logo or a test fixture. Skipping binary must be silent in the verdict
+        and documented in the security model instead."""
         contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / "wide.txt").write_bytes(
-            f'a = "{self.K1}"\nb = "{self.K2}"\n'.encode("utf-16-le")
-        )
+        (repo / "src" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 512)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "add a binary")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.verdict is Verdict.PASS, (result.verdict, result.reasons)
+        assert not result.scan_dispositions, result.scan_dispositions
+
+    def test_a_credential_in_a_bom_bearing_wide_file_still_blocks(self, repo: Path) -> None:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "w.txt").write_bytes(b"\xff\xfe" + self.SOURCE.encode("utf-16-le"))
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "wide")
         result = verify_mod.verify(contract=contract, root=repo)
-        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
-        # EXACT lines, not "equals its own sorted form", which is trivially true for
-        # zero or one finding and so would pass even if a credential were lost.
-        assert [f.line for f in aws] == [1, 2], [f.line for f in aws]
+        assert result.verdict is Verdict.BLOCK
+        assert [f.line for f in result.secret_findings] == [1]
 
-
-class TestPrefixCollapseIsBounded:
-    """Self-attack on the pass-6 fix, run while pass 7 was still going. Collapsing
-    two digests when one value is a PREFIX of the other is how a single physical
-    credential absorbed into a salvage view stops being counted twice. But a bare
-    prefix test is unsound: several patterns are variable-length (Stripe
-    `sk_live_[A-Za-z0-9]{24,}`, HuggingFace `hf_[A-Za-z0-9]{30,}`), so two GENUINELY
-    different credentials can sit in a prefix relationship and the second would be
-    dropped. The collapse also requires a near-identical length."""
-
-    SK_A = "sk_live_" + "A" * 24
-    SK_B = "sk_live_" + "A" * 24 + "B" * 6
-    BEARER = "4f9KzQ2LmN8PrT7"
-
-    def _verify(self, repo: Path, data: bytes, name: str) -> object:
+    def test_two_credentials_on_one_line_are_both_reported(self, repo: Path) -> None:
+        """The channel merge counts rather than set-deduplicates, so two DIFFERENT
+        credentials of one pattern sharing a line both survive."""
+        k2 = "AKIA" + "1234567890" + "ABCDEF"
         contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
-        (repo / "src" / name).write_bytes(data)
+        (repo / "src" / "two.txt").write_text(f'a = "{_VENDOR}" "{k2}"\n')
         _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "add")
-        return verify_mod.verify(contract=contract, root=repo)
+        _git(repo, "commit", "-qm", "two")
+        result = verify_mod.verify(contract=contract, root=repo)
+        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert len(aws) == 2, [(f.line) for f in aws]
 
-    def test_two_prefix_related_credentials_are_both_reported(self, repo: Path) -> None:
-        result = self._verify(
-            repo,
-            ('a = "' + self.SK_A + '"\n').encode()
-            + b"\x00"
-            + ('b = "' + self.SK_B + '"\n').encode("utf-16-le"),
-            "two.bin",
-        )
-        stripe = [f for f in result.secret_findings if f.pattern_name == "Stripe Live Secret Key"]
-        assert len(stripe) == 2, [(f.line) for f in stripe]
 
-    def test_one_credential_absorbing_a_boundary_char_is_reported_once(
-        self, repo: Path
-    ) -> None:
-        result = self._verify(
-            repo, b"Authorization: Bearer " + self.BEARER.encode() + b"\x00x\x00", "one.bin"
-        )
-        bearer = [f for f in result.secret_findings if f.pattern_name == "bearer-token"]
-        assert len(bearer) == 1, [(f.line) for f in bearer]
-        assert bearer[0].line == 1
+class TestQuotedValuesAreLiteralsNotCode:
+    """Round-6 pass-7b: `_strip_one_quote_layer` ran BEFORE the code-shape tests, which
+    erased the one fact that settles the question. A quoted password shaped like a call
+    or an attribute chain was classified as code and disappeared into a clean PASS."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'DB_PASSWORD="N0tAFunction()"',
+            'DB_PASSWORD="Acme.prod[2026!]"',
+            "DB_PASSWORD='hunter(Prod2026)'",
+        ],
+    )
+    def test_quoted_literals_are_reported(self, line: str) -> None:
+        assert secrets_mod.scan(line), line
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "api_key = load_api_key()",
+            "token = request.headers.get('Authorization')",
+            "api_key = args.api_key",
+        ],
+    )
+    def test_unquoted_code_is_still_suppressed(self, line: str) -> None:
+        assert secrets_mod.scan(line) == [], line
+
+    @pytest.mark.parametrize(
+        "line",
+        ['DB_PASSWORD="changeme"', 'DB_PASSWORD="<your-password>"', 'DB_PASSWORD="${VAR}"'],
+    )
+    def test_quoted_placeholders_are_still_suppressed(self, line: str) -> None:
+        """Placeholder checks run BEFORE the quote test, because a quoted stand-in is
+        still a stand-in."""
+        assert secrets_mod.scan(line) == [], line

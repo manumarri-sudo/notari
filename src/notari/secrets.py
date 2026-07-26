@@ -660,6 +660,14 @@ def _looks_like_nonsecret(value: str) -> bool:
     v = _strip_one_quote_layer(value)
     if not v:
         return True
+    # A QUOTED value is a string literal, full stop, so none of the code-shape tests
+    # below may run on it. Stripping the quotes first erased the one fact that settles
+    # the question: a quoted password that merely LOOKS like a call (a word followed by
+    # empty parens) or like an attribute chain (a dotted word with a bracketed suffix)
+    # was classified as code and disappeared into a clean PASS. Placeholder checks
+    # still apply above, because a quoted stand-in is still a stand-in.
+    if v != value.strip():
+        return False
     # The value is an expression, not a literal. A call, a subscript, a dotted
     # attribute chain, or a plain lower_snake_case identifier is code reading a
     # credential, not a credential.

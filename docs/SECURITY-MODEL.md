@@ -194,6 +194,31 @@ real. We do not close them with more regex.
      An entropy gate here would miss real credentials that length plus shape
      catches, so adding one would be a regression, not an improvement.
 
+8. **A credential inside a binary, or inside a wide-encoded file with no BOM, is not
+   scanned.** The secret scanner needs text, and it will only decode text whose
+   encoding is unambiguous: an explicit UTF-8/UTF-16/UTF-32 BOM, or a blob with no NUL
+   bytes. A blob with NUL bytes and no BOM is treated as binary and skipped.
+
+   This is a deliberate retreat from a design that tried to GUESS the encoding of such
+   blobs by decoding them several ways and reconciling the results. That machinery
+   produced a false-negative clean PASS in seven consecutive cross-vendor review
+   rounds, and the measurements explain why it was never worth it: of 1,879 NUL-bearing
+   files in this repository, **two** were genuinely wide-encoded text and 1,877 were
+   PNGs, wheels and caches, on which it manufactured **867 phantom credential matches**
+   and cost 45 seconds. Declining to guess removed all of them.
+
+   Two consequences, stated rather than hidden:
+   - A credential deliberately committed as BOM-less UTF-16 (what `iconv -t UTF-16BE`
+     emits) is not detected. The diff channel is equally blind to it, because git
+     treats the blob as binary and shows no text diff. Note that the common accidental
+     case is still covered: Windows tooling, PowerShell's `Out-File` and
+     `iconv -t UTF-16` all emit a BOM.
+   - Skipping a binary raises **no** scan disposition, which is a departure from how
+     truncation is handled. A disposition means "incomplete coverage" and fails closed
+     in strict mode, so raising one per binary would block every pull request that adds
+     a logo or a test fixture. The gate does not claim to have scanned these files; it
+     simply does not claim to have found nothing in them either.
+
 ## What the limits mean for the claims
 
 - The audit log is **auditor-reviewable evidence**, not a guarantee of
