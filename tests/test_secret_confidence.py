@@ -761,3 +761,39 @@ class TestBlockersFromCodexPass3:
         """`"(" in rest` counted a parenthesis belonging to the password data, so a
         call opener now only counts at the TOP level, outside any string."""
         assert secrets_mod._is_expression_value(value) is is_code, value
+
+
+class TestPrimaryViewSelectionDoesNotLoseASecondCredential:
+    """Self-attack on the pass-3 fix, run while the next review was still going.
+    Making the PRIMARY view authoritative for line numbers fixed the fabricated-line
+    waiver hole, but taking only its hits lost a credential that a file holds in a
+    region the primary decoding cannot read. The primary's hits keep their real
+    lines, and any SURPLUS count from the widest alternate view is reported at line 0:
+    over-reporting at an unknown line is the safe direction, dropping a real
+    credential is not."""
+
+    K1 = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    K2 = "AKIA" + "1234567890" + "ABCDEF"
+
+    def test_a_salvage_only_second_credential_is_still_reported(self, repo: Path) -> None:
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        # One key the primary view reads, one only an alternate decoding reveals.
+        (repo / "src" / "mixed.txt").write_bytes(
+            ('a = "' + self.K1 + '"\n').encode() + b"\x00" + ('b = "' + self.K2 + '"\n').encode("utf-16-le")
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "mixed")
+        result = verify_mod.verify(contract=contract, root=repo)
+        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert result.verdict is Verdict.BLOCK
+        assert len(aws) >= 2, [(f.path, f.line) for f in aws]
+
+    def test_a_single_credential_does_not_gain_a_phantom(self, repo: Path) -> None:
+        """The surplus rule must not invent findings when the views agree."""
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "wide.txt").write_bytes(('a = "' + self.K1 + '"\n').encode("utf-16-le"))
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "wide")
+        result = verify_mod.verify(contract=contract, root=repo)
+        aws = [f for f in result.secret_findings if f.pattern_name == "AWS Access Key ID"]
+        assert len(aws) == 1, [(f.path, f.line) for f in aws]

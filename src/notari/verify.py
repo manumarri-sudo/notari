@@ -1180,14 +1180,23 @@ def verify(
             # where no line number is trustworthy, so it is reported at line 0. That
             # keeps it visible and blocking while making it unmatchable by a
             # line-specific waiver.
-            if per_view[0].get(name):
-                best = per_view[0][name]
-            else:
-                widest: list[tuple[int, str]] = []
-                for found in per_view[1:]:
-                    if len(found.get(name, [])) > len(widest):
-                        widest = found[name]
-                best = [(0, conf) for _, conf in widest]
+            #
+            # Taking ONLY the primary view's hits is not enough either: a file can
+            # hold one credential the primary view reads and a second one that only
+            # an alternate decoding reveals, and the primary's hits alone lose the
+            # second. So the primary's hits are reported with their real lines, and
+            # any SURPLUS count from the widest alternate view is reported at line 0.
+            # Over-reporting a phantom at an unknown line is the safe direction; the
+            # alternative is dropping a real credential.
+            widest: list[tuple[int, str]] = []
+            for found in per_view[1:]:
+                if len(found.get(name, [])) > len(widest):
+                    widest = found[name]
+            primary_hits = per_view[0].get(name, [])
+            best = list(primary_hits)
+            surplus = len(widest) - len(primary_hits)
+            if surplus > 0:
+                best += [(0, conf) for _, conf in widest[-surplus:]]
             # A blocking sighting anywhere wins over a demoted one, so a view that
             # happens to mangle the surrounding syntax cannot downgrade a credential
             # another view read correctly.
