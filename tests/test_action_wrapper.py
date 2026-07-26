@@ -32,6 +32,15 @@ def _git_env(home: Path) -> dict[str, str]:
     and `git` resolve, and a throwaway HOME so we never touch the real one."""
     venv_bin = str(Path(sys.executable).parent)
     env = dict(os.environ)
+    # Scrub every ambient GITHUB_* variable. These tests drive the wrapper, whose
+    # behaviour BRANCHES on the Actions environment, so inheriting the real one means
+    # the same test asserts different things depending on where it runs. Two of them
+    # passed locally and failed on CI for exactly this reason: a GitHub runner exports
+    # GITHUB_EVENT_NAME=pull_request, which tripped the strict-mode trigger check
+    # before the assertion's own subject was ever reached. Each test now opts INTO the
+    # Actions variables it wants.
+    for key in [k for k in env if k.startswith("GITHUB_")]:
+        del env[key]
     env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
     env["HOME"] = str(home)
     env.update(
