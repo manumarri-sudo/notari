@@ -21,7 +21,7 @@ from notari.integrate import (
 
 
 def _registered_commands(t: typer.Typer, prefix: str = "") -> set[str]:
-    """Every command path the Typer app actually exposes, e.g. ``saves`` and
+    """Every command path the Typer app actually exposes, e.g. ``status`` and
     ``audit show``. Group names alone (e.g. ``audit``) are NOT included, since
     they are not runnable commands on their own."""
     names: set[str] = set()
@@ -95,7 +95,7 @@ def fake_integration(tmp_path: Path) -> Integration:
         detect_paths=(),
         target_path_global=tmp_path / "global-rules.md",
         target_path_project=tmp_path / "rules.md",
-        snippet="## Test Notari\n\nRun `notari saves` for stats.",
+        snippet="## Test Notari\n\nRun `notari status` for stats.",
     )
 
 
@@ -106,7 +106,7 @@ def test_install_fresh_creates_file_with_block(fake_integration: Integration) ->
     text = path.read_text()
     assert MARKER_BEGIN in text
     assert MARKER_END in text
-    assert "Run `notari saves`" in text
+    assert "Run `notari status`" in text
 
 
 def test_install_idempotent_when_snippet_unchanged(fake_integration: Integration) -> None:
@@ -125,13 +125,13 @@ def test_install_refreshes_when_snippet_drifted(
     install(fake_integration)
     # corrupt the existing block with an old snippet
     text = fake_integration.target_path_project.read_text()
-    drifted = text.replace("Run `notari saves`", "Run `notari old-command`")
+    drifted = text.replace("Run `notari status`", "Run `notari old-command`")
     fake_integration.target_path_project.write_text(drifted)
 
     path, status = install(fake_integration)
     assert status == "refreshed"
     text = path.read_text()
-    assert "Run `notari saves`" in text
+    assert "Run `notari status`" in text
     assert "notari old-command" not in text
     # still exactly one block
     assert text.count(MARKER_BEGIN) == 1
@@ -222,7 +222,7 @@ def test_claude_code_snippet_includes_core_commands() -> None:
     integ = get_integration("claude-code")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["notari saves", "notari receipts", "notari audit show", "notari audit export"]:
+    for cmd in ["notari receipts", "notari audit show", "notari audit export"]:
         assert cmd in s, f"snippet should reference {cmd}"
 
 
@@ -230,7 +230,7 @@ def test_cursor_snippet_includes_core_commands() -> None:
     integ = get_integration("cursor")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["notari saves", "notari receipts", "notari audit"]:
+    for cmd in ["notari receipts", "notari audit"]:
         assert cmd in s
 
 
@@ -238,7 +238,7 @@ def test_aider_snippet_includes_core_commands() -> None:
     integ = get_integration("aider")
     assert integ is not None
     s = integ.snippet
-    for cmd in ["notari saves", "notari receipts", "notari audit"]:
+    for cmd in ["notari receipts", "notari audit"]:
         assert cmd in s
 
 
@@ -249,7 +249,7 @@ def test_snippets_never_invent_unimplemented_commands() -> None:
     a user's agent rules file."""
     registered = _registered_commands(app)
     # sanity: introspection actually found the CLI's commands
-    assert {"saves", "audit show", "receipts list", "trifecta show"} <= registered
+    assert {"audit show", "receipts list", "trifecta show"} <= registered
 
     checked = 0
     for integ in all_integrations():

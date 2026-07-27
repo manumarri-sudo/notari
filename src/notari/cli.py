@@ -1742,64 +1742,6 @@ def integrate_cmd(
         )
 
 
-@app.command("saves", hidden=True)
-def saves_cmd(
-    window_today: Annotated[
-        bool,
-        typer.Option("--today", help="window: last calendar day (UTC)"),
-    ] = False,
-    window_week: Annotated[
-        bool,
-        typer.Option("--week", help="window: last 7 days (default)"),
-    ] = False,
-    window_month: Annotated[
-        bool,
-        typer.Option("--month", help="window: last 30 days"),
-    ] = False,
-    window_all: Annotated[
-        bool,
-        typer.Option("--all", help="window: every event ever logged"),
-    ] = False,
-    since: Annotated[
-        str | None,
-        typer.Option(
-            "--since",
-            help="window start: ISO date or datetime, e.g. 2026-05-01",
-        ),
-    ] = None,
-    log_path: Annotated[
-        Path | None,
-        typer.Option("--log", "-l", help="audit log path (default: ~/.notari/audit.log.jsonl)"),
-    ] = None,
-    plain: Annotated[
-        bool,
-        typer.Option("--plain", help="strip Rich markup; useful for piping / CI"),
-    ] = False,
-) -> None:
-    """Show what Notari caught for you (verified counts + estimated savings).
-
-    Reads the audit log, classifies every event in the selected window, and
-    prints a summary that separates verified counts (every event type the
-    log emits) from estimated time-saved (with the per-prompt assumption
-    documented inline). Default window is the last 7 days; override with
-    --today, --month, --all, or --since YYYY-MM-DD.
-
-    Streaming O(N) over the log; safe on hundred-MB audit chains.
-    """
-    from notari.saves import compute_saves, format_saves, parse_window
-
-    p = log_path or default_audit_path()
-    start, end = parse_window(
-        today=window_today,
-        week=window_week,
-        month=window_month,
-        all_time=window_all,
-        since=since,
-    )
-    saves = compute_saves(p, window_start=start, window_end=end)
-    Console().print(format_saves(saves, plain=plain))
-
-
 @app.command("scan-prompts", hidden=True)
 def scan_prompts_cmd(
     paths: Annotated[
