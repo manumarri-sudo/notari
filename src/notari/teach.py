@@ -1,101 +1,18 @@
-"""Write promoted Notari lessons into agent instruction files, and render the
-compact fix-prompt / agent-brief surfaces.
+"""Compact agent-facing renderings of a contract and a passport.
 
-Managed-block contract: everything between the notari-lessons markers belongs
-to Notari; everything outside is the user's and is never touched. Updates are
-idempotent, re-running with the same lessons is a byte-for-byte no-op.
+Two surfaces, both paste-ready for a coding agent:
+  fix_prompt(passport)  what to fix after a NEEDS_REVIEW / BLOCK verdict
+  agent_brief(...)      what the approved scope is, before work starts
 
 Token discipline: agents get compressed briefs and fix prompts, never the
-full passport (that stays for humans and auditors).
+full passport, which stays for humans and auditors.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from notari import lessons as lessons_mod
 from notari.explain import build_remediations
-
-BLOCK_START = "<!-- notari-lessons:start -->"
-BLOCK_END = "<!-- notari-lessons:end -->"
-
-_BASE_LINES = [
-    "Before finishing, run `git diff --name-only` and verify every changed "
-    "file belongs to the approved task.",
-    "If a needed change is outside scope, stop and ask for a new signed "
-    "approval instead of sneaking it into this PR.",
-]
-
-AGENT_TARGETS: dict[str, str] = {
-    "claude": "CLAUDE.md",
-    "codex": "AGENTS.md",
-    "cursor": ".cursor/rules/notari-scope.mdc",
-}
-
-
-def render_block(promoted: list[dict[str, str]]) -> str:
-    lines = [
-        BLOCK_START,
-        "## Notari agent lessons",
-        "",
-        "These rules come from prior Notari findings in this repo. Follow them before editing files.",
-        "",
-    ]
-    for entry in promoted:
-        lines.append(f"- {entry['text']}")
-    for base in _BASE_LINES:
-        lines.append(f"- {base}")
-    lines += ["", BLOCK_END]
-    return "\n".join(lines)
-
-
-def update_file(path: Path, promoted: list[dict[str, str]]) -> bool:
-    """Insert or replace the managed block. Returns True if the file changed.
-
-    User content outside the markers is preserved byte-for-byte.
-    """
-    block = render_block(promoted)
-    if path.exists():
-        text = path.read_text()
-        if BLOCK_START in text and BLOCK_END in text:
-            head, _, rest = text.partition(BLOCK_START)
-            _, _, tail = rest.partition(BLOCK_END)
-            new = head + block + tail
-        else:
-            sep = (
-                ""
-                if (not text or text.endswith("\n\n"))
-                else ("\n" if text.endswith("\n") else "\n\n")
-            )
-            new = text + sep + block + "\n"
-    else:
-        new = block + "\n"
-    if path.exists() and path.read_text() == new:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(new)
-    return True
-
-
-def teach(root: Path, agents: list[str]) -> list[tuple[str, bool]]:
-    """Write promoted lessons into each selected agent surface.
-
-    Also updates `.cursorrules` for cursor when the file already exists
-    (never creates the legacy file).
-    """
-    promoted = lessons_mod.load_promoted(root)
-    results: list[tuple[str, bool]] = []
-    for agent in agents:
-        target = AGENT_TARGETS.get(agent)
-        if target is None:
-            results.append((agent, False))
-            continue
-        results.append((target, update_file(root / target, promoted)))
-        if agent == "cursor" and (root / ".cursorrules").exists():
-            results.append((".cursorrules", update_file(root / ".cursorrules", promoted)))
-    return results
-
 
 # --- compact agent-facing renderings ---------------------------------------
 
@@ -143,7 +60,6 @@ def agent_brief(
     allowed_paths: list[str],
     forbidden_paths: list[str],
     review_surfaces: list[str],
-    promoted: list[dict[str, str]],
 ) -> str:
     """The compact brief an agent reads before starting work."""
     lines = [
@@ -154,9 +70,6 @@ def agent_brief(
         lines.append("Never touch: " + ", ".join(forbidden_paths))
     if review_surfaces:
         lines.append("Human review is triggered by edits to: " + ", ".join(review_surfaces))
-    if promoted:
-        lines.append("Repo lessons from prior findings:")
-        lines += [f"- {entry['text']}" for entry in promoted]
     lines.append(
         "Before your final answer: run `git diff --name-only` and confirm "
         "every changed file belongs to the approved task."

@@ -1,10 +1,8 @@
-"""Tests for the learning loop: mistake events, lesson suggestion/promotion,
-managed-block teaching, and the compact agent surfaces.
+"""Tests for the learning loop: mistake events and lesson suggestion/promotion.
 
-Non-negotiables under test: no secret VALUE ever appears in an event,
-lesson, fix prompt, or brief; promotion is human-gated and idempotent;
-`notari teach` never touches user content outside the managed block; and
-the compact surfaces stay compact (token discipline).
+Non-negotiables under test: no secret VALUE ever appears in an event or
+lesson, and promotion is human-gated and idempotent. The compact agent
+surfaces moved to test_teach.py when teach.py lost its lessons half.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from notari.lessons import (
     redact_path,
     suggest,
 )
-from notari.teach import BLOCK_END, BLOCK_START, agent_brief, fix_prompt, teach, update_file
 
 SECRET_VALUE = "AKIA" + "X" * 16  # a value that must never leak into outputs
 
@@ -193,120 +190,3 @@ def test_promote_is_human_gated_and_idempotent(tmp_path: Path):
 
 
 # --- teach (managed block) ----------------------------------------------------
-
-
-def test_update_file_preserves_user_content(tmp_path: Path):
-    target = tmp_path / "CLAUDE.md"
-    target.write_text("# My rules\n\nnever delete prod.\n")
-    promoted = [{"id": "x", "text": "Do not edit workflows."}]
-    assert update_file(target, promoted)
-    text = target.read_text()
-    assert text.startswith("# My rules")
-    assert "never delete prod." in text
-    assert BLOCK_START in text and BLOCK_END in text
-    assert "Do not edit workflows." in text
-    # idempotent: second run is a no-op
-    assert not update_file(target, promoted)
-    # updating lessons rewrites ONLY the block
-    assert update_file(target, [{"id": "y", "text": "Do not update lockfiles."}])
-    text2 = target.read_text()
-    assert "never delete prod." in text2
-    assert "Do not update lockfiles." in text2
-    assert "Do not edit workflows." not in text2
-    assert text2.count(BLOCK_START) == 1
-
-
-def test_teach_writes_selected_targets(tmp_path: Path):
-    promote("no-realistic-credentials", tmp_path)
-    results = dict(teach(tmp_path, ["claude", "cursor"]))
-    assert results["CLAUDE.md"] is True
-    assert results[".cursor/rules/notari-scope.mdc"] is True
-    assert not (tmp_path / "AGENTS.md").exists()
-    assert not (tmp_path / ".cursorrules").exists()  # never created, only updated
-
-
-# --- compact agent surfaces ----------------------------------------------------
-
-
-def test_fix_prompt_is_compact_and_leaks_nothing():
-    p = _passport(
-        out_of_scope=[".github/workflows/deploy.yml"],
-        secret_findings=[{"path": "a.py", "line": 3, "pattern": "AWS Access Key ID"}],
-    )
-    prompt = fix_prompt(p)
-    assert "add rate limiting to login endpoint" in prompt
-    assert "src/auth/**" in prompt
-    assert "do not weaken" in prompt.lower()
-    assert "git diff --name-only" in prompt
-    assert SECRET_VALUE not in prompt
-    assert "verification_run_mac" not in prompt and "provenance" not in prompt
-    assert len(prompt) < 3200  # ~800 tokens
-
-
-# Phrases that would turn the fix prompt into a BYPASS prompt. A fix prompt that
-# ever told an agent to defeat the gate would be self-defeating; guard hard.
-_BYPASS_PHRASES = [
-    "disable notari",
-    "weaken notari",
-    "turn off strict",
-    "remove the notari",
-    "delete the workflow",
-    "delete approver",
-    "change the perimeter",
-    "edit .notari",
-    "ignore notari",
-    "skip notari",
-    "bypass the gate",
-]
-
-
-def test_fix_prompt_never_instructs_bypass():
-    # Exercise every finding kind so all rendered guidance is covered.
-    p = _passport(
-        out_of_scope=["ops.cfg"],
-        forbidden_hits=["src/pay.py"],
-        gate_tamper_hits=[".notari/perimeter.json"],
-        secret_findings=[{"path": "a.py", "line": 1, "pattern": "JWT"}],
-        sensitive_surfaces={"ci": ["ci.yml"]},
-        symlink_changes=[{"path": "l", "status": "A", "target": "../x"}],
-        submodule_changes=[{"path": "vendor", "status": "M"}],
-    )
-    low = fix_prompt(p).lower()
-    for phrase in _BYPASS_PHRASES:
-        assert phrase not in low, f"fix prompt contains bypass phrase: {phrase!r}"
-    # It must positively tell the agent NOT to weaken the gate.
-    assert "do not weaken, bypass, or edit notari" in low
-
-
-def test_agent_brief_never_instructs_bypass():
-    brief = agent_brief(
-        task="t",
-        allowed_paths=["src/**"],
-        forbidden_paths=[".github/workflows/**"],
-        review_surfaces=["ci"],
-        promoted=[{"id": "x", "text": "Do not edit workflows."}],
-    ).lower()
-    for phrase in _BYPASS_PHRASES:
-        assert phrase not in brief, f"agent brief contains bypass phrase: {phrase!r}"
-
-
-def test_fix_prompt_caps_findings():
-    p = _passport(out_of_scope=[f"f{i}.py" for i in range(12)])
-    prompt = fix_prompt(p)
-    assert "and 7 more" in prompt
-    assert len(prompt) < 3200
-
-
-def test_agent_brief_is_compact():
-    brief = agent_brief(
-        task="add rate limiting to login endpoint",
-        allowed_paths=["src/auth/**", "tests/auth/**"],
-        forbidden_paths=[".github/workflows/**", "migrations/**", ".notari/**"],
-        review_surfaces=["ci", "lockfiles"],
-        promoted=[{"id": "x", "text": "Do not edit workflows."}],
-    )
-    assert brief.startswith("Task: add rate limiting")
-    assert "Never touch: .github/workflows/**" in brief
-    assert "Do not edit workflows." in brief
-    assert "git diff --name-only" in brief
-    assert len(brief) < 1200  # ~300 tokens

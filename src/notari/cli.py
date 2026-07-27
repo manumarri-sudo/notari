@@ -52,7 +52,7 @@ app = typer.Typer(
     help="notari change control: verify AI-written diffs against the human-approved task.\n\n"
     "Day one: notari init (guided setup), then notari begin / verify / explain.\n"
     "Pause anytime: notari off (bounded + logged); notari on resumes.\n\n"
-    "Advanced commands (lessons, teach, receipts, trifecta, pins, hooks, ...) stay\n"
+    "Advanced commands (lessons, receipts, trifecta, pins, hooks, ...) stay\n"
     "available by name; `notari <command> --help` works for all of them.",
 )
 
@@ -970,8 +970,8 @@ def lessons_main(
     Notari turns every blocked AI PR into a lesson future agents can learn
     from: `notari verify` records structured mistake events locally (never
     code, diffs, or secret values), this command aggregates the repeats, and
-    `notari lessons promote <id>` + `notari teach` write the human-approved
-    lessons into agent instruction files.
+    and `notari lessons promote <id>` records the human-approved ones, which
+    `notari agent-brief` then surfaces to the agent before it starts work.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -1008,7 +1008,7 @@ def lessons_promote_cmd(
 ) -> None:
     """Promote a suggested lesson into the repo's lesson store (human-gated).
 
-    Idempotent. Run `notari teach` afterwards to write promoted lessons into
+    Idempotent. Promoted lessons are surfaced by `notari agent-brief`, which
     agent instruction files (CLAUDE.md, AGENTS.md, Cursor rules).
     """
     from notari import lessons as lessons_mod
@@ -1023,36 +1023,6 @@ def lessons_promote_cmd(
     verb = "promoted" if newly else "already promoted"
     out.print(f"[green]✓[/green] {verb}: {lesson_id}")
     out.print(f"  {text}")
-    out.print("  now run [cyan]notari teach[/cyan] to write it into agent instruction files.")
-
-
-@app.command("teach", hidden=True)
-def teach_cmd(
-    agents: Annotated[
-        str,
-        typer.Option("--agents", help="comma-separated targets: claude, codex, cursor."),
-    ] = "claude,codex,cursor",
-) -> None:
-    """Write promoted lessons into agent instruction files (managed block).
-
-    Updates CLAUDE.md (Claude Code), AGENTS.md (Codex and generic agents),
-    and .cursor/rules/notari-scope.mdc (plus .cursorrules when it already
-    exists). Only the notari-lessons block is touched; user content outside
-    it is preserved. Idempotent.
-    """
-    from notari import teach as teach_mod
-
-    root = _lessons_root()
-    wanted = [a.strip() for a in agents.split(",") if a.strip()]
-    unknown = [a for a in wanted if a not in teach_mod.AGENT_TARGETS]
-    out = Console()
-    if unknown:
-        out.print(
-            f"[red]unknown agent(s): {', '.join(unknown)}[/red], supported: claude, codex, cursor"
-        )
-        raise typer.Exit(code=2)
-    for target, changed in teach_mod.teach(root, wanted):
-        out.print(f"  {'updated' if changed else 'unchanged'}: {target}")
 
 
 def _emit_fix_prompt(passport_file: Path | None) -> None:
@@ -1080,7 +1050,6 @@ def _emit_fix_prompt(passport_file: Path | None) -> None:
 def _emit_agent_brief() -> None:
     """Shared by `notari agent-brief` and `notari explain --agent-brief`."""
     from notari import contract as contract_mod
-    from notari import lessons as lessons_mod
     from notari import perimeter as perimeter_mod
     from notari import teach as teach_mod
 
@@ -1098,7 +1067,6 @@ def _emit_agent_brief() -> None:
             allowed_paths=list(contract.allowed_paths),
             forbidden_paths=list(perimeter.forbidden_paths) if perimeter else [],
             review_surfaces=list(perimeter.review_surfaces) if perimeter else [],
-            promoted=lessons_mod.load_promoted(root),
         )
     )
 
