@@ -1686,6 +1686,13 @@ def classify_sensitive_surface(path: str) -> str | None:
                   (.notari/lessons.json, .notari/mistakes.jsonl). Advisory, never a
                   security proof; an edit surfaces for review but never changes a
                   verdict.
+
+                  Legacy as of the loop-surface removal: Notari no longer writes
+                  either file. The category is kept deliberately rather than
+                  deleted, because `.notari/` is exempt from the scope check
+                  below, so these two paths returning None would mean a PR that
+                  creates them is neither scope-checked nor surfaced for review.
+                  Keeping it costs one branch and preserves a review surface.
     """
     p = path.removeprefix("./")
     base = p.rsplit("/", 1)[-1]

@@ -52,7 +52,7 @@ app = typer.Typer(
     help="notari change control: verify AI-written diffs against the human-approved task.\n\n"
     "Day one: notari init (guided setup), then notari begin / verify / explain.\n"
     "Pause anytime: notari off (bounded + logged); notari on resumes.\n\n"
-    "Advanced commands (lessons, receipts, trifecta, pins, hooks, ...) stay\n"
+    "Advanced commands (receipts, trifecta, pins, hooks, ...) stay\n"
     "available by name; `notari <command> --help` works for all of them.",
 )
 
@@ -84,11 +84,6 @@ audit_app = typer.Typer(
     help="see what got blocked / allowed / asked.",
 )
 app.add_typer(audit_app, name="audit", rich_help_panel="Health & evidence")
-lessons_app = typer.Typer(
-    invoke_without_command=True,
-    help="turn repeated agent mistakes into lessons future agents learn from.",
-)
-app.add_typer(lessons_app, name="lessons", hidden=True)
 decay_app = typer.Typer(
     no_args_is_help=True,
     help="track permissions that erode without reinforcement (Permission Decay framework).",
@@ -453,16 +448,6 @@ def verify_cmd(
         )
         signed = " [dim](signed)[/dim]" if gate_pem else ""
         console.print(f"[dim]passport: {md_path} · {json_path}[/dim]{signed}")
-
-    # Post-decision learning: record structured mistake events locally so
-    # `notari lessons` can aggregate repeats. Never influences the verdict,
-    # and a recording failure can never fail the gate open or closed.
-    try:
-        from notari import lessons as lessons_mod
-
-        lessons_mod.record_mistakes(passport_mod.build_passport(result), root)
-    except Exception:
-        pass
 
     out = Console()  # stdout
     if as_json:
@@ -949,80 +934,13 @@ def explain_cmd(
         print(rendered)
 
 
-def _lessons_root() -> Path:
+def _repo_root_or_cwd() -> Path:
     from notari import contract as contract_mod
 
     try:
         return contract_mod.repo_root()
     except Exception:
         return Path.cwd()
-
-
-@lessons_app.callback()
-def lessons_main(
-    ctx: typer.Context,
-    as_json: Annotated[
-        bool, typer.Option("--json", help="machine-readable output for piping.")
-    ] = False,
-) -> None:
-    """Show repeated agent mistakes in this repo and the lesson each suggests.
-
-    Notari turns every blocked AI PR into a lesson future agents can learn
-    from: `notari verify` records structured mistake events locally (never
-    code, diffs, or secret values), this command aggregates the repeats, and
-    and `notari lessons promote <id>` records the human-approved ones, which
-    `notari agent-brief` then surfaces to the agent before it starts work.
-    """
-    if ctx.invoked_subcommand is not None:
-        return
-    from notari import lessons as lessons_mod
-
-    root = _lessons_root()
-    patterns = lessons_mod.suggest(lessons_mod.load_events(root))
-    out = Console()
-    if as_json:
-        out.print_json(data={"patterns": patterns, "promoted": lessons_mod.load_promoted(root)})
-        return
-    if not patterns:
-        out.print(
-            "no recorded agent mistakes yet, they accumulate automatically "
-            "when `notari verify` returns BLOCK or NEEDS_REVIEW."
-        )
-        return
-    out.print("[bold]Repeated agent mistakes in this repo:[/bold]\n")
-    promoted_ids = {e["id"] for e in lessons_mod.load_promoted(root)}
-    for n, p in enumerate(patterns, start=1):
-        mark = " [green](promoted)[/green]" if p["lesson_id"] in promoted_ids else ""
-        sev_icon = {"block": "⛔", "policy_candidate": "🔒", "warn": "⚠️", "inform": "ℹ️"}.get(
-            p["severity"], "•"
-        )
-        out.print(f"{n}. {sev_icon} {p['headline']}  [dim]({p['severity']})[/dim]")
-        out.print(f"   Seen: {p['count']} time(s) · last {p['last_seen'][:10]}{mark}")
-        out.print(f"   Suggested lesson: {p['lesson']}")
-        out.print(f"   Promote it: [cyan]{p['promote_command']}[/cyan]\n")
-
-
-@lessons_app.command("promote")
-def lessons_promote_cmd(
-    lesson_id: Annotated[str, typer.Argument(help="lesson id from `notari lessons`.")],
-) -> None:
-    """Promote a suggested lesson into the repo's lesson store (human-gated).
-
-    Idempotent. Promoted lessons are surfaced by `notari agent-brief`, which
-    agent instruction files (CLAUDE.md, AGENTS.md, Cursor rules).
-    """
-    from notari import lessons as lessons_mod
-
-    root = _lessons_root()
-    out = Console()
-    try:
-        newly, text = lessons_mod.promote(lesson_id, root)
-    except KeyError:
-        out.print(f"[red]unknown lesson id '{lesson_id}'[/red], run `notari lessons` for the list.")
-        raise typer.Exit(code=2) from None
-    verb = "promoted" if newly else "already promoted"
-    out.print(f"[green]✓[/green] {verb}: {lesson_id}")
-    out.print(f"  {text}")
 
 
 def _emit_fix_prompt(passport_file: Path | None) -> None:
@@ -1053,7 +971,7 @@ def _emit_agent_brief() -> None:
     from notari import perimeter as perimeter_mod
     from notari import teach as teach_mod
 
-    root = _lessons_root()
+    root = _repo_root_or_cwd()
     out = Console()
     try:
         contract = contract_mod.load(root)
@@ -1092,9 +1010,9 @@ def fix_prompt_cmd(
 def agent_brief_cmd() -> None:
     """Emit the compact brief an agent should read before starting work.
 
-    Approved task and scope, forbidden paths, human-review surfaces, promoted
-    repo lessons, and the final self-check, small enough to paste at the top
-    of any agent session. Alias for `notari explain --agent-brief`.
+    Approved task and scope, forbidden paths, human-review surfaces, and the
+    final self-check, small enough to paste at the top of any agent session.
+    Alias for `notari explain --agent-brief`.
     """
     _emit_agent_brief()
 
