@@ -381,42 +381,6 @@ def check_audit_chain_intact(audit_path: Path | None = None) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
-def check_self_improvement_signals() -> CheckResult:
-    """Surface the highest-severity `notari learn` suggestion as a
-    doctor check so silent self-improvement signals don't sit unread.
-    Returns PASS when there's nothing actionable; WARN with a pointer
-    to `notari learn` when there is.
-    """
-    try:
-        from notari.learn import analyze
-
-        suggestions, _ = analyze(since_days=7)
-    except Exception as e:
-        return CheckResult(
-            "self-improvement",
-            PASS,
-            f"learn module not loaded ({type(e).__name__})",
-        )
-    if not suggestions:
-        return CheckResult("self-improvement", PASS, "no actionable signals in the last 7d")
-    high = [s for s in suggestions if s.severity == "high"]
-    if high:
-        top = high[0]
-        return CheckResult(
-            "self-improvement",
-            WARN,
-            f"{len(suggestions)} suggestion(s); top: {top.title}",
-            fix=f"see all: notari learn  ·  top action: {top.paste_command}",
-        )
-    top = suggestions[0]
-    return CheckResult(
-        "self-improvement",
-        PASS,
-        f"{len(suggestions)} medium/low suggestion(s); top: {top.title}",
-        fix="see all: notari learn",
-    )
-
-
 def check_otel_dual_write() -> CheckResult:
     """Surface OTel dual-write failures, if any, since process start.
 
@@ -501,7 +465,6 @@ def run_doctor(
     report.add(check_claude_hook_installed())
     report.add(check_otel_dual_write())
     report.add(check_permission_decay())
-    report.add(check_self_improvement_signals())
     for r in check_upstream_executables(cfg):
         report.add(r)
     return report
