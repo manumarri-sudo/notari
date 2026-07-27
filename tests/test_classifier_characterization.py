@@ -159,3 +159,41 @@ def test_critical_never_softens_under_bypass() -> None:
         if attended is Risk.CRITICAL and bypassed is not Risk.CRITICAL:
             softened.append(f"{case_id}: {attended.value} -> {bypassed.value}")
     assert not softened, "bypass mode softened a CRITICAL verdict: " + "; ".join(softened)
+
+
+def test_policy_override_applies_and_no_longer_expires(
+    tmp_path: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `[policy]` override applies, and its age is irrelevant.
+
+    This case is not in the golden matrix because it needs a config file, but
+    it pins the one classifier behaviour the loop extraction was expected to
+    change, so it is worth stating explicitly.
+
+    Permission Decay used to sit here: classify_event called
+    DecayStore.record_use and, if the permission had gone stale, returned the
+    tool's natural risk instead of the override. Removing decay.py was approved
+    as a deliberate loosening.
+
+    It turned out not to be one. record_use set `last_reaffirmed = now` before
+    returning, so the `permission.is_decayed` that classify_event checked was
+    always False; the correct answer came back in the discarded `was_decayed`
+    tuple element. The fallback had never fired, and the characterization
+    matrix showed zero verdict changes when the block was deleted.
+
+    So the property below describes both the old and the new behaviour: an
+    override applies. If anyone reinstates decay, this test says out loud that
+    doing so is a behaviour change, not a bug fix restoring a lost feature.
+    """
+    import tempfile
+
+    home = Path(tempfile.mkdtemp())
+    cfg = home / "config.toml"
+    cfg.write_text('[session]\nintent = "test"\nscope = []\n\n[policy]\nEdit = "low"\n')
+    monkeypatch.setenv("NOTARI_HOME", str(home))
+    monkeypatch.setenv("NOTARI_CONFIG", str(cfg))
+
+    risk, reason, _ = classify_event("Edit", {"file_path": "src/app.py"})
+    assert risk is Risk.LOW, f"a [policy] override did not apply: {risk.value} ({reason})"
+    assert "override" in reason.lower()

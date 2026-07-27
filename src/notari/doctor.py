@@ -406,48 +406,6 @@ def check_otel_dual_write() -> CheckResult:
     )
 
 
-def check_permission_decay() -> CheckResult:
-    """Surface decayed Notari permissions if any exist."""
-    try:
-        from notari import decay as _decay  # local import; optional path
-
-        store = _decay.DecayStore.load()
-    except Exception as e:
-        return CheckResult(
-            "permission decay",
-            WARN,
-            f"could not read decay store: {e}",
-            fix="Inspect ~/.notari/permissions.json manually.",
-        )
-    decayed = store.decayed()
-    approaching = store.approaching()
-    if decayed:
-        names = ", ".join(p.pattern for p in decayed[:5])
-        more = "" if len(decayed) <= 5 else f", +{len(decayed) - 5} more"
-        return CheckResult(
-            "permission decay",
-            WARN,
-            f"{len(decayed)} decayed: {names}{more}",
-            fix="Run `notari decay show` for the full list, "
-            "`notari decay reaffirm <pattern>` to refresh, or "
-            "`notari decay forget <pattern>` to retire.",
-        )
-    if approaching:
-        return CheckResult(
-            "permission decay",
-            PASS,
-            f"healthy · {len(approaching)} approaching window",
-        )
-    total = len(store.all())
-    if total == 0:
-        return CheckResult(
-            "permission decay",
-            PASS,
-            "no tracked permissions yet (auto-registered on first override)",
-        )
-    return CheckResult("permission decay", PASS, f"{total} healthy")
-
-
 def run_doctor(
     config_path: Path | None = None,
 ) -> DoctorReport:
@@ -464,7 +422,6 @@ def run_doctor(
     report.add(check_audit_chain_intact(audit_path=audit_path))
     report.add(check_claude_hook_installed())
     report.add(check_otel_dual_write())
-    report.add(check_permission_decay())
     for r in check_upstream_executables(cfg):
         report.add(r)
     return report

@@ -317,30 +317,6 @@ def classify_event(
         user_override = cfg.policy.get(tool_name)
 
     if user_override is not None:
-        # Permission Decay: a per-tool policy override is a permission the
-        # user granted to themselves. Track it. If it's been dormant past
-        # its decay window, ignore the override and let the default fire,
-        # AND emit an audit signal so the user sees the fall-back.
-        from notari import decay as _decay  # local import to avoid cycles
-
-        store = _decay.DecayStore.load()
-        # determine the natural risk of the tool BEFORE the override so
-        # we can pick the right decay window (downgrades from critical
-        # decay faster than downgrades from medium).
-        natural = classify(tool_name)
-        kind = _decay.policy_kind(natural.value, user_override.value)
-        permission, was_decayed = store.record_use(kind, tool_name)
-        if permission.is_decayed:
-            # decayed - fall through to default-classifier path. Reason
-            # explains why the override didn't apply.
-            return (
-                natural,
-                f"policy override decayed ({permission.age_days}d > "
-                f"{permission.decay_after_days}d window) - falling back "
-                f"to default {natural.value}; reaffirm with: "
-                f"notari decay reaffirm {tool_name}",
-                "",
-            )
         return user_override, "user policy override", ""
 
     if tool_name in DEFAULT_BUILTIN_RISK:

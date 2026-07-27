@@ -33,7 +33,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from notari import decay as decay_mod
 from notari import telemetry as tel
 from notari._version import __version__
 from notari.adapters import claude_code as cc_adapter
@@ -84,11 +83,6 @@ audit_app = typer.Typer(
     help="see what got blocked / allowed / asked.",
 )
 app.add_typer(audit_app, name="audit", rich_help_panel="Health & evidence")
-decay_app = typer.Typer(
-    no_args_is_help=True,
-    help="track permissions that erode without reinforcement (Permission Decay framework).",
-)
-app.add_typer(decay_app, name="decay", hidden=True)
 telemetry_app = typer.Typer(
     no_args_is_help=True,
     help="opt-in anonymous usage telemetry.",
@@ -3810,159 +3804,6 @@ def session_close_cmd(
     from notari.receipt import emit_session_close
 
     emit_session_close(session_id, cwd, reason)
-
-
-# --------------------------------------------------------------------------
-# decay - Permission Decay framework
-# --------------------------------------------------------------------------
-
-
-@decay_app.command("show")
-def decay_show(
-    all_: Annotated[
-        bool,
-        typer.Option("--all", help="show healthy permissions too, not just decayed/approaching"),
-    ] = False,
-) -> None:
-    """List tracked permissions with decay status.
-
-    A permission decays when it has not been used in
-    `decay_after_days`. Decayed permissions are ignored at the gate
-    (the default risk fires) until you run `notari decay reaffirm`.
-    """
-    out = Console()
-    store = decay_mod.DecayStore.load()
-    perms = store.all()
-    if not perms:
-        out.print("[dim]no tracked permissions yet.[/dim]")
-        out.print(
-            "  permissions register the first time a config policy "
-            "override fires; check back after running Claude Code."
-        )
-        return
-
-    decayed = sorted(store.decayed(), key=lambda p: p.age_days, reverse=True)
-    approaching = sorted(store.approaching(), key=lambda p: p.days_left)
-    healthy = [p for p in perms if not p.is_decayed and p not in approaching]
-
-    if decayed:
-        out.print(f"[bold red]decayed ({len(decayed)})[/bold red] [dim]- action required[/dim]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("age (d)", justify="right")
-        t.add_column("window", justify="right")
-        t.add_column("uses", justify="right")
-        t.add_column("decay_action")
-        for p in decayed:
-            t.add_row(
-                p.kind,
-                p.pattern,
-                f"[red]{p.age_days}[/red]",
-                str(p.decay_after_days),
-                str(p.use_count),
-                p.decay_action,
-            )
-        out.print(t)
-        out.print()
-
-    if approaching:
-        out.print(f"[yellow]approaching decay ({len(approaching)})[/yellow]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("days left", justify="right")
-        t.add_column("uses", justify="right")
-        for p in approaching:
-            t.add_row(p.kind, p.pattern, f"[yellow]{p.days_left}[/yellow]", str(p.use_count))
-        out.print(t)
-        out.print()
-
-    if all_ and healthy:
-        out.print(f"[green]healthy ({len(healthy)})[/green]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("days left", justify="right")
-        t.add_column("uses", justify="right")
-        t.add_column("last use", style="dim")
-        for p in healthy:
-            t.add_row(
-                p.kind,
-                p.pattern,
-                f"[green]{p.days_left}[/green]",
-                str(p.use_count),
-                str(p.last_use)[:19],
-            )
-        out.print(t)
-    elif healthy and not all_:
-        out.print(
-            f"[dim]+ {len(healthy)} healthy permission(s) (notari decay show --all to see)[/dim]"
-        )
-
-
-@decay_app.command("reaffirm")
-def decay_reaffirm(
-    pattern: Annotated[str, typer.Argument(help="tool pattern to reaffirm")],
-    kind: Annotated[
-        str,
-        typer.Option("--kind", help="permission kind (default: best-match policy)"),
-    ] = "",
-) -> None:
-    """Bump a permission's last_reaffirmed timestamp without using it."""
-    store = decay_mod.DecayStore.load()
-    out = Console()
-    if kind:
-        p = store.reaffirm(kind, pattern)
-        if p is None:
-            out.print(f"[yellow]no permission found at {kind}:{pattern}[/yellow]")
-            raise typer.Exit(code=1)
-        out.print(
-            f"[green]reaffirmed[/green] {p.key}  [dim](age 0d, {p.decay_after_days}d window)[/dim]"
-        )
-        return
-    # best-match: any kind matching the pattern
-    matches = [p for p in store.all() if p.pattern == pattern]
-    if not matches:
-        out.print(f"[yellow]no permission found for pattern '{pattern}'[/yellow]")
-        raise typer.Exit(code=1)
-    for m in matches:
-        store.reaffirm(m.kind, m.pattern)
-    out.print(
-        f"[green]reaffirmed[/green] {len(matches)} permission(s) matching pattern '{pattern}'"
-    )
-
-
-@decay_app.command("forget")
-def decay_forget(
-    pattern: Annotated[str, typer.Argument(help="tool pattern to drop")],
-    kind: Annotated[str, typer.Option("--kind")] = "",
-) -> None:
-    """Drop a tracked permission entirely (re-registers on next use)."""
-    store = decay_mod.DecayStore.load()
-    out = Console()
-    if kind:
-        if store.forget(kind, pattern):
-            out.print(f"[green]dropped[/green] {kind}:{pattern}")
-        else:
-            out.print(f"[yellow]no permission at {kind}:{pattern}[/yellow]")
-            raise typer.Exit(code=1)
-        return
-    matches = [p for p in store.all() if p.pattern == pattern]
-    for m in matches:
-        store.forget(m.kind, m.pattern)
-    out.print(f"[green]dropped[/green] {len(matches)} permission(s)")
-
-
-# --------------------------------------------------------------------------
-# version
-# --------------------------------------------------------------------------
-
-
-@app.command(rich_help_panel="Health & evidence")
-def version() -> None:
-    """Print the notari version."""
-    console.print(f"notari {__version__}")
 
 
 # --------------------------------------------------------------------------
