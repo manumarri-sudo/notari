@@ -41,9 +41,20 @@ coverage.xml
 *.swo
 .DS_Store
 
-# --- Notari runtime artifacts (NEVER commit) ---
-# The signing key is per-installation and must never be checked in.
-.notari/
+# --- Notari runtime artifacts ---
+# Ignoring ALL of .notari/ was wrong, and it is why this repo could never use its own
+# change control: the signed perimeter and contract MUST be committed for a reviewer
+# to verify a PR against them, and they were unreachable behind this rule. Only the
+# private keys and local runtime state stay out.
+.notari/keys/
+.notari/*.pem
+.notari/pause.json
+.notari/approvals.json
+.notari/overnight.json
+.notari/audit.log.jsonl*
+.notari/passport.json
+.notari/passport.md
+.notari/status-fingerprint
 ~/.notari/
 
 # Audit logs are user data with timestamps; keep out of source control.

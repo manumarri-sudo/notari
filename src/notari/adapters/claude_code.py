@@ -415,7 +415,13 @@ def _writes_to_gate_state(cmd: str) -> bool:
     """
     if not cmd:
         return False
-    if not any(verb in cmd for verb in _WRITE_VERBS):
+    # Strip redirects that do not write to a FILE before looking for a write verb.
+    # `2>&1` duplicates a descriptor and `2>/dev/null` discards, and counting either
+    # as a write meant an ordinary READ of a gate file was denied whenever it carried
+    # a stderr redirect. Caught by this gate blocking a `git check-ignore ... 2>&1`.
+    probe = re.sub(r"\d*>&\d+", " ", cmd)
+    probe = re.sub(r"\d*>+\s*/dev/(null|stderr|stdout)", " ", probe)
+    if not any(verb in probe for verb in _WRITE_VERBS):
         return False
     for token in re.split(r"[\s;|&()<>\"']+", cmd):
         candidate = token.strip()
