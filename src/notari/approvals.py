@@ -8,7 +8,6 @@ the TTL, the gate consumes the approval and lets it through (one-shot).
 Why one-shot:
   - A multi-use approval is just a config-file edit; we already have that
     via `[policy]` overrides.
-  - A multi-use approval implicitly bypasses Permission Decay.
   - One-shot matches the human's mental model: "yes, just this one time."
 
 Approval is keyed by `(tool_name, args_digest)` - args_digest is SHA-256

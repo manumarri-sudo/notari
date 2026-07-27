@@ -145,13 +145,6 @@ description = """Sub-agent spawns and inter-agent handoffs carry a payload hash 
 notari_event_types = ["agent.handoff.out", "agent.handoff.in", "agent.cascade.affected"]
 
 [[controls]]
-standard = "AIUC-1 Accountability"
-code = "AIUC-ACC-02"
-title = "Permission decay (stale grants self-disable)"
-description = """Per-tool policy overrides decay if not reaffirmed. Dormant permissions silently downgrade to defaults; the audit log records every downgrade."""
-notari_event_types = ["policy.decayed"]
-
-[[controls]]
 standard = "AIUC-1 Society"
 code = "AIUC-SOC-01"
 title = "Operator self-flagged uncertainty surfaced"
@@ -268,8 +261,8 @@ notari_event_types = ["session.open"]
 standard = "SOC 2 Common Criteria"
 code = "CC6.3"
 title = "Authorized access revoked when no longer needed"
-description = """Access is revoked when no longer required. Notari's Permission Decay framework decays per-tool overrides if not reaffirmed; one-shot approval tokens self-revoke after TTL or single use."""
-notari_event_types = ["policy.decayed"]
+description = """Access is revoked when no longer required. One-shot approval tokens self-revoke after their TTL expires or after a single use, and hardware-attested approvals are recorded per use."""
+notari_event_types = ["approve.biometric.ok", "approve.biometric.deny"]
 
 [[controls]]
 standard = "SOC 2 Common Criteria"

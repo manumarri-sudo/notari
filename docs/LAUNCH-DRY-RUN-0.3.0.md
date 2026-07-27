@@ -1,5 +1,12 @@
 # Launch dry-run, Notari 0.3.0
 
+> **Historical record, do not edit the results below.** This captures real output
+> from 2026-07-08. The loop surface it exercises (`notari lessons`, `notari teach`,
+> `notari learn`, `notari saves`, `notari insights`, `notari decay`,
+> `notari journal`) was removed on 2026-07-27, so those commands no longer exist.
+> The results are left verbatim because rewriting a dated record to match today's
+> code would defeat the point of having recorded it.
+
 Real command results from a pre-alpha release dry-run, run against the **built
 and clean-installed wheel** (not the source tree), on 2026-07-08. This exists so
 the launch does not rely on commit-message claims: the full loop

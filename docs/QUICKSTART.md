@@ -133,21 +133,17 @@ agent exactly what to revert, split, or ask approval for, without dumping the fu
 passport into context. (`--format html` writes a click-to-copy page for a
 non-technical reviewer.)
 
-## 7. Turn repeated failures into repo lessons
+## 7. Brief the next agent before it starts
 
 ```bash
-notari lessons
-notari lessons promote <lesson-id>
-notari teach --agents claude,codex,cursor
 notari agent-brief
 ```
 
-`notari lessons` aggregates the mistakes recorded locally in `.notari/mistakes.jsonl`
-and suggests a short, reusable lesson for each repeated pattern. Promote the ones you
-agree with, then `notari teach` writes them into `CLAUDE.md`, `AGENTS.md`, or Cursor
-rules inside a managed block (your own content is preserved). Future agents read them
-before they start. **This is local by default, no code, diffs, prompts, or secret
-values ever leave your machine, and no lesson is applied without your promotion.**
+`notari agent-brief` renders the approved task, the allowed scope, the forbidden
+paths, and the surfaces that trigger human review, compact enough to paste at the
+top of an agent session. Handing it over before work starts is cheaper than
+explaining a BLOCK afterwards. **This is local by default, no code, diffs,
+prompts, or secret values ever leave your machine.**
 
 ## 8. Ask what is still missing for a *real* boundary
 

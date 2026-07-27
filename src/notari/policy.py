@@ -433,7 +433,7 @@ CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
 # common credential-read shapes the LOW classifier was missing.
 #
 # These are returned as HIGH (not LOW) so the operator sees them once, and
-# the audit log carries the explicit `private_data_read` reason so insights
+# the audit log carries the explicit `private_data_read` reason so readers
 # can later spot suspicious patterns.
 PRIVATE_READ_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
     # Bare / piped / redirected dump only. `printenv PATH` (a single named

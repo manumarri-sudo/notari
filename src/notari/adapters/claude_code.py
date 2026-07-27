@@ -1342,10 +1342,10 @@ def self_test() -> tuple[bool, str]:
     Cached in-process via the NOTARI_SELF_TEST_DONE module global so
     subsequent calls are free. Skippable via NOTARI_NO_SELF_TEST=1.
 
-    Why this exists: the journal parser was silently broken for ~3
-    weeks because nothing checked that the post-condition (real turn
-    counts in the journal) was holding. Self-test on startup is the
-    fix-loud-not-fix-silent pattern applied to the classifier.
+    Why this exists: a parser in this codebase was silently broken for
+    ~3 weeks because nothing checked that its post-condition was still
+    holding. Self-test on startup is the fix-loud-not-fix-silent pattern
+    applied to the classifier.
     """
     if os.environ.get("NOTARI_NO_SELF_TEST"):
         return True, "skipped via NOTARI_NO_SELF_TEST"

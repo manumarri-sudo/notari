@@ -20,7 +20,6 @@ Schema follows the internal A2A event-schema design notes §6. The split:
     agent.handoff.in              A2A bridge - receiver side
     agent.cascade.affected        A2A bridge - multi-consumer detection
     agent.flag.uncertain          agent self-flags an uncertainty
-    policy.decayed                permission decayed; override fell back
 """
 
 from __future__ import annotations
@@ -46,7 +45,6 @@ AGENT_HANDOFF_OUT: Final[str] = "agent.handoff.out"
 AGENT_HANDOFF_IN: Final[str] = "agent.handoff.in"
 AGENT_CASCADE_AFFECTED: Final[str] = "agent.cascade.affected"
 AGENT_FLAG_UNCERTAIN: Final[str] = "agent.flag.uncertain"
-POLICY_DECAYED: Final[str] = "policy.decayed"
 
 # Touch ID / hardware-attested approval gate (macOS-only).
 APPROVE_BIOMETRIC_OK: Final[str] = "approve.biometric.ok"
@@ -88,7 +86,6 @@ ALL_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         AGENT_HANDOFF_IN,
         AGENT_CASCADE_AFFECTED,
         AGENT_FLAG_UNCERTAIN,
-        POLICY_DECAYED,
         APPROVE_BIOMETRIC_OK,
         APPROVE_BIOMETRIC_DENY,
         APPROVE_BIOMETRIC_SKIPPED,
