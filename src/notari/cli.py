@@ -34,7 +34,6 @@ from rich.console import Console
 from rich.table import Table
 
 from notari import decay as decay_mod
-from notari import journal as journal_mod
 from notari import telemetry as tel
 from notari._version import __version__
 from notari.adapters import claude_code as cc_adapter
@@ -95,8 +94,6 @@ decay_app = typer.Typer(
     help="track permissions that erode without reinforcement (Permission Decay framework).",
 )
 app.add_typer(decay_app, name="decay", hidden=True)
-journal_app = typer.Typer(no_args_is_help=True, help="session-journal subcommands.")
-app.add_typer(journal_app, name="journal", hidden=True)
 telemetry_app = typer.Typer(
     no_args_is_help=True,
     help="opt-in anonymous usage telemetry.",
@@ -3969,69 +3966,48 @@ def telemetry_show(
 
 
 # --------------------------------------------------------------------------
-# journal - write a session log to the AgentOS vault
+# session-close - emit the session.close audit boundary
 # --------------------------------------------------------------------------
 
 
-@journal_app.command("save")
-def journal_save(
-    transcript: Annotated[
-        Path | None,
-        typer.Option(
-            "--transcript",
-            help="path to the Claude Code transcript JSONL (read from "
-            "stdin's transcript_path if not given)",
-        ),
-    ] = None,
-    sessions_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--out",
-            help="vault Sessions/ directory (default: "
-            "~/agentbrain/AgentOS-Vault/ClaudeCode/Sessions/)",
-        ),
+@app.command("session-close", hidden=True)
+def session_close_cmd(
+    session_id_opt: Annotated[
+        str | None,
+        typer.Option("--session-id", help="session to close (read from stdin JSON if omitted)"),
     ] = None,
 ) -> None:
-    """Render an auto-summary of a Claude Code transcript to the vault.
+    """Emit the `session.close` audit boundary for an ending session.
 
-    Designed to be called from a SessionEnd hook. When called by the
-    hook, Claude Code passes session_id / transcript_path / cwd / reason
-    on stdin as JSON. The session.close audit emission and drift check
-    fire unconditionally so receipts derive from clean session boundaries
-    even when no transcript is available; the journal markdown write is
-    skipped (with a friendly message) when transcript is missing.
+    This is the surviving half of the former `notari journal save`. The
+    journal markdown writer and the drift check were loop surface and are
+    gone; the audit boundary is not, because `receipt.derive_from_events`
+    reads `session.close` to set `Receipt.closed_at` and
+    `githook.find_active_session` ranks sessions on that field.
+
+    Designed to be called from a SessionEnd hook, which passes session_id,
+    cwd and reason on stdin as JSON. Idempotent: a second call for the same
+    session is a no-op, so a hook firing twice on exit is harmless.
     """
     payload: dict[str, Any] = {}
-    if transcript is None:
+    if session_id_opt is None:
         try:
             raw = json.loads(sys.stdin.read() or "{}")
             if isinstance(raw, dict):
                 payload = raw
         except json.JSONDecodeError:
             payload = {}
-        tp = payload.get("transcript_path")
-        if isinstance(tp, str) and tp:
-            transcript = Path(tp).expanduser()
 
-    session_id = str(payload.get("session_id") or "")
+    session_id = session_id_opt or str(payload.get("session_id") or "")
     cwd = str(payload.get("cwd") or "")
     reason = str(payload.get("reason") or "transcript_end")
-    if session_id:
-        from notari.journal import _check_session_drift
-        from notari.receipt import emit_session_close
-
-        emit_session_close(session_id, cwd, reason)
-        _check_session_drift(session_id, cwd)
-
-    if transcript is None:
-        Console(stderr=True).print(
-            "[dim]notari journal save: no transcript provided; "
-            "session.close emitted, journal markdown skipped.[/dim]",
-        )
+    if not session_id:
+        Console(stderr=True).print("[dim]no session_id; nothing to close.[/dim]")
         return
 
-    written = journal_mod.save_from_transcript(transcript, sessions_dir=sessions_dir)
-    Console().print(f"[green]wrote[/green] {written}")
+    from notari.receipt import emit_session_close
+
+    emit_session_close(session_id, cwd, reason)
 
 
 # --------------------------------------------------------------------------

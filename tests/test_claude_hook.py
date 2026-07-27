@@ -558,6 +558,117 @@ def test_trust_scope_matches_subdirectories(
     assert "trusted scope" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+def test_session_close_command_emits_the_boundary_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`notari session-close` is the surviving CLI half of the removed
+    `notari journal save`, and it is the only way a SessionEnd hook can close
+    a session. The property that matters is the one the audit chain relies on:
+    a SessionEnd payload on stdin produces exactly one `session.close` for that
+    session, and a hook firing twice on exit still produces exactly one.
+
+    Asserted through the real CLI rather than by calling emit_session_close
+    directly, because the stdin-JSON parsing is the part that a refactor can
+    silently break while the underlying function stays correct.
+    """
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    log = tmp_path / "audit.jsonl"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+
+    # A session has to exist in the chain before it can be closed.
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        run_hook(
+            _payload(
+                tool_name="Bash",
+                session_id="ses-cli",
+                transcript=str(transcript),
+                cwd=str(tmp_path),
+                command="pwd",
+            ),
+            audit=audit,
+        )
+
+    stdin_payload = _json.dumps(
+        {"session_id": "ses-cli", "cwd": str(tmp_path), "reason": "user_quit"}
+    )
+    runner = CliRunner()
+    for _ in range(2):  # a SessionEnd hook firing twice must stay idempotent
+        result = runner.invoke(app, ["session-close"], input=stdin_payload)
+        assert result.exit_code == 0, result.output
+
+    events = [_json.loads(line) for line in log.read_text().splitlines()]
+    closes = [e for e in events if e["type"] == "session.close" and e["session_id"] == "ses-cli"]
+    assert len(closes) == 1, f"expected exactly 1 session.close, got {len(closes)}"
+    assert closes[0]["payload"]["reason"] == "user_quit"
+
+
+def test_session_close_command_without_a_session_id_is_a_no_op(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty or malformed SessionEnd payload must not write a close event
+    for some other session, and must not raise into the hook.
+
+    The setup matters more than it looks. An earlier version of this test built
+    no audit log, so nothing could have been written whatever the code did, and
+    it passed happily with the guard deleted. It now closes over a REAL log at
+    the resolved path with a live session in it, so removing the guard writes a
+    fabricated close and the assertion actually fires.
+    """
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    log = tmp_path / "audit.jsonl"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        run_hook(
+            _payload(
+                tool_name="Bash",
+                session_id="ses-live",
+                transcript=str(transcript),
+                cwd=str(tmp_path),
+                command="pwd",
+            ),
+            audit=audit,
+        )
+    assert log.exists(), "precondition: a real log must exist or this test proves nothing"
+
+    # Valid cwd so the path resolves, but no session_id: the guard is the only
+    # thing standing between this payload and a fabricated close event.
+    runner = CliRunner()
+    for payload in ("", "{}", "not json at all", _json.dumps({"cwd": str(tmp_path)})):
+        result = runner.invoke(app, ["session-close"], input=payload)
+        assert result.exit_code == 0, result.output
+
+    events = [_json.loads(line) for line in log.read_text().splitlines()]
+    closes = [e for e in events if e["type"] == "session.close"]
+    assert not closes, f"a payload with no session_id emitted {len(closes)} close events"
+
+
 def test_session_end_emits_session_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
