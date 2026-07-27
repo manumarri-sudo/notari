@@ -1940,9 +1940,9 @@ def kpis_cmd(
     fired most), and the operator-bypass count (sparse data; reported
     as count, not ratio, until volume grows).
     """
-    from notari.learn import analyze
+    from notari.audit_summary import kpis_since
 
-    _, kpis = analyze(since_days=since_days)
+    kpis = kpis_since(since_days=since_days)
 
     if kpis.n_events == 0:
         console.print(
