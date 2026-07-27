@@ -1637,39 +1637,6 @@ def commit_hook_uninstall(
         console.print(f"[dim]no hook to remove at[/dim] {p}")
 
 
-@app.command("insights", hidden=True)
-def insights_cmd(
-    window_today: Annotated[bool, typer.Option("--today")] = False,
-    window_week: Annotated[bool, typer.Option("--week")] = False,
-    window_month: Annotated[bool, typer.Option("--month")] = False,
-    window_all: Annotated[bool, typer.Option("--all")] = False,
-    since: Annotated[str | None, typer.Option("--since")] = None,
-    log_path: Annotated[Path | None, typer.Option("--log", "-l")] = None,
-    plain: Annotated[bool, typer.Option("--plain")] = False,
-) -> None:
-    """Per-pattern analysis + suggested overrides + sessions worth reviewing.
-
-    Goes deeper than `notari saves`: for each pattern, shows fire frequency,
-    block vs ask ratio, and a calibrated recommendation (keep critical,
-    trust-path candidate, watching). Surfaces trust-path effectiveness and
-    flags sessions that closed the trifecta or had critical blocks at
-    unusual hours.
-    """
-    from notari.insights import compute_insights, format_insights
-    from notari.saves import parse_window
-
-    p = log_path or default_audit_path()
-    start, end = parse_window(
-        today=window_today,
-        week=window_week,
-        month=window_month,
-        all_time=window_all,
-        since=since,
-    )
-    insights = compute_insights(p, window_start=start, window_end=end)
-    Console().print(format_insights(insights, plain=plain))
-
-
 @app.command("integrate", hidden=True)
 def integrate_cmd(
     agent: Annotated[
