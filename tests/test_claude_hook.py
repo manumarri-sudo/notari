@@ -942,3 +942,56 @@ def test_deny_footer_shows_approve_as_the_way_through(tmp_path: Path) -> None:
     assert "notari off" in reason
     assert "notari doctor" in reason
     assert "notari --help" in reason
+
+
+def test_no_on_disk_file_can_downshift_a_default_ask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A default-classified `ask` stays `ask`, whatever sits in NOTARI_HOME.
+
+    The loop extraction removed the promoted-override downshift, which read
+    ~/.notari/overrides.toml and could turn a default `ask` into `allow` for a
+    matching pattern_id. That was the only file-driven ask-to-allow path in
+    run_hook, and this pins its absence.
+
+    Driven through run_hook, NOT through decide(). The removed block lived in
+    run_hook, after decide() had already returned, so a first version of this
+    test that called decide() passed happily with the downshift reintroduced.
+    The entry point under test has to be the one that contained the code.
+
+    Asserted over the whole state directory rather than one filename, because
+    pinning a single filename is exactly the mistake that let a gate bypass
+    ship green in this repo before.
+    """
+    monkeypatch.setenv("NOTARI_BYPASS_MODE", "0")
+    home = tmp_path / "notari_home"
+    home.mkdir()
+    monkeypatch.setenv("NOTARI_HOME", str(home))
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    log = tmp_path / "audit.jsonl"
+
+    edit = _stdin_for("Edit", file_path="/x", old_string="a", new_string="b")
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        baseline = run_hook(edit, audit=audit)
+    assert baseline["hookSpecificOutput"]["permissionDecision"] == "ask", (
+        "precondition: a plain Edit must ask through run_hook"
+    )
+
+    reason = decide("Edit", {"file_path": "/x", "old_string": "a", "new_string": "b"}).reason
+    block = f'["Edit:{reason}"[:80]]\npromoted_at = "2099-01-01T00:00:00+00:00"\nttl_days = 3650\n'
+    for name in ("overrides.toml", "promotions.toml", "suggestions.jsonl", "learning.json"):
+        (home / name).write_text(block)
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        after = run_hook(edit, audit=audit)
+    decision = after["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "ask", (
+        f"a file in NOTARI_HOME downshifted a default ask to {decision!r}; "
+        f"the file-driven override path must stay removed"
+    )

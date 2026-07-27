@@ -954,14 +954,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
     decision = decide(tool_name, tool_input)
     agent_id = "claude-code-sub" if parent_session_id else "claude-code"
 
-    # Snapshot the classifier's original reason BEFORE any downstream
-    # transformation (trust scope, bypass mode, approval-token consume)
-    # rewrites the HookDecision. Learning uses this so a token consume
-    # records the approve under the SAME pattern_id that previously
-    # recorded the deny - not under a per-token "approved one-shot"
-    # pattern that would split the same underlying rule into N rows.
-    original_decision_reason = decision.reason
-
     # Trust-scope downshift: a default-HIGH-risk Edit/Write inside a
     # trusted directory (listed in `[trust] paths` in config.toml) is
     # downgraded to LOW + auto-allow. This is the fix for the
@@ -1003,39 +995,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                         why="trusted scope (config [trust] paths)",
                         try_instead="",
                     )
-
-    # Promoted-override downshift: the operator explicitly promoted a
-    # loosening_candidate via `notari suggestions promote <key> --ttl-days N`,
-    # which wrote a block into ~/.notari/overrides.toml. If THIS call's
-    # pattern_id has an active (non-expired) override, downshift the
-    # decision. The override is operator-approved and TTL'd; never
-    # silent, never permanent.
-    #
-    # Same safety invariant as trust scope: ONLY downshifts the default
-    # ask path. CRITICAL events (decision.permission == "deny" from
-    # classify_command pattern match) bypass this check entirely and
-    # still fire.
-    if decision.permission == "ask" and decision.classified_by == "default":
-        with contextlib.suppress(Exception):
-            from notari.learn import _normalize_block_reason
-            from notari.learning import load_active_overrides
-
-            head = _normalize_block_reason(original_decision_reason) or original_decision_reason
-            pattern_id = f"{tool_name}:{head}"[:80]
-            overrides = load_active_overrides()
-            if pattern_id in overrides:
-                ov = overrides[pattern_id]
-                decision = HookDecision(
-                    permission="allow",
-                    reason=(
-                        f"operator-promoted override ({ov['remaining_days']:.1f} days remaining)"
-                    ),
-                    risk=Risk.LOW,
-                    audit_event_type="verdict.allowed",
-                    what=decision.what,
-                    why="operator promoted pattern via notari suggestions promote",
-                    try_instead="",
-                )
 
     # Bypass-mode downshift: the operator has explicitly opted out of
     # Claude Code's permission prompts (skipDangerousModePermissionPrompt
@@ -1347,26 +1306,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                         "tool_name": tool_name,
                     },
                     force_fsync=taint_state.trifecta_closed,
-                )
-
-    # Autonomous learning: record this decision so the learner can
-    # update its per-pattern stats and surface auto-tightening or
-    # loosen-candidates. Skipped on plain-LOW allows where the
-    # operator wasn't involved (those carry no signal). Failures here
-    # must NEVER break the hook - the gate verdict is already final.
-    # Use the ORIGINAL classifier reason so token-flipped approves
-    # group with their preceding denies under the same pattern_id.
-    if decision.permission != "allow" or approval_token_used:
-        from notari import learning
-
-        if os.environ.get("NOTARI_LEARNING_STRICT"):
-            learning.record_decision_learning(
-                tool_name, original_decision_reason, bool(approval_token_used)
-            )
-        else:
-            with contextlib.suppress(Exception):
-                learning.record_decision_learning(
-                    tool_name, original_decision_reason, bool(approval_token_used)
                 )
 
     # Human-controls footer, context-aware. The two permission levels give the
