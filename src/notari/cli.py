@@ -4108,9 +4108,10 @@ def journal_save(
     cwd = str(payload.get("cwd") or "")
     reason = str(payload.get("reason") or "transcript_end")
     if session_id:
-        from notari.journal import _check_session_drift, _emit_session_close
+        from notari.journal import _check_session_drift
+        from notari.receipt import emit_session_close
 
-        _emit_session_close(session_id, cwd, reason)
+        emit_session_close(session_id, cwd, reason)
         _check_session_drift(session_id, cwd)
 
     if transcript is None:

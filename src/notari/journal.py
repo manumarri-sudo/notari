@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from notari import receipt as receipt_mod
+
 DEFAULT_VAULT_SESSIONS = Path(
     os.environ.get(
         "NOTARI_VAULT_SESSIONS",
@@ -292,87 +294,6 @@ def save_from_transcript(
     return write_journal(summary, sessions_dir=sessions_dir)
 
 
-def _emit_session_close(session_id: str, cwd: str, reason: str) -> None:
-    """Emit a `session.close` audit event for the ending session.
-
-    Walks the audit log once to:
-      1. Confirm idempotence (no duplicate close for this session_id).
-      2. Derive `duration_seconds` from the matching `session.open` timestamp.
-      3. Derive `tool_call_count` from `tool.attempted` events.
-
-    Determinism: the emission is gated by an exact-match check on
-    `session_id` against existing `session.close` events in the chain;
-    a second SessionEnd invocation for the same session is a no-op.
-    Errors are swallowed so the journal write (the next step) still
-    runs even if the audit emission fails - the audit chain is the
-    authoritative store and self-heals if a session is left open.
-    """
-    if not session_id:
-        return
-    try:
-        from notari import events as ev
-        from notari.adapters.claude_code import (
-            _default_load_hmac_key,
-            _resolve_project_paths,
-        )
-        from notari.audit import AuditLog
-
-        log_path, _ = _resolve_project_paths(cwd)
-        if not log_path.exists():
-            return  # no log, nothing to close against
-
-        already_closed = False
-        opened_at: str | None = None
-        tool_call_count = 0
-        with log_path.open() as f:
-            for line in f:
-                try:
-                    evt = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if evt.get("session_id") != session_id:
-                    continue
-                etype = evt.get("type")
-                if etype == ev.SESSION_CLOSE:
-                    already_closed = True
-                    break
-                if etype == ev.SESSION_OPEN and opened_at is None:
-                    ts = evt.get("ts")
-                    if isinstance(ts, str):
-                        opened_at = ts
-                if etype == ev.TOOL_ATTEMPTED:
-                    tool_call_count += 1
-
-        if already_closed:
-            return
-
-        duration_seconds = 0
-        if opened_at:
-            try:
-                opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
-                duration_seconds = int((datetime.now(UTC) - opened_dt).total_seconds())
-            except (ValueError, AttributeError):
-                duration_seconds = 0
-
-        with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
-            audit.emit(
-                event_type=ev.SESSION_CLOSE,
-                session_id=session_id,
-                agent_id="claude-code",
-                risk="low",
-                payload={
-                    "reason": reason or "transcript_end",
-                    "duration_seconds": duration_seconds,
-                    "tool_call_count": tool_call_count,
-                    "cwd": cwd,
-                },
-                force_fsync=True,
-            )
-    except Exception:
-        # Audit emission is best-effort; the chain is intact either way.
-        return
-
-
 def _check_session_drift(session_id: str, cwd: str) -> None:
     """At SessionEnd, run Page-Hinkley over this session's audit
     outcomes. Emits a `drift_detected` suggestion when the approval
@@ -422,7 +343,7 @@ def session_end_hook(stdin_text: str) -> dict[str, Any]:
     session_id = str(payload.get("session_id") or "")
     cwd = str(payload.get("cwd") or "")
     reason = str(payload.get("reason") or "transcript_end")
-    _emit_session_close(session_id, cwd, reason)
+    receipt_mod.emit_session_close(session_id, cwd, reason)
     _check_session_drift(session_id, cwd)
 
     tpath_raw = payload.get("transcript_path")

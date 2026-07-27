@@ -599,9 +599,9 @@ def test_session_end_emits_session_close(
         )
 
     # Now emit session.close (what the SessionEnd hook does).
-    from notari.journal import _emit_session_close
+    from notari.receipt import emit_session_close
 
-    _emit_session_close("ses-A", str(tmp_path), "user_quit")
+    emit_session_close("ses-A", str(tmp_path), "user_quit")
 
     lines = [json.loads(line) for line in log.read_text().splitlines()]
     closes = [e for e in lines if e["type"] == "session.close" and e["session_id"] == "ses-A"]
@@ -639,10 +639,10 @@ def test_session_end_close_is_idempotent(
             ),
             audit=audit,
         )
-    from notari.journal import _emit_session_close
+    from notari.receipt import emit_session_close
 
-    _emit_session_close("ses-B", str(tmp_path), "user_quit")
-    _emit_session_close("ses-B", str(tmp_path), "user_quit")
+    emit_session_close("ses-B", str(tmp_path), "user_quit")
+    emit_session_close("ses-B", str(tmp_path), "user_quit")
     lines = [json.loads(line) for line in log.read_text().splitlines()]
     closes = [e for e in lines if e["type"] == "session.close" and e["session_id"] == "ses-B"]
     assert len(closes) == 1, "duplicate session.close emitted; not idempotent"

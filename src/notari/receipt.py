@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -316,3 +317,88 @@ def load_audit_events(path: Path | None = None) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     return out
+
+
+def emit_session_close(session_id: str, cwd: str, reason: str) -> None:
+    """Emit a `session.close` audit event for the ending session.
+
+    Walks the audit log once to:
+      1. Confirm idempotence (no duplicate close for this session_id).
+      2. Derive `duration_seconds` from the matching `session.open` timestamp.
+      3. Derive `tool_call_count` from `tool.attempted` events.
+
+    Determinism: the emission is gated by an exact-match check on
+    `session_id` against existing `session.close` events in the chain;
+    a second SessionEnd invocation for the same session is a no-op.
+    Errors are swallowed so a caller's own work still runs even if the
+    audit emission fails, since the audit chain is the authoritative
+    store and self-heals if a session is left open.
+
+    This lives beside `derive_from_events`, which reads `session.close`
+    to set `Receipt.closed_at`, because `githook.find_active_session`
+    ranks sessions on that field. The producer and the consumers of the
+    event therefore stay in one module.
+    """
+    if not session_id:
+        return
+    try:
+        from notari.adapters.claude_code import (
+            _default_load_hmac_key,
+            _resolve_project_paths,
+        )
+        from notari.audit import AuditLog
+
+        log_path, _ = _resolve_project_paths(cwd)
+        if not log_path.exists():
+            return  # no log, nothing to close against
+
+        already_closed = False
+        opened_at: str | None = None
+        tool_call_count = 0
+        with log_path.open() as f:
+            for line in f:
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if evt.get("session_id") != session_id:
+                    continue
+                etype = evt.get("type")
+                if etype == ev.SESSION_CLOSE:
+                    already_closed = True
+                    break
+                if etype == ev.SESSION_OPEN and opened_at is None:
+                    ts = evt.get("ts")
+                    if isinstance(ts, str):
+                        opened_at = ts
+                if etype == ev.TOOL_ATTEMPTED:
+                    tool_call_count += 1
+
+        if already_closed:
+            return
+
+        duration_seconds = 0
+        if opened_at:
+            try:
+                opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                duration_seconds = int((datetime.now(UTC) - opened_dt).total_seconds())
+            except (ValueError, AttributeError):
+                duration_seconds = 0
+
+        with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
+            audit.emit(
+                event_type=ev.SESSION_CLOSE,
+                session_id=session_id,
+                agent_id="claude-code",
+                risk="low",
+                payload={
+                    "reason": reason or "transcript_end",
+                    "duration_seconds": duration_seconds,
+                    "tool_call_count": tool_call_count,
+                    "cwd": cwd,
+                },
+                force_fsync=True,
+            )
+    except Exception:
+        # Audit emission is best-effort; the chain is intact either way.
+        return
