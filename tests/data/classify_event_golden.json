@@ -1,0 +1,142 @@
+{
+  "bash:benign-echo": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "bash:benign-ls": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "bash:drop-table-bare": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:drop-table-quoted-KNOWN-GAP": {
+    "attended": "medium",
+    "bypass": "medium"
+  },
+  "bash:force-push": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:git-commit": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "bash:git-status": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "bash:pipe-to-shell": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:privilege-escalation": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:prod-deploy": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:read-gate-key-KNOWN-LOW": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "bash:recursive-delete": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "bash:write-gate-state": {
+    "attended": "critical",
+    "bypass": "critical"
+  },
+  "builtin:Bash": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:BashOutput": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:Edit": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "builtin:Glob": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:Grep": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:KillShell": {
+    "attended": "medium",
+    "bypass": "low"
+  },
+  "builtin:NotebookEdit": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "builtin:Read": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:Task": {
+    "attended": "medium",
+    "bypass": "low"
+  },
+  "builtin:TodoWrite": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:WebFetch": {
+    "attended": "medium",
+    "bypass": "low"
+  },
+  "builtin:WebSearch": {
+    "attended": "low",
+    "bypass": "low"
+  },
+  "builtin:Write": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "mcp:github-pr": {
+    "attended": "medium",
+    "bypass": "medium"
+  },
+  "mcp:slack-send": {
+    "attended": "medium",
+    "bypass": "medium"
+  },
+  "path:auth": {
+    "attended": "high",
+    "bypass": "high"
+  },
+  "path:ci-workflow": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "path:infra": {
+    "attended": "high",
+    "bypass": "high"
+  },
+  "path:migrations": {
+    "attended": "high",
+    "bypass": "high"
+  },
+  "path:ordinary-source": {
+    "attended": "high",
+    "bypass": "low"
+  },
+  "unknown:exit-plan": {
+    "attended": "medium",
+    "bypass": "medium"
+  },
+  "unknown:tool": {
+    "attended": "medium",
+    "bypass": "medium"
+  }
+}
