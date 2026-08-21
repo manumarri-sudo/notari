@@ -14,9 +14,7 @@
 > **NEEDS_REVIEW**, or **BLOCK**. There is no model in that verdict, so it cannot
 > be prompt-injected. It does **not** judge whether the code is correct: it
 > attests to *where* the change went and whether it leaked a secret, the part a
-> human most often skims past on a large agent PR. And a repeated mistake becomes
-> a short rule you promote into `CLAUDE.md` / `AGENTS.md`, so the agent stops
-> making it. **Alpha**; treat
+> human most often skims past on a large agent PR. **Alpha**; treat
 > [the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
 > as the source of truth over any one-line claim.
 
