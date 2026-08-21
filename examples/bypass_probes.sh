@@ -10,7 +10,7 @@
 #   bash examples/bypass_probes.sh            # verdict table
 #   VERBOSE=1 bash examples/bypass_probes.sh  # full verifier output per probe
 #
-# Expected result as of 0.4.0: eleven BLOCK, and probe 10 PASSes because secret
+# Expected result as of 0.4.2: eleven BLOCK, and probe 10 PASSes because secret
 # detection is line-based and a credential split across two lines is a
 # documented limit (docs/SECURITY-MODEL.md). If you find a thirteenth shape that
 # gets an undeserved PASS, that is the most useful bug report this project can
@@ -52,11 +52,9 @@ new_repo() {
   git add -A >/dev/null; git commit -qm base >/dev/null
   "$NOTARI" guard --key "$KEYDIR/approver.pem" --allow "src/**" --forbid "migrations/**" >/dev/null 2>&1
   git add -A >/dev/null; git commit -qm "signed perimeter" >/dev/null
-  if [[ -n "$scope" ]]; then
-    "$NOTARI" begin "probe task" --scope "$scope" --repo probe/repo --key "$KEYDIR/approver.pem" >/dev/null 2>&1
-  else
-    "$NOTARI" begin "probe task" --repo probe/repo --key "$KEYDIR/approver.pem" >/dev/null 2>&1
-  fi
+  # Since 0.4.2 `begin` refuses a contract with no --scope at all; a wide-open
+  # contract must be spelled out as '**' (probes 6 and 7 use that opt-out).
+  "$NOTARI" begin "probe task" --scope "$scope" --repo probe/repo --key "$KEYDIR/approver.pem" >/dev/null 2>&1
   git add -A >/dev/null; git commit -qm "signed contract" >/dev/null
 }
 
@@ -96,15 +94,17 @@ printf 'AWS="%s"\nk="%s"\n' "$FAKE_ID" "$FAKE_SECRET" > src/auth/creds.py
 git add -A >/dev/null; git commit -qm secret >/dev/null
 run_verify "5. secret hidden behind .gitattributes -diff"
 
-new_repo p6 ""
-echo "x" >> README.md
-git add -A >/dev/null; git commit -qm readme >/dev/null
-run_verify "6. contract with NO scope, edits outside perimeter"
-
-new_repo p7 ""
+new_repo p6 "**"
 echo "x" >> migrations/0001.sql
 git add -A >/dev/null; git commit -qm mig >/dev/null
-run_verify "7. contract with NO scope, edits forbidden path"
+run_verify "6. unrestricted '**' scope, edits forbidden path"
+
+# '**/**' matches everything through the same matcher as '**'; before 0.4.2 it
+# slipped past the unrestricted-scope flag. Forbidden still beats it.
+new_repo p7 "**/**"
+echo "x" >> migrations/0001.sql
+git add -A >/dev/null; git commit -qm mig >/dev/null
+run_verify "7. disguised-universal '**/**' scope, forbidden path"
 
 new_repo p8 "src/**"
 mkdir -p MIGRATIONS && echo "x" > MIGRATIONS/evil.sql
