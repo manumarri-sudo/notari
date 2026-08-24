@@ -51,7 +51,7 @@ dependencies = [
     # key) is deliberately not the same secret as forging (private key) - the
     # property the symmetric HMAC chain cannot provide. A headline security
     # primitive belongs in the base install, not an optional extra.
-    "cryptography>=42",
+    "cryptography>=49.0.0",
     # Touch ID is a headline security control (gate-disable + approve), so the
     # binding ships in the BASE install on macOS rather than an opt-in extra -
     # the platform marker makes it a no-op on Linux/Windows. Keeping it optional
