@@ -300,7 +300,7 @@ jobs:
           persist-credentials: false
       # Pin to the release commit SHA, not a mutable tag, `notari status`
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
-      - uses: manumarri-sudo/notari@f0ed260e3fbecfe8b0ec33e9bb7b5de549d9cabc  # 0.4.2 release action
+      - uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # 0.4.2 release action
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
