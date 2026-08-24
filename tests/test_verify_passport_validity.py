@@ -112,3 +112,49 @@ def test_status_fingerprint_no_passport_mac(tmp_path: Path) -> None:
     r = _run(pj, pub, "--status-fingerprint", str(fp))
     assert r.returncode == 1
     assert "no audit MAC" in (r.stdout + r.stderr)
+
+
+class TestReviewerIsToldWhatTheVerdictIsWorth:
+    """A real signature does NOT mean the verdict was enforced.
+
+    A cooperative run warns at verify time that the contract could have been forged by
+    the same agent that wrote the diff, and records `strict: false` with an unverified
+    `contract_provenance`. `verify-passport` read neither field, so the one command the
+    docs point a reviewer at rendered "a human signed this boundary" and "the agent
+    could have forged the contract" identically, as the same green tick."""
+
+    def test_cooperative_passport_is_flagged_as_advisory(self, tmp_path: Path) -> None:
+        pj, pub = _signed_passport(
+            tmp_path, trust={"strict": False, "contract_provenance": "unsigned"}
+        )
+        proc = _run(pj, pub)
+        # Rich wraps to the terminal width, so collapse whitespace before matching
+        # prose; asserting on the raw text makes the test depend on column count.
+        combined = " ".join((proc.stdout + proc.stderr).split())
+        # Still authentic, so still exit 0: what changes is that the reviewer is told.
+        assert proc.returncode == 0, combined
+        assert "passport verified" in combined
+        assert "not an enforced boundary" in combined
+        assert "COOPERATIVE" in combined
+        assert "provably approved by a human" in combined
+
+    def test_strict_signed_passport_gets_no_caveat(self, tmp_path: Path) -> None:
+        pj, pub = _signed_passport(
+            tmp_path, trust={"strict": True, "contract_provenance": "verified"}
+        )
+        proc = _run(pj, pub)
+        combined = " ".join((proc.stdout + proc.stderr).split())
+        assert proc.returncode == 0, combined
+        assert "passport verified" in combined
+        assert "not an enforced boundary" not in combined
+
+    def test_naive_contract_expiry_is_refused_not_crashed(self, tmp_path: Path) -> None:
+        """`2027-01-01T00:00:00` is valid ISO-8601 with no offset. Comparing it against
+        an aware now() raises TypeError, so a reviewer command must refuse rather than
+        crash, and must not read an expiry it cannot evaluate as "not expired"."""
+        pj, pub = _signed_passport(tmp_path, contract={"expires_at": "2027-01-01T00:00:00"})
+        proc = _run(pj, pub)
+        combined = " ".join((proc.stdout + proc.stderr).split())
+        assert proc.returncode == 1, combined
+        assert "no timezone" in combined
+        assert "Traceback" not in combined

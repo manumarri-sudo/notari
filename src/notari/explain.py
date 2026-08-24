@@ -29,6 +29,7 @@ REVIEW_CLOSER = "Ask a reviewer to look at the {n} item(s) above, then re-run: n
 # Human-facing label per finding kind, for the one-line severity/volume rollup.
 _KIND_LABEL = {
     "secret": "secret",
+    "possible_secret": "possible secret",
     "gate_tamper": "gate-tamper edit",
     "forbidden": "forbidden path",
     "out_of_scope": "out-of-scope file",
@@ -89,6 +90,36 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
     covered = set(tamper) | set(forbidden)
 
     for s in ev.get("secret_findings", []):
+        # A matched vendor key FORMAT is a statement of fact. A keyword-plus-value
+        # match is a suspicion, and describing it with the same certainty ("anyone
+        # who sees the file can steal it") is an overclaim that also teaches people
+        # to ignore the real ones. Older passports have no `confidence` field, so
+        # absence is treated as high to avoid silently softening existing evidence.
+        low = s.get("confidence") == "low"
+        if low:
+            out.append(
+                {
+                    "kind": "possible_secret",
+                    "where": f"{s['path']}:{s['line']}",
+                    "plain": (
+                        f"This looks like it might be a password or key ({s['pattern']}) "
+                        "written directly in the code. It does not match a known vendor "
+                        "key format, so it needs a human to confirm."
+                    ),
+                    "self_fix": (
+                        f"Check line {s['line']} of {s['path']}. If it is a real "
+                        "credential, delete it and load the value from an environment "
+                        "variable instead. If it is not, no change is needed."
+                    ),
+                    "cc_prompt": (
+                        f"In {s['path']} line {s['line']} something matched the "
+                        f"{s['pattern']} shape. Decide whether it is a real credential; "
+                        "if it is, remove it and read it from an environment variable "
+                        "instead, and make sure the real value is never committed."
+                    ),
+                }
+            )
+            continue
         out.append(
             {
                 "kind": "secret",
@@ -265,6 +296,9 @@ def explain_dict(passport: dict[str, Any]) -> dict[str, Any]:
 # Which finding kinds are hard violations (::error) vs. review flags (::warning).
 _ANNOTATION_LEVEL = {
     "secret": "error",
+    # A suspicion, not a matched key format, and it does not fail the build on its
+    # own, so an ::error:: annotation would misrepresent it.
+    "possible_secret": "warning",
     "gate_tamper": "error",
     "forbidden": "error",
     "out_of_scope": "error",

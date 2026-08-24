@@ -6,14 +6,17 @@ mismatch by tool name, mismatch by args, persistence across reload.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import notari.approvals as approvals_mod
 from notari.approvals import (
     DEFAULT_TTL_SECONDS,
     Approval,
+    ApprovalLockUnavailable,
     ApprovalStore,
     args_digest,
 )
@@ -185,12 +188,17 @@ def test_consume_rejects_different_tool(tmp_path: Path) -> None:
 
 
 def test_expired_approval_is_inactive(tmp_path: Path) -> None:
+    import json
+
     p = tmp_path / "approvals.json"
     store = ApprovalStore(path=p)
     ap = store.issue("Bash", {"command": "ls"}, ttl_seconds=1)
-    # force expiry
-    ap.expires_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    store.save()
+    # Force expiry on disk (there is no public unlocked save; a real approval just
+    # ages out). Rewrite the record with a past expiry, then reload the store.
+    data = json.loads(p.read_text())
+    data[ap.token]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    p.write_text(json.dumps(data))
+    store = ApprovalStore.load(path=p)
     consumed = store.consume("Bash", {"command": "ls"})
     assert consumed is None
     # Active list excludes expired.
@@ -292,3 +300,171 @@ def test_concurrent_consume_yields_exactly_one_winner(tmp_path: Path) -> None:
     outs = [p.communicate()[0].strip() for p in procs]
     assert outs.count("WON") == 1, outs
     assert outs.count("LOST") == 7, outs
+
+
+# ── F9 re-review: mutators lock too (not just consume), fail closed off-POSIX ──
+
+
+def test_stale_issue_writer_cannot_resurrect_consumed_token(tmp_path: Path) -> None:
+    """The core F9 race: only consume() used to lock, so a stale issue/approve/
+    revoke writer would save an in-memory dict that still held a since-consumed
+    token and bring it back to life. With every mutator locked and re-reading
+    on-disk state first, a consumed token stays consumed no matter what a stale
+    instance writes afterwards."""
+    p = tmp_path / "approvals.json"
+
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "rm -rf x"})
+    a.approve(ap.token)
+
+    # b loads the approved-but-unconsumed state, then goes stale.
+    b = ApprovalStore.load(path=p)
+
+    # a consumes the one-shot token.
+    assert a.consume("Bash", {"command": "rm -rf x"}) is not None
+
+    # b (stale) now writes via a different mutator; its in-memory copy still
+    # thinks the token is unconsumed. It must NOT restore it.
+    b.issue("Edit", {"file": "unrelated.py"})
+
+    # A fresh reader must still see the original token as spent.
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "rm -rf x"}) is None
+
+
+def test_stale_approve_writer_cannot_resurrect_consumed_token(tmp_path: Path) -> None:
+    p = tmp_path / "approvals.json"
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "deploy"})
+    a.approve(ap.token)
+    other = a.issue("Bash", {"command": "other"})
+
+    b = ApprovalStore.load(path=p)  # stale: sees both tokens unconsumed
+    assert a.consume("Bash", {"command": "deploy"}) is not None
+    b.approve(other.token)  # stale writer touches a DIFFERENT token
+
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "deploy"}) is None
+
+
+def test_mutators_fail_closed_without_posix_lock(tmp_path: Path, monkeypatch) -> None:
+    """Where fcntl is unavailable there is no way to make the write race-safe, so
+    every mutator raises rather than perform an unlocked read-modify-write that
+    could restore a consumed token. Hook callers suppress this, so the effect is
+    'stay blocked', never 'silently allow'."""
+    monkeypatch.setattr(approvals_mod, "_HAS_FLOCK", False)
+    store = ApprovalStore(path=tmp_path / "approvals.json")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.issue("Bash", {"command": "x"})
+    with pytest.raises(ApprovalLockUnavailable):
+        store.approve("any-token")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.revoke("any-token")
+    with pytest.raises(ApprovalLockUnavailable):
+        store.consume("Bash", {"command": "x"})
+
+
+def test_no_public_unlocked_save_to_resurrect_a_token(tmp_path: Path) -> None:
+    """Re-review defect 7: the public unlocked save() that let a stale in-memory
+    snapshot overwrite a concurrent consume (resurrecting the token) is gone. The
+    only writer is private (_write, called under the lock), so a stale store has
+    no supported way to persist and resurrect."""
+    p = tmp_path / "approvals.json"
+    a = ApprovalStore(path=p)
+    ap = a.issue("Bash", {"command": "deploy"})
+    a.approve(ap.token)
+
+    b = ApprovalStore.load(path=p)  # stale snapshot: token still approved+unconsumed
+    assert a.consume("Bash", {"command": "deploy"}) is not None
+
+    # There is no public save(); a stale writer cannot blind-overwrite.
+    assert not hasattr(b, "save"), "public unlocked save() must not exist"
+    # Any legitimate mutation on the stale store re-reads fresh under the lock,
+    # so it cannot restore the consumed token either.
+    b.issue("Edit", {"file": "x.py"})
+    c = ApprovalStore.load(path=p)
+    assert c.consume("Bash", {"command": "deploy"}) is None
+
+
+class TestCorruptStoreDegradesSafely:
+    """Round-6 findings P5/P6, both non-blocking."""
+
+    def test_naive_expires_at_reads_as_expired_not_a_crash(self, tmp_path: Path) -> None:
+        """`is_expired` caught only ValueError, so a timezone-naive `expires_at`
+        parsed fine and then raised TypeError on the aware/naive comparison,
+        escaping the corruption guard in load() and propagating out of a
+        property."""
+        from notari import approvals as approvals_mod
+
+        ap = approvals_mod.Approval(
+            token="t",
+            tool_name="Bash",
+            args_digest="d",
+            expires_at="2026-01-01T00:00:00",  # no offset: naive
+            issued_at="2026-01-01T00:00:00+00:00",
+            approved_at="2026-01-01T00:00:00+00:00",
+        )
+        assert ap.is_expired is True
+        assert ap.is_consumable is False
+
+    def test_write_is_atomic_so_unlocked_readers_never_see_a_torn_file(
+        self, tmp_path: Path
+    ) -> None:
+        """`load`, `active` and `latest_pending` read without the lock, so the
+        writer must publish by rename rather than truncate-and-write."""
+        from notari import approvals as approvals_mod
+
+        path = tmp_path / "approvals.json"
+        store = approvals_mod.ApprovalStore(path=path)
+        store.issue("Bash", {"command": "ls"}, reason="r")
+        assert path.exists()
+        # No temp files left behind, and the published file is complete JSON.
+        assert list(tmp_path.glob("*.tmp.*")) == []
+        assert json.loads(path.read_text())
+
+
+class TestTempWriteIsHardened:
+    """Round-6 wave-3b: the atomic-write temp file used a predictable
+    `.tmp.<pid>` name written through `Path.write_text`, so a pre-planted symlink
+    was followed, and the 0600 chmod happened after the write with its failure
+    suppressed. Same class already fixed in the passport publish helper. Lower
+    severity here because this store lives under NOTARI_HOME rather than a
+    candidate-controlled checkout, so it needs local co-location to exploit."""
+
+    def test_mode_is_set_at_open_and_no_temp_is_left_behind(self, tmp_path: Path) -> None:
+        import stat
+
+        path = tmp_path / "approvals.json"
+        store = approvals_mod.ApprovalStore(path=path)
+        store.issue("Bash", {"command": "ls"}, reason="r")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert list(tmp_path.glob("*.tmp.*")) == []
+
+    def test_temp_name_is_not_derived_from_the_pid(self) -> None:
+        src = Path(approvals_mod.__file__).read_text()
+        assert ".tmp.{os.getpid()}" not in src
+        assert "O_EXCL" in src
+
+
+class TestTempWriteModeAndOwnership:
+    """Round-6 wave-3c: open()'s mode argument is masked by the process umask, so a
+    restrictive umask produced a mode-000 store rather than 0600."""
+
+    def test_mode_is_exactly_0600_under_a_restrictive_umask(self, tmp_path: Path) -> None:
+        import os
+        import stat
+
+        old = os.umask(0o600)
+        try:
+            path = tmp_path / "approvals.json"
+            approvals_mod.ApprovalStore(path=path).issue("Bash", {"command": "ls"})
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    def test_cleanup_only_unlinks_a_file_this_call_created(self) -> None:
+        """Unconditional cleanup deleted another writer's colliding temp file, and a
+        failure inside fdopen leaked the raw descriptor."""
+        src = Path(approvals_mod.__file__).read_text()
+        assert "os.fchmod(fd, 0o600)" in src
+        assert "os.close(fd)" in src

@@ -42,8 +42,6 @@ The user has Notari installed for AI agent governance (https://github.com/manuma
 When the user asks about agent activity, audit logs, blocks, secrets, or compliance,
 prefer running these deterministic CLI commands rather than guessing from memory:
 
-- `notari saves`, counts of approvals saved, secrets caught, destructive operations blocked
-- `notari saves --month`, same, expanded to 30-day window
 - `notari receipts list --last 10`, recent session summaries (plain-English narrative + structured detail)
 - `notari receipts show <session_id>`, full session detail
 - `notari audit show --last 30`, pretty-print recent audit events
@@ -68,7 +66,6 @@ _SNIPPET_CURSOR: Final[str] = """\
 The user has Notari installed for AI agent governance. When the user asks about agent
 activity, blocks, secrets, or compliance evidence, prefer running these CLI commands:
 
-- `notari saves`, what Notari caught for the user
 - `notari receipts list --last 10`, recent session summaries
 - `notari receipts show <session_id>`, full session detail
 - `notari audit show --last 30`, recent audit events
@@ -86,7 +83,6 @@ Notari is installed: https://github.com/manumarri-sudo/notari.
 
 When asked about agent activity, audit logs, or compliance, run these commands and cite the output:
 
-* `notari saves`, verified counts of what Notari caught
 * `notari receipts list --last 10`, recent sessions
 * `notari receipts show <session_id>`, session detail
 * `notari audit show --last 30`, recent events

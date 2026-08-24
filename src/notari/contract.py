@@ -134,26 +134,42 @@ class Contract:
             raise ContractError(msg) from e
 
     def expiry_is_malformed(self) -> bool:
-        """True iff an expiry was set but cannot be parsed. A security control must
-        not silently reinterpret a malformed expiry as unlimited authorization
-        (security review M-6), so strict mode treats this as a BLOCK."""
+        """True iff an expiry was set but cannot be USED. A security control must not
+        silently reinterpret a malformed expiry as unlimited authorization (security
+        review M-6), so strict mode treats this as a BLOCK.
+
+        "Cannot be used" is broader than "cannot be parsed". A timezone-NAIVE value
+        like `2027-01-01T00:00:00` is valid ISO-8601 and parses cleanly, so this
+        returned False for it, while `is_expired` then raised TypeError comparing it
+        against an aware now(). The one control that exists to stop a security tool
+        misreading an expiry did not cover the case that actually broke it, and
+        `notari verify` died with an unhandled traceback and no passport."""
         if not self.expires_at:
             return False
         try:
-            datetime.fromisoformat(self.expires_at)
+            parsed = datetime.fromisoformat(self.expires_at)
         except ValueError:
             return True
-        return False
+        return parsed.tzinfo is None
 
     def is_expired(self, now: datetime | None = None) -> bool:
-        """True iff an expiry was set and has passed. A contract with no expiry
-        never expires; an unparseable expiry is NOT 'expired' here (see
-        ``expiry_is_malformed`` - strict mode blocks on that separately)."""
+        """True iff an expiry was set and has passed.
+
+        A contract with no expiry never expires. An expiry that cannot be used, either
+        unparseable or timezone-naive, is NOT reported as expired here; strict mode
+        blocks on it separately via ``expiry_is_malformed``. This must never raise: it
+        is called before the strict branch in `verify`, so an exception here takes the
+        cooperative path down too.
+
+        The identical bug was found and fixed in `approvals.py` and never carried
+        across to this module. Same defect, two modules, one patched."""
         if not self.expires_at:
             return False
         try:
             exp = datetime.fromisoformat(self.expires_at)
         except ValueError:
+            return False
+        if exp.tzinfo is None:
             return False
         return (now or datetime.now(UTC)) >= exp
 

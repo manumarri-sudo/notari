@@ -433,7 +433,7 @@ CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
 # common credential-read shapes the LOW classifier was missing.
 #
 # These are returned as HIGH (not LOW) so the operator sees them once, and
-# the audit log carries the explicit `private_data_read` reason so insights
+# the audit log carries the explicit `private_data_read` reason so readers
 # can later spot suspicious patterns.
 PRIVATE_READ_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
     # Bare / piped / redirected dump only. `printenv PATH` (a single named
@@ -649,9 +649,14 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
     # is the gate-off switch and was previously reachable through a bare Bash
     # redirect. (audit: 2nd-review gap #2.)
     (
+        # `.notari/<anything>` rather than a list of filenames. Enumerating them
+        # shipped a full bypass: pause.json was covered but approvals.json and
+        # overnight.json were not, and writing a forged record into approvals.json
+        # flipped a CRITICAL deny to allow with no human in the loop. Any file under
+        # the gate's own state directory is self-tamper, including ones added later.
         r"(?:>>?|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\bdd\b|\binstall\b|\brm\b|\bln\b)[^|\n]*"
         r"(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
-        r"\.notari/(?:config\.toml|key|overrides\.toml|pause\.json))",
+        r"\.notari/[^\s\"';|&]+)",
         "write/delete targeting the gate's own config/state (quoted-path form)",
         "Rewriting the gate's state files to disable it is a self-tamper shape. "
         "Change policy via `notari` commands, not by rewriting the files.",
@@ -1321,6 +1326,10 @@ class SecretFinding:
     path: str
     line: int
     pattern_name: str
+    # "high" blocks, "low" is review signal. Carried per finding rather than
+    # re-derived from the pattern name, because an anchored pattern whose value
+    # looks like a placeholder is demoted to review rather than dropped.
+    confidence: str = "high"
 
 
 @dataclass(frozen=True)
@@ -1617,16 +1626,45 @@ def path_in_scope(path: str, allowed_paths: Sequence[str]) -> bool:
     return any(_path_matches(path, p) for p in allowed_paths)
 
 
-def scope_is_unrestricted(allowed_paths: Sequence[str]) -> bool:
-    """True if the scope permits every path: empty, or a universal glob.
+# Diverse probe paths for the unrestricted-scope check. A genuinely restrictive
+# allow-list excludes at least one of these; only a scope that admits EVERY one
+# is treated as unrestricted. Adding probes can only make the check STRICTER
+# about calling a scope universal (a truly universal scope still matches them
+# all), so this never misses an unrestricted scope, it only cuts false warnings.
+# The set spans a root file with no directory, several distinct extensions plus
+# extensionless and binary-asset names (so an extension-list allowlist like
+# `**/*.py` fails), a dotfile, a dot-directory, a deep nested path, and assorted
+# top-level dirs (re-review defect 8 added the non-code names).
+_UNRESTRICTED_PROBES: Final[tuple[str, ...]] = (
+    "src/main.py",
+    "README.md",
+    "rootfile",
+    ".env",
+    ".github/workflows/ci.yml",
+    "a/b/c/d/e.txt",
+    "docs/guide.md",
+    "lib/vendor/thing.min.js",
+    "assets/logo.png",
+    "bin/run",
+    "Makefile",
+    "data/fixtures/sample.bin",
+)
 
-    Matches `path_in_scope`'s universal cases (`**`, `.`) so the CLI and the
-    passport can flag "this contract's per-task boundary is the perimeter only"
-    whether the scope was omitted (legacy) or set explicitly to `--scope '**'`.
+
+def scope_is_unrestricted(allowed_paths: Sequence[str]) -> bool:
+    """True if the scope effectively permits every path.
+
+    Decided with the SAME matcher the gate enforces with (`path_in_scope`), not a
+    literal spelling check: a scope is unrestricted iff it admits every probe in
+    `_UNRESTRICTED_PROBES`. A spelling check missed universal globs that are not
+    literally `**` - `**/**`, `*/**`, `./**`, `**/` all match everything through
+    the segment matcher yet slipped past the flag, so the CLI warning and the
+    passport could read a wide-open contract as scoped (security re-review
+    2026-07-23, F2). Empty stays unrestricted (no per-task boundary declared).
     """
     if not allowed_paths:
         return True
-    return any(p.strip().rstrip("/") in ("**", ".") for p in allowed_paths)
+    return all(path_in_scope(probe, allowed_paths) for probe in _UNRESTRICTED_PROBES)
 
 
 def classify_sensitive_surface(path: str) -> str | None:
@@ -1648,6 +1686,13 @@ def classify_sensitive_surface(path: str) -> str | None:
                   (.notari/lessons.json, .notari/mistakes.jsonl). Advisory, never a
                   security proof; an edit surfaces for review but never changes a
                   verdict.
+
+                  Legacy as of the loop-surface removal: Notari no longer writes
+                  either file. The category is kept deliberately rather than
+                  deleted, because `.notari/` is exempt from the scope check
+                  below, so these two paths returning None would mean a PR that
+                  creates them is neither scope-checked nor surfaced for review.
+                  Keeping it costs one branch and preserves a review surface.
     """
     p = path.removeprefix("./")
     base = p.rsplit("/", 1)[-1]
@@ -1744,7 +1789,12 @@ def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluatio
         for lineno, text in f.added_lines:
             for hit in _secrets.scan(text):
                 secret_findings.append(
-                    SecretFinding(path=f.path, line=lineno, pattern_name=hit.pattern_name)
+                    SecretFinding(
+                        path=f.path,
+                        line=lineno,
+                        pattern_name=hit.pattern_name,
+                        confidence=hit.confidence,
+                    )
                 )
 
     return DiffEvaluation(

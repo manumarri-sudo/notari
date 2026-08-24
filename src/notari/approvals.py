@@ -8,7 +8,6 @@ the TTL, the gate consumes the approval and lets it through (one-shot).
 Why one-shot:
   - A multi-use approval is just a config-file edit; we already have that
     via `[policy]` overrides.
-  - A multi-use approval implicitly bypasses Permission Decay.
   - One-shot matches the human's mental model: "yes, just this one time."
 
 Approval is keyed by `(tool_name, args_digest)` - args_digest is SHA-256
@@ -25,8 +24,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import secrets
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,6 +41,14 @@ except ImportError:  # pragma: no cover - non-POSIX
     _HAS_FLOCK = False
 
 DEFAULT_TTL_SECONDS = 600  # 10 minutes
+
+
+class ApprovalLockUnavailable(RuntimeError):
+    """Raised when an approval mutation cannot take the POSIX file lock.
+
+    The store fails closed rather than perform an unlocked read-modify-write
+    that could resurrect a consumed one-shot token (F9). Hook callers suppress
+    this so the effect is "the call stays blocked", never "silently allowed"."""
 
 
 def args_digest(args: Mapping[str, Any]) -> str:
@@ -92,9 +100,15 @@ class Approval:
 
     @property
     def is_expired(self) -> bool:
+        # TypeError as well as ValueError: a timezone-NAIVE `expires_at` parses
+        # fine and then raises on the comparison against an aware `_now()`, which
+        # escaped the corruption guard in `load()` and propagated out of a
+        # property. Notari always writes aware timestamps, so this only happens
+        # with a hand-edited or corrupted store, and treating it as expired is the
+        # fail-closed reading.
         try:
             return _now() >= datetime.fromisoformat(self.expires_at)
-        except ValueError:
+        except (TypeError, ValueError):
             return True
 
     @property
@@ -166,12 +180,108 @@ class ApprovalStore:
             store.approvals[token] = ap
         return store
 
-    def save(self) -> None:
+    def _write(self) -> None:
+        """Low-level writer. PRIVATE and unlocked: only `_locked` calls it, while
+        holding the exclusive lock, right after re-reading the authoritative
+        on-disk state. There is deliberately no public `save()`: a bare
+        blind-overwrite save on a stale in-memory snapshot could resurrect a
+        just-consumed token even under a lock (the write persists stale state,
+        not the concurrent consume), so the only supported mutation path is the
+        locked read-modify-write in `_locked` (security re-review 2026-07-23,
+        defect 7).
+
+        Written atomically (temp in the same directory, then `os.replace`) because
+        `load`, `active` and `latest_pending` read WITHOUT taking the lock, so a
+        plain `write_text` let them observe a torn file mid-write. A torn read
+        already degraded safely (the JSONDecodeError path falls back to empty,
+        which keeps the caller blocked rather than approving), so this is
+        consistency with the passport helper rather than a security fix.
+
+        The temp file is created O_EXCL|O_NOFOLLOW at an unguessable name and its
+        mode is set at open() time, carrying over the hardening already applied to
+        the passport publish helper. The predictable `.tmp.<pid>` name written via
+        `write_text` followed a pre-planted symlink and let the 0600 mode fail
+        silently. This store lives under NOTARI_HOME rather than a candidate
+        checkout, so exploiting it needs local co-location rather than PR content,
+        but the same shape should not be safe in one file and unsafe in another.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        body = {tok: ap.to_json() for tok, ap in self.approvals.items()}
-        self.path.write_text(json.dumps(body, indent=2, sort_keys=True))
-        with contextlib.suppress(OSError):
-            self.path.chmod(0o600)
+        body = json.dumps(
+            {tok: ap.to_json() for tok, ap in self.approvals.items()}, indent=2, sort_keys=True
+        ).encode()
+        tmp = self.path.with_name(f"{self.path.name}.tmp.{secrets.token_hex(8)}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        # The mode argument to open() is masked by the process umask, so a umask of
+        # 0o600 would have produced a mode-000 store rather than 0600. fchmod on the
+        # descriptor sets it exactly, and doing it on the fd (not the path) means no
+        # window where the name could be swapped.
+        fd = os.open(tmp, flags, 0o600)
+        # Only unlink a temp file THIS call created. Unconditional cleanup meant an
+        # EEXIST collision deleted another writer's temp file, which we do not own.
+        # Descriptor ownership is explicit. Anything that fails BEFORE fdopen
+        # succeeds leaves the raw fd ours to close, and anything after belongs to
+        # the file object. Guarding only fdopen left fchmod's failure path leaking
+        # the descriptor; closing unconditionally instead risks a double close, and
+        # a reused fd number is a worse bug than a leaked one.
+        try:
+            os.fchmod(fd, 0o600)
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+        try:
+            with handle:
+                handle.write(body)
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[ApprovalStore]:
+        """Exclusive lock around a full read-modify-write of the approvals file.
+
+        Every mutator (issue / approve / revoke / consume) runs inside this so
+        the sequence is atomic against other processes. The authoritative
+        on-disk state is re-read INSIDE the lock and yielded as a fresh store;
+        the caller mutates that, then it is written and adopted as `self`'s
+        state, all before the lock releases. Previously only consume() locked, so
+        a stale issue/approve/revoke writer could save an in-memory dict that
+        still held a since-consumed token and restore it (security re-review
+        2026-07-23, F9). `self.approvals` is rebound to the fresh dict, so a
+        caller only ever sees the just-persisted authoritative state.
+
+        Fails CLOSED where POSIX file locking is unavailable: without a lock the
+        race is unavoidable, so a mutation raises rather than risk a double
+        consume. Callers on the hook path already suppress exceptions, so this
+        degrades to "stay blocked", never to "silently allow"."""
+        if not _HAS_FLOCK:
+            raise ApprovalLockUnavailable(
+                "notari approvals require POSIX file locking (fcntl), which this "
+                "platform lacks; refusing an unlocked write that could restore a "
+                "consumed approval token"
+            )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A dedicated lock file so locking never depends on the data file
+        # existing and never truncates it.
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        with open(lock_path, "a+") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                fresh = ApprovalStore.load(self.path)
+                yield fresh
+                fresh._write()
+                # Adopt the fresh dict wholesale. The object a mutator returns is
+                # taken FROM this fresh store, so the caller's handle and
+                # self.approvals reference the same instance (no stale-copy or
+                # split-identity, re-review defect 9).
+                self.approvals = fresh.approvals
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     def issue(
         self,
@@ -195,8 +305,12 @@ class ApprovalStore:
             issued_at=_now_iso(),
             reason=reason,
         )
-        self.approvals[token] = ap
-        self.save()
+        with self._locked() as fresh:
+            # Redraw against the authoritative state on the vanishingly rare
+            # chance the token already exists on disk.
+            while ap.token in fresh.approvals or ap.token.startswith("-"):
+                ap.token = secrets.token_urlsafe(8)
+            fresh.approvals[ap.token] = ap
         return ap
 
     def latest_pending(self) -> Approval | None:
@@ -219,12 +333,12 @@ class ApprovalStore:
         exists only so the notification can name it. Returns the approval on
         success, or None if the token is unknown / expired / already consumed.
         """
-        ap = self.approvals.get(token)
-        if ap is None or not ap.is_active:
-            return None
-        ap.approved_at = _now_iso()
-        self.save()
-        return ap
+        with self._locked() as fresh:
+            ap = fresh.approvals.get(token)
+            if ap is None or not ap.is_active:
+                return None
+            ap.approved_at = _now_iso()
+            return ap
 
     def consume(
         self,
@@ -243,46 +357,35 @@ class ApprovalStore:
         Returns the approval if found (marks consumed and saves), else None.
         """
         digest = args_digest(args)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # A dedicated lock file, so locking does not depend on the data file
-        # already existing and never truncates it.
-        lock_path = self.path.with_name(self.path.name + ".lock")
-        with open(lock_path, "a+") as lock_fd:
-            if _HAS_FLOCK:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            try:
-                # Re-read the authoritative on-disk state INSIDE the lock: another
-                # process may have consumed the token since this instance loaded.
-                fresh = ApprovalStore.load(self.path)
-                for ap in fresh.approvals.values():
-                    # is_consumable (not is_active): a token must have been
-                    # explicitly approved by the operator. A merely-issued
-                    # (pending) token never releases a call, that would let a
-                    # denied call auto-allow its own retry.
-                    if not ap.is_consumable:
-                        continue
-                    if ap.tool_name != tool_name:
-                        continue
-                    if ap.args_digest != digest:
-                        continue
-                    ap.consumed_at = _now_iso()
-                    fresh.save()
-                    # Reflect the consumption in this instance too.
-                    self.approvals = fresh.approvals
-                    return ap
-                self.approvals = fresh.approvals
-                return None
-            finally:
-                if _HAS_FLOCK:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        # The whole read-check-mark-write runs under the exclusive lock, and the
+        # on-disk state is re-read inside it, so two concurrent hooks retrying
+        # the same blocked call cannot both consume the single token.
+        with self._locked() as fresh:
+            for ap in fresh.approvals.values():
+                # is_consumable (not is_active): a token must have been
+                # explicitly approved by the operator. A merely-issued
+                # (pending) token never releases a call, that would let a
+                # denied call auto-allow its own retry.
+                if not ap.is_consumable:
+                    continue
+                if ap.tool_name != tool_name:
+                    continue
+                if ap.args_digest != digest:
+                    continue
+                ap.consumed_at = _now_iso()
+                return ap
+            return None
 
     def revoke(self, token: str) -> bool:
-        """Drop a token without consuming it. Returns True if present."""
-        if token in self.approvals:
-            del self.approvals[token]
-            self.save()
-            return True
-        return False
+        """Drop a token without consuming it. Returns True if present.
+
+        Locked read-modify-write (F9): an unlocked delete-then-save could be
+        overwritten by, or overwrite, a concurrent consume/approve."""
+        with self._locked() as fresh:
+            if token in fresh.approvals:
+                del fresh.approvals[token]
+                return True
+            return False
 
     def active(self) -> list[Approval]:
         """List approvals that are issued, unconsumed, and unexpired."""

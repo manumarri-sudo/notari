@@ -558,6 +558,117 @@ def test_trust_scope_matches_subdirectories(
     assert "trusted scope" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+def test_session_close_command_emits_the_boundary_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`notari session-close` is the surviving CLI half of the removed
+    `notari journal save`, and it is the only way a SessionEnd hook can close
+    a session. The property that matters is the one the audit chain relies on:
+    a SessionEnd payload on stdin produces exactly one `session.close` for that
+    session, and a hook firing twice on exit still produces exactly one.
+
+    Asserted through the real CLI rather than by calling emit_session_close
+    directly, because the stdin-JSON parsing is the part that a refactor can
+    silently break while the underlying function stays correct.
+    """
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    log = tmp_path / "audit.jsonl"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+
+    # A session has to exist in the chain before it can be closed.
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        run_hook(
+            _payload(
+                tool_name="Bash",
+                session_id="ses-cli",
+                transcript=str(transcript),
+                cwd=str(tmp_path),
+                command="pwd",
+            ),
+            audit=audit,
+        )
+
+    stdin_payload = _json.dumps(
+        {"session_id": "ses-cli", "cwd": str(tmp_path), "reason": "user_quit"}
+    )
+    runner = CliRunner()
+    for _ in range(2):  # a SessionEnd hook firing twice must stay idempotent
+        result = runner.invoke(app, ["session-close"], input=stdin_payload)
+        assert result.exit_code == 0, result.output
+
+    events = [_json.loads(line) for line in log.read_text().splitlines()]
+    closes = [e for e in events if e["type"] == "session.close" and e["session_id"] == "ses-cli"]
+    assert len(closes) == 1, f"expected exactly 1 session.close, got {len(closes)}"
+    assert closes[0]["payload"]["reason"] == "user_quit"
+
+
+def test_session_close_command_without_a_session_id_is_a_no_op(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty or malformed SessionEnd payload must not write a close event
+    for some other session, and must not raise into the hook.
+
+    The setup matters more than it looks. An earlier version of this test built
+    no audit log, so nothing could have been written whatever the code did, and
+    it passed happily with the guard deleted. It now closes over a REAL log at
+    the resolved path with a live session in it, so removing the guard writes a
+    fabricated close and the assertion actually fires.
+    """
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    log = tmp_path / "audit.jsonl"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        run_hook(
+            _payload(
+                tool_name="Bash",
+                session_id="ses-live",
+                transcript=str(transcript),
+                cwd=str(tmp_path),
+                command="pwd",
+            ),
+            audit=audit,
+        )
+    assert log.exists(), "precondition: a real log must exist or this test proves nothing"
+
+    # Valid cwd so the path resolves, but no session_id: the guard is the only
+    # thing standing between this payload and a fabricated close event.
+    runner = CliRunner()
+    for payload in ("", "{}", "not json at all", _json.dumps({"cwd": str(tmp_path)})):
+        result = runner.invoke(app, ["session-close"], input=payload)
+        assert result.exit_code == 0, result.output
+
+    events = [_json.loads(line) for line in log.read_text().splitlines()]
+    closes = [e for e in events if e["type"] == "session.close"]
+    assert not closes, f"a payload with no session_id emitted {len(closes)} close events"
+
+
 def test_session_end_emits_session_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -599,9 +710,9 @@ def test_session_end_emits_session_close(
         )
 
     # Now emit session.close (what the SessionEnd hook does).
-    from notari.journal import _emit_session_close
+    from notari.receipt import emit_session_close
 
-    _emit_session_close("ses-A", str(tmp_path), "user_quit")
+    emit_session_close("ses-A", str(tmp_path), "user_quit")
 
     lines = [json.loads(line) for line in log.read_text().splitlines()]
     closes = [e for e in lines if e["type"] == "session.close" and e["session_id"] == "ses-A"]
@@ -639,10 +750,10 @@ def test_session_end_close_is_idempotent(
             ),
             audit=audit,
         )
-    from notari.journal import _emit_session_close
+    from notari.receipt import emit_session_close
 
-    _emit_session_close("ses-B", str(tmp_path), "user_quit")
-    _emit_session_close("ses-B", str(tmp_path), "user_quit")
+    emit_session_close("ses-B", str(tmp_path), "user_quit")
+    emit_session_close("ses-B", str(tmp_path), "user_quit")
     lines = [json.loads(line) for line in log.read_text().splitlines()]
     closes = [e for e in lines if e["type"] == "session.close" and e["session_id"] == "ses-B"]
     assert len(closes) == 1, "duplicate session.close emitted; not idempotent"
@@ -831,3 +942,56 @@ def test_deny_footer_shows_approve_as_the_way_through(tmp_path: Path) -> None:
     assert "notari off" in reason
     assert "notari doctor" in reason
     assert "notari --help" in reason
+
+
+def test_no_on_disk_file_can_downshift_a_default_ask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A default-classified `ask` stays `ask`, whatever sits in NOTARI_HOME.
+
+    The loop extraction removed the promoted-override downshift, which read
+    ~/.notari/overrides.toml and could turn a default `ask` into `allow` for a
+    matching pattern_id. That was the only file-driven ask-to-allow path in
+    run_hook, and this pins its absence.
+
+    Driven through run_hook, NOT through decide(). The removed block lived in
+    run_hook, after decide() had already returned, so a first version of this
+    test that called decide() passed happily with the downshift reintroduced.
+    The entry point under test has to be the one that contained the code.
+
+    Asserted over the whole state directory rather than one filename, because
+    pinning a single filename is exactly the mistake that let a gate bypass
+    ship green in this repo before.
+    """
+    monkeypatch.setenv("NOTARI_BYPASS_MODE", "0")
+    home = tmp_path / "notari_home"
+    home.mkdir()
+    monkeypatch.setenv("NOTARI_HOME", str(home))
+    monkeypatch.setenv("NOTARI_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("NOTARI_KEY", str(tmp_path / "key"))
+    monkeypatch.setenv("NOTARI_SESSIONS", str(tmp_path / "sessions.json"))
+    monkeypatch.setenv("NOTARI_TAINT_FILE", str(tmp_path / "taint.json"))
+    monkeypatch.setenv("NOTARI_NO_AUTO_WATCH", "1")
+    log = tmp_path / "audit.jsonl"
+
+    edit = _stdin_for("Edit", file_path="/x", old_string="a", new_string="b")
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        baseline = run_hook(edit, audit=audit)
+    assert baseline["hookSpecificOutput"]["permissionDecision"] == "ask", (
+        "precondition: a plain Edit must ask through run_hook"
+    )
+
+    reason = decide("Edit", {"file_path": "/x", "old_string": "a", "new_string": "b"}).reason
+    block = f'["Edit:{reason}"[:80]]\npromoted_at = "2099-01-01T00:00:00+00:00"\nttl_days = 3650\n'
+    for name in ("overrides.toml", "promotions.toml", "suggestions.jsonl", "learning.json"):
+        (home / name).write_text(block)
+
+    with AuditLog(path=log, hmac_key=b"k" * 32) as audit:
+        after = run_hook(edit, audit=audit)
+    decision = after["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "ask", (
+        f"a file in NOTARI_HOME downshifted a default ask to {decision!r}; "
+        f"the file-driven override path must stay removed"
+    )

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from notari import attest, explain
+from notari import secrets as secrets_mod
 from notari.verify import Verdict, VerifyResult
 
 SIGNATURE_KEY = "signature"
@@ -29,6 +30,20 @@ _VERDICT_BADGE = {
     Verdict.NEEDS_REVIEW: "⚠️ NEEDS REVIEW",
     Verdict.BLOCK: "⛔ BLOCK",
 }
+
+
+def _confidence_of(finding: Any) -> str:
+    """ "low" for review-tier findings, "high" for blocking ones.
+
+    Prefers the confidence the scanner recorded on the finding, since an ANCHORED
+    pattern with a placeholder-looking value is demoted to review rather than
+    dropped, and that cannot be recovered from the pattern name alone. Falls back
+    to the pattern-name classification for findings built before the field existed.
+    """
+    carried = getattr(finding, "confidence", None)
+    if carried in ("low", "high"):
+        return str(carried)
+    return "low" if secrets_mod.is_low_confidence(finding.pattern_name) else "high"
 
 
 def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> dict[str, Any]:
@@ -61,8 +76,17 @@ def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> 
             "out_of_scope": list(result.out_of_scope),
             "forbidden_hits": list(result.forbidden_hits),
             "gate_tamper_hits": list(result.gate_tamper_hits),
+            # `confidence` is emitted so every downstream renderer can tell the
+            # BLOCK tier from the review tier. Without it the tier was discarded
+            # here, and `notari explain` then described a low-confidence
+            # keyword-match with the certainty of a matched vendor key format.
             "secret_findings": [
-                {"path": f.path, "line": f.line, "pattern": f.pattern_name}
+                {
+                    "path": f.path,
+                    "line": f.line,
+                    "pattern": f.pattern_name,
+                    "confidence": _confidence_of(f),
+                }
                 for f in result.secret_findings
             ],
             "sensitive_surfaces": {k: list(v) for k, v in result.sensitive_surfaces.items() if v},
@@ -113,7 +137,7 @@ def render_markdown(
     lines.append(f"## Verdict: {badge}")
     lines.append("")
     for r in result.reasons:
-        lines.append(f"- {r}")
+        lines.append(f"- {_md_text(r)}")
     lines.append("")
 
     # Action block, only when there's something to act on (BLOCK / NEEDS_REVIEW).
@@ -166,10 +190,10 @@ def render_markdown(
 
     lines.append("## Contract")
     lines.append("")
-    lines.append(f"- **Task:** {c.task}")
-    lines.append(f"- **Contract id:** `{c.contract_id}`")
+    lines.append(f"- **Task:** {_md_text(c.task)}")
+    lines.append(f"- **Contract id:** `{_md_code(c.contract_id)}`")
     if c.approved_by:
-        lines.append(f"- **Approved by:** {c.approved_by}")
+        lines.append(f"- **Approved by:** {_md_text(c.approved_by)}")
     from notari.policy import scope_is_unrestricted
 
     if scope_is_unrestricted(c.allowed_paths):
@@ -185,8 +209,12 @@ def render_markdown(
     else:
         scope = ", ".join(f"`{_md_code(p)}`" for p in c.allowed_paths)
     lines.append(f"- **Approved scope:** {scope}")
-    lines.append(f"- **Base commit:** `{_short(result.base_commit)}`")
-    lines.append(f"- **Head commit:** `{_short(result.head_commit)}`")
+    # base/head commit come from the contract / repo and are normally validated
+    # hex SHAs, but a crafted contract can carry arbitrary text there before
+    # validation, so neutralize before it lands in a code span (re-review defect
+    # 6): a bare backtick would otherwise close the span and inject markdown.
+    lines.append(f"- **Base commit:** `{_md_code(_short(result.base_commit))}`")
+    lines.append(f"- **Head commit:** `{_md_code(_short(result.head_commit))}`")
     lines.append("")
 
     # Collapse the raw evidence/trust detail so the PR summary stays scannable:
@@ -236,7 +264,12 @@ def render_markdown(
     lines.append("")
     if secrets:
         for f in secrets:
-            lines.append(f"- ⛔ `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}")
+            # The marker must match the tier. Rendering every finding with the
+            # hard-violation glyph described a low-confidence keyword match with the
+            # certainty of a matched vendor key format, in the same document whose
+            # verdict correctly said NEEDS_REVIEW.
+            marker = "⚠️ possible" if _confidence_of(f) == "low" else "⛔"
+            lines.append(f"- {marker} `{_md_code(f.path)}:{f.line}`, {_md_code(f.pattern_name)}")
     else:
         lines.append("_No secrets detected on added lines._")
     lines.append("")
@@ -260,18 +293,23 @@ def render_markdown(
             reason = e.get("reason", "(no reason given)")
             target = e.get("path") or e.get("category") or "*"
             lines.append(
-                f"- `{_md_code(str(e.get('type', '?')))}` on `{_md_code(str(target))}`, {reason}"
+                f"- `{_md_code(str(e.get('type', '?')))}` on "
+                f"`{_md_code(str(target))}`, {_md_text(str(reason))}"
             )
         lines.append("")
 
     if result.perimeter_id:
         lines.append("## Trust")
         lines.append("")
-        lines.append(f"- **Perimeter:** `{result.perimeter_id}`")
+        # perimeter_id / key_id originate from a perimeter that, in cooperative
+        # mode or before provenance is established, can be candidate-influenced,
+        # so wrap them in _md_code: a bare backtick or newline could otherwise
+        # close the span and inject a fake verdict heading (re-review defect 6).
+        lines.append(f"- **Perimeter:** `{_md_code(result.perimeter_id)}`")
         if result.provenance is not None:
             prov = result.provenance
             mark = "✅" if prov.status.is_trustworthy else "⚠️"
-            signer = f" (approver `{prov.key_id}`)" if prov.key_id else ""
+            signer = f" (approver `{_md_code(prov.key_id)}`)" if prov.key_id else ""
             lines.append(f"- **Perimeter provenance:** {mark} {prov.status.value}{signer}")
         lines.append(f"- **Strict mode:** {'on' if result.strict else 'off'}")
         lines.append("")
@@ -373,7 +411,34 @@ def _md_code(s: str, *, max_len: int = 240) -> str:
 
 
 def _md_line(s: str) -> str:
-    """Collapse line breaks in a prose field so an embedded candidate path
-    cannot end the current markdown line and inject a following standalone
-    heading. Backticks are left intact (prose legitimately uses code spans)."""
-    return s.replace("\r", " ").replace("\n", " ")
+    """Sanitize NOTARI'S OWN prose (remediation sentences) that EMBEDS a
+    candidate-controlled value (a task string or a path). Collapse line breaks so
+    the embedded value cannot end the line and inject a following standalone
+    heading, and escape angle brackets so it cannot emit raw HTML such as a
+    ``</details>`` that escapes the evidence fold (security re-review 2026-07-23,
+    defect 5). Backticks are LEFT intact because Notari's own remediation prose
+    legitimately uses code spans and a stray backtick in a single collapsed line
+    can at worst open an inert inline span, not a heading or HTML. For a field
+    that is ENTIRELY candidate-controlled use _md_text (which also neutralizes
+    backticks)."""
+    return s.replace("\r", " ").replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _md_text(s: str, *, max_len: int = 500) -> str:
+    """Sanitize a candidate-controlled PROSE field for the human passport.
+
+    The contract task, the approver string, the reason lines, and applied-
+    exception reasons are all attacker-controllable and land in
+    GITHUB_STEP_SUMMARY. `_md_line` only collapsed CR/LF, which left three
+    injection vectors open (security re-review 2026-07-23, F11): a stray backtick
+    could open a code span that swallows the rest of the line, and a raw ``<`` /
+    ``>`` could inject HTML, e.g. a ``</details>`` that escapes the evidence fold
+    and lets crafted text pose as a real verdict. We collapse line breaks and
+    tabs, neutralize backticks with a lookalike, escape angle brackets to HTML
+    entities (which render as the real characters, so the text stays faithful),
+    and cap length so a pathological field cannot flood the summary."""
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = s.replace("`", "ˋ").replace("<", "&lt;").replace(">", "&gt;")
+    if len(s) > max_len:
+        s = s[:max_len] + "…"
+    return s

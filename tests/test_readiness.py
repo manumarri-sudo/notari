@@ -80,3 +80,23 @@ def test_tampered_perimeter_is_not_enforced(tmp_path: Path) -> None:
     report = readiness.assess(tmp_path, env={provenance_mod.APPROVER_ENV: pub_pem})
     assert report.posture is Posture.COOPERATIVE
     assert any(c.name == "perimeter signature" and not c.ok for c in report.checks)
+
+
+def test_action_manifest_has_no_workflow_only_contexts() -> None:
+    """`action.yml` is a composite action MANIFEST, and GitHub evaluates `${{ }}`
+    inside it, including inside input `description` prose. `secrets` and `vars` are
+    workflow-only contexts, so referencing them anywhere in the manifest makes the
+    whole action fail to LOAD with a TemplateValidationException.
+
+    This shipped broken: every run of the change-control workflow failed from at least
+    2026-07-10, four for four, and nine adversarial security review passes did not
+    catch it because none of them ran the Action on a real runner. Write context names
+    as plain prose in descriptions instead.
+    """
+    import re
+    from pathlib import Path
+
+    manifest = (Path(__file__).parent.parent / "action.yml").read_text()
+    expressions = re.findall(r"\$\{\{(.*?)\}\}", manifest, flags=re.S)
+    offenders = [e.strip() for e in expressions if re.search(r"\b(secrets|vars)\.", e)]
+    assert offenders == [], offenders

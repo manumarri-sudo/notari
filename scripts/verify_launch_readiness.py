@@ -65,39 +65,47 @@ def check_no_shipping_mcp_proxy() -> tuple[bool, str]:
     )
 
 
-def check_lessons_advisory() -> tuple[bool, str]:
-    blob = (
-        _read("README.md") + _read("docs/LEARNING-LOOP.md") + _read("docs/SECURITY-MODEL.md")
-    ).lower()
+def check_no_learning_claims() -> tuple[bool, str]:
+    """The learning loop is gone. This used to assert the docs described it as
+    advisory rather than enforcing; now it asserts the docs do not describe it
+    at all, so the claim cannot creep back in without the feature."""
+    blob = (_read("README.md") + _read("docs/QUICKSTART.md")).lower()
     banned = [
         "lessons decide the verdict",
         "lessons enforce policy",
         "mistake logs are security proof",
         "trains the model from all user logs",
         "lesson counts prove safety",
+        "notari lessons",
+        "notari teach",
     ]
     hit = next((b for b in banned if b in blob), None)
     if hit:
-        return False, f"docs imply advisory learning is enforcement: {hit!r}"
-    required = ["advisory", "human-promoted", "local", "no telemetry"]
+        return False, f"docs reference the removed learning loop: {hit!r}"
+    required = ["local", "no telemetry"]
     missing = [r for r in required if r not in blob]
     if missing:
-        return False, f"LEARNING-LOOP/README missing advisory wording: {missing}"
-    return True, "docs state lessons are advisory, human-promoted, local, no telemetry"
+        return False, f"README/QUICKSTART missing privacy wording: {missing}"
+    return True, "docs make no learning-loop claims; privacy wording intact"
 
 
 def check_loop_visible() -> tuple[bool, str]:
     blob = _read("README.md") + _read("docs/QUICKSTART.md")
+    # The documented path a user actually walks: capture the contract, verify a
+    # diff against it, turn a BLOCK into a fix, and brief the next agent. The
+    # lessons and teach commands were removed with the loop surface; requiring
+    # them here directly contradicted check_no_learning_claims, which is how
+    # this list was caught being stale.
     needed = [
+        "notari begin",
         "notari verify",
         "notari explain",
         "notari explain --fix-prompt",
-        "notari lessons",
-        "notari teach",
+        "notari agent-brief",
     ]
     missing = [n for n in needed if n not in blob]
     return (not missing), (
-        "README/Quickstart show the full loop"
+        "README/Quickstart show the full contract-to-fix path"
         if not missing
         else f"loop commands missing from docs: {missing}"
     )
@@ -290,7 +298,7 @@ def check_security_tests_not_silently_disabled() -> tuple[bool, str]:
 
 CHECKS = [
     ("docs.no_removed_mcp_proxy_claim", check_no_shipping_mcp_proxy, True),
-    ("docs.lessons_are_advisory", check_lessons_advisory, True),
+    ("docs.no_learning_claims", check_no_learning_claims, True),
     ("docs.launch_loop_visible", check_loop_visible, True),
     ("docs.surfaces_agree", check_docs_agree_surfaces, True),
     ("behavior.fix_prompt_safe", check_fix_prompt_safe, True),

@@ -142,10 +142,17 @@ def test_passes_on_touchid_success(monkeypatch) -> None:
     _require_disable_auth(_Console())  # must not raise
 
 
-def test_pause_json_is_in_adapter_gate_surface() -> None:
-    from notari.adapters.claude_code import _GATE_CONFIG_SUFFIXES
+def test_gate_state_files_are_in_the_adapter_gate_surface() -> None:
+    """Asserts the PROPERTY (these files are protected) rather than the mechanism
+    (they appear in one specific list). The mechanism-shaped version of this test
+    passed while `approvals.json` and `overnight.json` were unprotected, because it
+    only ever asked about `pause.json`, and those two are the files that actually turn
+    a refusal into an allow. Protection is now by directory, so the list it used to
+    inspect no longer contains any of them."""
+    from notari.adapters.claude_code import _is_gate_config_path
 
-    assert any("pause.json" in s for s in _GATE_CONFIG_SUFFIXES)
+    for name in ("pause.json", "approvals.json", "overnight.json", "config.toml"):
+        assert _is_gate_config_path(f"~/.notari/{name}") is True, name
 
 
 # ---------------------------------------------------------------------------

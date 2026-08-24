@@ -186,13 +186,18 @@ def test_issued_but_unapproved_token_does_not_release_call(tmp_path: Path) -> No
 
 
 def test_expired_approval_denied(tmp_path: Path) -> None:
+    import json
     from datetime import UTC, datetime, timedelta
 
-    store = ApprovalStore(path=tmp_path / "a.json")
+    p = tmp_path / "a.json"
+    store = ApprovalStore(path=p)
     ap = store.issue("Bash", {"command": "git push"}, ttl_seconds=1)
     store.approve(ap.token)
-    ap.expires_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    store.save()
+    # Age the approval out on disk (no public unlocked save), then reload.
+    data = json.loads(p.read_text())
+    data[ap.token]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    p.write_text(json.dumps(data))
+    store = ApprovalStore.load(path=p)
     assert store.consume("Bash", {"command": "git push"}) is None
 
 

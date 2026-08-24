@@ -14,9 +14,7 @@
 > **NEEDS_REVIEW**, or **BLOCK**. There is no model in that verdict, so it cannot
 > be prompt-injected. It does **not** judge whether the code is correct: it
 > attests to *where* the change went and whether it leaked a secret, the part a
-> human most often skims past on a large agent PR. And a repeated mistake becomes
-> a short rule you promote into `CLAUDE.md` / `AGENTS.md`, so the agent stops
-> making it. **Alpha**; treat
+> human most often skims past on a large agent PR. **Alpha**; treat
 > [the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
 > as the source of truth over any one-line claim.
 
@@ -38,9 +36,15 @@ Prefer a persistent install? `pipx install notari` or `pip install notari`, then
 `notari init`. Either way the next two commands are the whole daily loop:
 
 ```bash
-notari begin "add rate limiting" --scope "src/auth/**"   # sign what the agent may touch
+notari begin "add rate limiting" --scope "src/api/**"    # sign what the agent may touch
 notari verify --strict                                    # in CI: PASS, NEEDS_REVIEW, or BLOCK
 ```
+
+> `notari init` automatically forbids directories that look sensitive (`auth`,
+> `migrations`, `infra`, `terraform`, `deploy`, and similar). Forbidden beats contract
+> scope, so scoping a task *into* one of them returns BLOCK by design. When you really
+> do need to touch one, set the boundary explicitly and sign it:
+> `notari guard --key approver.pem --allow "src/**" --forbid "migrations/**"`.
 
 ## What you actually get
 
@@ -68,12 +72,10 @@ insertions cryptographically, and trailing truncation against a sealed high-wate
 once `notari audit verify` has run; the passport's footer cites the exact chain entry
 for its run.
 
-**3. The loop, which stops the same mistake recurring.** `notari explain` turns a BLOCK
-into a per-finding fix and a paste-ready agent prompt, `notari lessons` ranks what an
-agent keeps getting wrong, and `notari teach` writes the lessons you promote into
-`CLAUDE.md`, `AGENTS.md`, or Cursor rules, so the next session starts already knowing.
-All local, all human-gated, no telemetry, and no raw code, diffs, or secret values ever
-leave your machine.
+**3. The remediation path, so a BLOCK is actionable.** `notari explain` turns a BLOCK
+into a per-finding fix and a paste-ready agent prompt, and `notari agent-brief` hands
+the next agent its approved scope before it starts. All local, all human-gated, no
+telemetry, and no raw code, diffs, or secret values ever leave your machine.
 
 **4. The guard on your laptop, which is defense-in-depth and not a hard boundary.** An
 optional `PreToolUse` hook gates the agent's tool calls as they happen (`rm -rf`,
@@ -127,13 +129,12 @@ free of a backdoor. That is the honest scope.
   <img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-flow-light.svg" alt="How Notari works: a human signs the task boundary, the AI agent writes the diff, CI verifies the change against the signed boundary and issues a PASS, NEEDS_REVIEW, or BLOCK verdict, recorded in a signed Change Passport any reviewer can re-check." width="920">
 </picture>
 
-The full loop, live, an agent edits in and out of scope, Notari verifies each
-diff (PASS / NEEDS_REVIEW / BLOCK), and a repeated mistake becomes a lesson
-taught back to the agent (from
+An agent edits in and out of scope, and Notari verifies each diff
+(PASS / NEEDS_REVIEW / BLOCK) against the signed contract (from
 [`examples/change_control_demo.sh`](https://github.com/manumarri-sudo/notari/blob/main/examples/change_control_demo.sh),
 unedited):
 
-<img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-demo.gif" alt="Terminal recording of the demo: setup, a PASS on an in-scope change, BLOCK verdicts on forbidden-path and secret-introducing changes, notari explain remediation, and the lessons loop writing a promoted rule into CLAUDE.md." width="920">
+<img src="https://raw.githubusercontent.com/manumarri-sudo/notari/main/docs/assets/notari-demo.gif" alt="Terminal recording of the demo: setup, a PASS on an in-scope change, BLOCK verdicts on forbidden-path and secret-introducing changes, and notari explain remediation." width="920">
 
 ```bash
 # 0. one-time: create a human approver key. Keep the PRIVATE half off the build
@@ -330,19 +331,15 @@ silently, so deleting or omitting the contract cannot wave a change through.
 Initialize Change Control on the base branch (`notari begin --key`) before requiring
 the check.
 
-## After a BLOCK: explain, fix, and teach future agents
+## After a BLOCK: explain and fix
 
-A verdict is where most gates stop. Notari turns the block into the fix, and turns
-repeated blocks into repo lessons future agents read before they drift again, all
+A verdict is where most gates stop. Notari turns the block into the fix, all
 local, no telemetry, deterministic (no model decides anything):
 
 ```bash
 notari verify                                     # PASS · NEEDS_REVIEW · BLOCK + a passport
 notari explain                                    # the passport in plain English + a fix per finding
 notari explain --fix-prompt                       # a compact prompt to paste into your coding agent
-notari lessons                                    # repeated local mistakes, ranked, with a suggested lesson
-notari lessons promote no-ci-edits-without-ci-scope   # human-gated: accept a lesson
-notari teach --agents claude,codex,cursor         # write promoted lessons into CLAUDE.md / AGENTS.md / Cursor rules
 notari agent-brief                                # the compact pre-work brief to hand an agent before it starts
 ```
 
@@ -351,7 +348,7 @@ language, the exact `git` command to undo it, and a paste-ready instruction for 
 agent, plus *what Notari does not prove* (it checks the boundary, not code
 correctness). `--fix-prompt` and `--agent-brief` emit the compact agent surfaces
 without dumping the full passport into context. **Notari never uploads raw code,
-diffs, prompts, or secret values; lessons are local and human-promoted.**
+diffs, prompts, or secret values.**
 
 ## Trust spine: sign the boundary once, the agent can't forge it
 
@@ -445,9 +442,8 @@ before a later `python foo.py` can run them. Every decision lands in
 Supporting surfaces on the local gate, all derived from the same chain on read:
 `notari receipts` (per-session did / changed / uncertain / to-verify), `notari trifecta`
 (lethal-trifecta exposure: untrusted input + private data + exfil vector),
-`notari pins` (tool-description pinning against MCP rug-pulls), `notari decay`
-(permissions that erode without reinforcement), and `notari audit` (review and verify
-the chain). `notari scan-secrets` runs the secret detectors standalone over files.
+`notari pins` (tool-description pinning against MCP rug-pulls), and `notari audit`
+(review and verify the chain). `notari scan-secrets` runs the secret detectors standalone over files.
 
 **Why this is defense-in-depth and not the headline:** an application-layer gate can
 be routed around by a capable adversary (the limits above). The provable boundary is
@@ -497,8 +493,6 @@ notari begin          capture the approved task into .notari/contract.json
 notari verify         compare the diff to the contract, emit PASS / NEEDS_REVIEW / BLOCK
 notari explain        turn the passport into plain-English remediation (--fix-prompt, --agent-brief, --format html)
 notari fix-prompt     compact paste-ready fix prompt for the coding agent
-notari lessons        aggregate repeated local mistakes; promote <id> to accept one
-notari teach          write promoted lessons into CLAUDE.md / AGENTS.md / Cursor rules
 notari agent-brief    compact pre-work brief to hand an agent before it starts
 notari onboard        first-run setup for the local gate (detect agents, install hook)
 notari audit          review what got blocked / allowed / asked; verify the chain
@@ -507,7 +501,6 @@ notari approvals      list (hashed ids) / revoke pending approval tokens
 notari receipts       per-session did / changed / uncertain / to-verify
 notari trifecta       lethal-trifecta exposure tracking
 notari pins           tool-description pins (anti-poisoning, anti-rug-pull)
-notari decay          permissions that erode without reinforcement
 notari scan-secrets   scan files for hardcoded credentials
 notari scan-prompts   scan files for prompt-injection-shape patterns (signal only)
 notari commit-hook-install   add a session-summary block to the commit message template
@@ -524,7 +517,7 @@ read [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) before using them).
 (`begin`/`verify`/passport + GitHub Action), the HMAC-chained audit log (32k+ entries
 dogfooded, truncation-detectable, `notari audit verify` clean), the local PreToolUse
 gate with Touch ID approvals and 26-pattern secret detection, the write-then-run AST
-scan, and the read-side surfaces (receipts, trifecta, pins, decay). The full test
+scan, and the read-side surfaces (receipts, trifecta, pins). The full test
 suite (`uv run pytest` for the live count), `ruff`, `ruff format`, and
 `mypy --strict` are green and enforced in CI.
 

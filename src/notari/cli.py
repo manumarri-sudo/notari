@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -32,8 +33,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from notari import decay as decay_mod
-from notari import journal as journal_mod
 from notari import telemetry as tel
 from notari._version import __version__
 from notari.adapters import claude_code as cc_adapter
@@ -52,7 +51,7 @@ app = typer.Typer(
     help="notari change control: verify AI-written diffs against the human-approved task.\n\n"
     "Day one: notari init (guided setup), then notari begin / verify / explain.\n"
     "Pause anytime: notari off (bounded + logged); notari on resumes.\n\n"
-    "Advanced commands (lessons, teach, receipts, trifecta, pins, hooks, ...) stay\n"
+    "Advanced commands (receipts, trifecta, pins, hooks, ...) stay\n"
     "available by name; `notari <command> --help` works for all of them.",
 )
 
@@ -84,18 +83,6 @@ audit_app = typer.Typer(
     help="see what got blocked / allowed / asked.",
 )
 app.add_typer(audit_app, name="audit", rich_help_panel="Health & evidence")
-lessons_app = typer.Typer(
-    invoke_without_command=True,
-    help="turn repeated agent mistakes into lessons future agents learn from.",
-)
-app.add_typer(lessons_app, name="lessons", hidden=True)
-decay_app = typer.Typer(
-    no_args_is_help=True,
-    help="track permissions that erode without reinforcement (Permission Decay framework).",
-)
-app.add_typer(decay_app, name="decay", hidden=True)
-journal_app = typer.Typer(no_args_is_help=True, help="session-journal subcommands.")
-app.add_typer(journal_app, name="journal", hidden=True)
 telemetry_app = typer.Typer(
     no_args_is_help=True,
     help="opt-in anonymous usage telemetry.",
@@ -138,16 +125,45 @@ trust_app = typer.Typer(
 )
 app.add_typer(trust_app, name="trust", hidden=True)
 
-suggestions_app = typer.Typer(
-    no_args_is_help=True,
-    help="review and promote learner-surfaced suggestions. Auto-tightenings already applied; loosenings stay pending until the operator promotes.",
-)
-app.add_typer(suggestions_app, name="suggestions", hidden=True)
-
 
 # --------------------------------------------------------------------------
 # Change Control: begin (capture the contract) + verify (gate the diff)
 # --------------------------------------------------------------------------
+
+
+def _paths_notari_init_touched(root: Path) -> list[str]:
+    """Top-level paths `notari init` created or modified, straight from git.
+
+    Derived, not hand-listed. Two consecutive hand-written versions of the commit
+    instruction were wrong: one omitted the workflow file, so it landed in the user's
+    first CHANGE commit and the first verify BLOCKed on gate-tamper; correcting that by
+    hand then omitted `.gitignore`, which BLOCKed as an out-of-scope edit instead. A
+    list a human maintains drifts from the code that writes the files. Returns [] if
+    git cannot answer, and the caller falls back to a static hint.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in proc.stdout.splitlines():
+        entry = line[3:].strip().strip('"')
+        if not entry:
+            continue
+        top = entry.split("/", 1)[0]
+        # Only what init itself owns; never sweep the user's own work into the commit.
+        if top in (".notari", ".github", ".gitignore") and top not in paths:
+            paths.append(top)
+    return paths
 
 
 @app.command("begin", rich_help_panel="Core")
@@ -421,16 +437,6 @@ def verify_cmd(
         signed = " [dim](signed)[/dim]" if gate_pem else ""
         console.print(f"[dim]passport: {md_path} · {json_path}[/dim]{signed}")
 
-    # Post-decision learning: record structured mistake events locally so
-    # `notari lessons` can aggregate repeats. Never influences the verdict,
-    # and a recording failure can never fail the gate open or closed.
-    try:
-        from notari import lessons as lessons_mod
-
-        lessons_mod.record_mistakes(passport_mod.build_passport(result), root)
-    except Exception:
-        pass
-
     out = Console()  # stdout
     if as_json:
         out.print_json(data=passport_mod.build_passport(result))
@@ -661,7 +667,6 @@ def verify_passport_cmd(
     """
     import json
     import os
-    from datetime import UTC, datetime
 
     from notari import attest
     from notari import passport as passport_mod
@@ -719,6 +724,15 @@ def verify_passport_cmd(
         except ValueError:
             out.print(f"[red]✗ contract expiry malformed[/red] ({expires_at!r})")
             raise typer.Exit(code=1) from None
+        if exp.tzinfo is None:
+            # Valid ISO-8601 but unusable: comparing it against an aware now() raises
+            # TypeError. A reviewer command must refuse rather than crash, and must
+            # not treat an expiry it cannot evaluate as "not expired".
+            out.print(
+                f"[red]✗ contract expiry has no timezone[/red] ({expires_at!r}); "
+                "cannot determine whether it has passed"
+            )
+            raise typer.Exit(code=1)
         if datetime.now(UTC) >= exp:
             out.print(f"[red]✗ contract expired[/red] at {expires_at}")
             raise typer.Exit(code=1)
@@ -775,6 +789,37 @@ def verify_passport_cmd(
         f"[green]✓ passport verified[/green] · verdict [bold]{passport.get('verdict')}[/bold] "
         f"· signed by gate {signer}"
     )
+
+    # The signature being real does NOT mean the verdict was enforced. A cooperative
+    # run prints a warning at verify time that the contract could have been forged by
+    # the same agent that wrote the diff, and records `strict: false` with
+    # `contract_provenance: unsigned`. This command never read either field, so the
+    # one command the docs point a reviewer at rendered "a human signed this boundary"
+    # and "the agent could have forged the contract" identically, both as a green tick.
+    #
+    # It stays exit 0, because the passport IS authentic and that is what this command
+    # verifies. What changes is that the reviewer is told what they are looking at.
+    trust = passport.get("trust") or {}
+    caveats: list[str] = []
+    if trust.get("strict") is False:
+        caveats.append("run in COOPERATIVE mode, so the boundary was advisory, not enforced")
+    contract_prov = trust.get("contract_provenance")
+    if contract_prov and contract_prov != "verified":
+        caveats.append(
+            f"contract provenance is {contract_prov}, so the task and scope were not "
+            "provably approved by a human"
+        )
+    provenance = trust.get("provenance")
+    if provenance and provenance not in ("verified", None):
+        caveats.append(f"perimeter provenance is {provenance}")
+    if caveats:
+        out.print("[yellow]⚠ the verdict is not an enforced boundary:[/yellow]")
+        for c in caveats:
+            out.print(f"  [yellow]·[/yellow] {c}")
+        out.print(
+            "  [dim]The signature proves the passport is authentic and unmodified. "
+            "It does not prove a human approved the change.[/dim]"
+        )
 
 
 @app.command("explain", rich_help_panel="Core")
@@ -876,110 +921,13 @@ def explain_cmd(
         print(rendered)
 
 
-def _lessons_root() -> Path:
+def _repo_root_or_cwd() -> Path:
     from notari import contract as contract_mod
 
     try:
         return contract_mod.repo_root()
     except Exception:
         return Path.cwd()
-
-
-@lessons_app.callback()
-def lessons_main(
-    ctx: typer.Context,
-    as_json: Annotated[
-        bool, typer.Option("--json", help="machine-readable output for piping.")
-    ] = False,
-) -> None:
-    """Show repeated agent mistakes in this repo and the lesson each suggests.
-
-    Notari turns every blocked AI PR into a lesson future agents can learn
-    from: `notari verify` records structured mistake events locally (never
-    code, diffs, or secret values), this command aggregates the repeats, and
-    `notari lessons promote <id>` + `notari teach` write the human-approved
-    lessons into agent instruction files.
-    """
-    if ctx.invoked_subcommand is not None:
-        return
-    from notari import lessons as lessons_mod
-
-    root = _lessons_root()
-    patterns = lessons_mod.suggest(lessons_mod.load_events(root))
-    out = Console()
-    if as_json:
-        out.print_json(data={"patterns": patterns, "promoted": lessons_mod.load_promoted(root)})
-        return
-    if not patterns:
-        out.print(
-            "no recorded agent mistakes yet, they accumulate automatically "
-            "when `notari verify` returns BLOCK or NEEDS_REVIEW."
-        )
-        return
-    out.print("[bold]Repeated agent mistakes in this repo:[/bold]\n")
-    promoted_ids = {e["id"] for e in lessons_mod.load_promoted(root)}
-    for n, p in enumerate(patterns, start=1):
-        mark = " [green](promoted)[/green]" if p["lesson_id"] in promoted_ids else ""
-        sev_icon = {"block": "⛔", "policy_candidate": "🔒", "warn": "⚠️", "inform": "ℹ️"}.get(
-            p["severity"], "•"
-        )
-        out.print(f"{n}. {sev_icon} {p['headline']}  [dim]({p['severity']})[/dim]")
-        out.print(f"   Seen: {p['count']} time(s) · last {p['last_seen'][:10]}{mark}")
-        out.print(f"   Suggested lesson: {p['lesson']}")
-        out.print(f"   Promote it: [cyan]{p['promote_command']}[/cyan]\n")
-
-
-@lessons_app.command("promote")
-def lessons_promote_cmd(
-    lesson_id: Annotated[str, typer.Argument(help="lesson id from `notari lessons`.")],
-) -> None:
-    """Promote a suggested lesson into the repo's lesson store (human-gated).
-
-    Idempotent. Run `notari teach` afterwards to write promoted lessons into
-    agent instruction files (CLAUDE.md, AGENTS.md, Cursor rules).
-    """
-    from notari import lessons as lessons_mod
-
-    root = _lessons_root()
-    out = Console()
-    try:
-        newly, text = lessons_mod.promote(lesson_id, root)
-    except KeyError:
-        out.print(f"[red]unknown lesson id '{lesson_id}'[/red], run `notari lessons` for the list.")
-        raise typer.Exit(code=2) from None
-    verb = "promoted" if newly else "already promoted"
-    out.print(f"[green]✓[/green] {verb}: {lesson_id}")
-    out.print(f"  {text}")
-    out.print("  now run [cyan]notari teach[/cyan] to write it into agent instruction files.")
-
-
-@app.command("teach", hidden=True)
-def teach_cmd(
-    agents: Annotated[
-        str,
-        typer.Option("--agents", help="comma-separated targets: claude, codex, cursor."),
-    ] = "claude,codex,cursor",
-) -> None:
-    """Write promoted lessons into agent instruction files (managed block).
-
-    Updates CLAUDE.md (Claude Code), AGENTS.md (Codex and generic agents),
-    and .cursor/rules/notari-scope.mdc (plus .cursorrules when it already
-    exists). Only the notari-lessons block is touched; user content outside
-    it is preserved. Idempotent.
-    """
-    from notari import teach as teach_mod
-
-    root = _lessons_root()
-    wanted = [a.strip() for a in agents.split(",") if a.strip()]
-    unknown = [a for a in wanted if a not in teach_mod.AGENT_TARGETS]
-    out = Console()
-    if unknown:
-        out.print(
-            f"[red]unknown agent(s): {', '.join(unknown)}[/red], supported: claude, codex, cursor"
-        )
-        raise typer.Exit(code=2)
-    for target, changed in teach_mod.teach(root, wanted):
-        out.print(f"  {'updated' if changed else 'unchanged'}: {target}")
 
 
 def _emit_fix_prompt(passport_file: Path | None) -> None:
@@ -1007,11 +955,10 @@ def _emit_fix_prompt(passport_file: Path | None) -> None:
 def _emit_agent_brief() -> None:
     """Shared by `notari agent-brief` and `notari explain --agent-brief`."""
     from notari import contract as contract_mod
-    from notari import lessons as lessons_mod
     from notari import perimeter as perimeter_mod
     from notari import teach as teach_mod
 
-    root = _lessons_root()
+    root = _repo_root_or_cwd()
     out = Console()
     try:
         contract = contract_mod.load(root)
@@ -1025,7 +972,6 @@ def _emit_agent_brief() -> None:
             allowed_paths=list(contract.allowed_paths),
             forbidden_paths=list(perimeter.forbidden_paths) if perimeter else [],
             review_surfaces=list(perimeter.review_surfaces) if perimeter else [],
-            promoted=lessons_mod.load_promoted(root),
         )
     )
 
@@ -1051,9 +997,9 @@ def fix_prompt_cmd(
 def agent_brief_cmd() -> None:
     """Emit the compact brief an agent should read before starting work.
 
-    Approved task and scope, forbidden paths, human-review surfaces, promoted
-    repo lessons, and the final self-check, small enough to paste at the top
-    of any agent session. Alias for `notari explain --agent-brief`.
+    Approved task and scope, forbidden paths, human-review surfaces, and the
+    final self-check, small enough to paste at the top of any agent session.
+    Alias for `notari explain --agent-brief`.
     """
     _emit_agent_brief()
 
@@ -1300,8 +1246,30 @@ def init_cmd(
     )
     out.print("  3. Make the [bold]notari/change-control[/bold] status check REQUIRED in branch")
     out.print("     protection on main (admin-bypass + force-push off).")
+    # Name EVERY file init wrote. Saying only ".notari/" left the workflow init also
+    # created untracked, so it landed in the user's first work commit instead, and the
+    # first verify BLOCKed on gate-tamper against Notari's own workflow. A tool that
+    # tells you to commit its output must list all of its output.
+    # ASK GIT what init touched rather than listing it from memory. The hand-written
+    # list said ".notari/" and missed the workflow, so it landed in the user's first
+    # work commit and the first verify BLOCKed on gate-tamper. Correcting it by hand
+    # then missed `.gitignore`, which BLOCKed as out-of-scope instead. A list a human
+    # maintains will drift from the code that writes the files; this one cannot.
+    untracked = _paths_notari_init_touched(root)
+    add_args = " ".join(untracked) if untracked else ".notari .github/workflows .gitignore"
     out.print(
-        "\n[bold]Now:[/bold] commit .notari/ (NOT .notari/keys/), then run [bold]notari status[/bold]."
+        "\n[bold]Now:[/bold] commit everything init just wrote, in ONE commit, then run "
+        "[bold]notari status[/bold]:"
+    )
+    out.print(f"  [dim]git add {add_args}[/dim]")
+    out.print(
+        "  [dim]git commit -m 'add notari change control'[/dim]   "
+        "[yellow](never commit .notari/keys/)[/yellow]"
+    )
+    out.print(
+        "[dim]All of it is gate surface. Left for your first CHANGE commit instead, it "
+        "reads as tampering or as an out-of-scope edit, which is the check doing its "
+        "job on the wrong thing.[/dim]"
     )
     report = readiness.assess(root, env=dict(__import__("os").environ))
     out.print(f"\ncurrent posture: {_posture_badge(report.posture)}")
@@ -1539,39 +1507,6 @@ def commit_hook_uninstall(
         console.print(f"[dim]no hook to remove at[/dim] {p}")
 
 
-@app.command("insights", hidden=True)
-def insights_cmd(
-    window_today: Annotated[bool, typer.Option("--today")] = False,
-    window_week: Annotated[bool, typer.Option("--week")] = False,
-    window_month: Annotated[bool, typer.Option("--month")] = False,
-    window_all: Annotated[bool, typer.Option("--all")] = False,
-    since: Annotated[str | None, typer.Option("--since")] = None,
-    log_path: Annotated[Path | None, typer.Option("--log", "-l")] = None,
-    plain: Annotated[bool, typer.Option("--plain")] = False,
-) -> None:
-    """Per-pattern analysis + suggested overrides + sessions worth reviewing.
-
-    Goes deeper than `notari saves`: for each pattern, shows fire frequency,
-    block vs ask ratio, and a calibrated recommendation (keep critical,
-    trust-path candidate, watching). Surfaces trust-path effectiveness and
-    flags sessions that closed the trifecta or had critical blocks at
-    unusual hours.
-    """
-    from notari.insights import compute_insights, format_insights
-    from notari.saves import parse_window
-
-    p = log_path or default_audit_path()
-    start, end = parse_window(
-        today=window_today,
-        week=window_week,
-        month=window_month,
-        all_time=window_all,
-        since=since,
-    )
-    insights = compute_insights(p, window_start=start, window_end=end)
-    Console().print(format_insights(insights, plain=plain))
-
-
 @app.command("integrate", hidden=True)
 def integrate_cmd(
     agent: Annotated[
@@ -1675,64 +1610,6 @@ def integrate_cmd(
             "\n[dim]your coding agent will now know how to query Notari data when you ask.\n"
             f'try: open {integ.label} and ask "what did the agent do this morning?"[/dim]',
         )
-
-
-@app.command("saves", hidden=True)
-def saves_cmd(
-    window_today: Annotated[
-        bool,
-        typer.Option("--today", help="window: last calendar day (UTC)"),
-    ] = False,
-    window_week: Annotated[
-        bool,
-        typer.Option("--week", help="window: last 7 days (default)"),
-    ] = False,
-    window_month: Annotated[
-        bool,
-        typer.Option("--month", help="window: last 30 days"),
-    ] = False,
-    window_all: Annotated[
-        bool,
-        typer.Option("--all", help="window: every event ever logged"),
-    ] = False,
-    since: Annotated[
-        str | None,
-        typer.Option(
-            "--since",
-            help="window start: ISO date or datetime, e.g. 2026-05-01",
-        ),
-    ] = None,
-    log_path: Annotated[
-        Path | None,
-        typer.Option("--log", "-l", help="audit log path (default: ~/.notari/audit.log.jsonl)"),
-    ] = None,
-    plain: Annotated[
-        bool,
-        typer.Option("--plain", help="strip Rich markup; useful for piping / CI"),
-    ] = False,
-) -> None:
-    """Show what Notari caught for you (verified counts + estimated savings).
-
-    Reads the audit log, classifies every event in the selected window, and
-    prints a summary that separates verified counts (every event type the
-    log emits) from estimated time-saved (with the per-prompt assumption
-    documented inline). Default window is the last 7 days; override with
-    --today, --month, --all, or --since YYYY-MM-DD.
-
-    Streaming O(N) over the log; safe on hundred-MB audit chains.
-    """
-    from notari.saves import compute_saves, format_saves, parse_window
-
-    p = log_path or default_audit_path()
-    start, end = parse_window(
-        today=window_today,
-        week=window_week,
-        month=window_month,
-        all_time=window_all,
-        since=since,
-    )
-    saves = compute_saves(p, window_start=start, window_end=end)
-    Console().print(format_saves(saves, plain=plain))
 
 
 @app.command("scan-prompts", hidden=True)
@@ -1951,82 +1828,6 @@ def onboard_cmd(
     raise typer.Exit(code=run_onboard(force=force))
 
 
-@app.command("learn", hidden=True)
-def learn_cmd(
-    since_days: Annotated[
-        int,
-        typer.Option(
-            "--since-days",
-            "-d",
-            help="window to analyse (0 = full history)",
-        ),
-    ] = 7,
-    json_out: Annotated[
-        bool,
-        typer.Option("--json", help="emit suggestions as JSON for tooling"),
-    ] = False,
-) -> None:
-    """Read the audit log and surface self-improvement suggestions.
-
-    The audit log is the source of truth; this command turns it into
-    prioritised, paste-able actions. Operator decides whether to apply
-    each one. Notari never auto-applies learning to its own gate.
-
-    Categories surfaced:
-      - trust_scope candidates (the 991-asks-per-week problem)
-      - decayed permissions (reaffirm or forget)
-      - false_positive_override (repeat operator bypasses)
-      - heavy_bash_pattern (frequent classifier hits)
-      - silent_failure (e.g. stub journals from a broken parser)
-    """
-    from notari.learn import analyze
-
-    suggestions, _ = analyze(since_days=since_days)
-
-    if json_out:
-        import json as _json
-
-        out = [
-            {
-                "severity": s.severity,
-                "category": s.category,
-                "title": s.title,
-                "rationale": s.rationale,
-                "paste_command": s.paste_command,
-                "evidence": list(s.evidence),
-            }
-            for s in suggestions
-        ]
-        print(_json.dumps(out, indent=2))
-        return
-
-    if not suggestions:
-        console.print(
-            f"[dim]no suggestions for the last {since_days}d.[/dim] "
-            "Run with [bold]--since-days 0[/bold] for full history.",
-        )
-        return
-
-    sev_color = {"high": "red", "medium": "yellow", "low": "dim"}
-    console.print(
-        f"[bold]notari learn[/bold] [dim]· "
-        f"{len(suggestions)} suggestion(s) from the last "
-        f"{since_days}d of audit data[/dim]\n",
-    )
-    for s in suggestions:
-        color = sev_color.get(s.severity, "white")
-        console.print(
-            f"  [{color}]{s.severity:>6}[/{color}]  [bold]{s.title}[/bold]",
-        )
-        console.print(f"          [dim]{s.rationale}[/dim]")
-        console.print(f"          [bold]apply:[/bold] {s.paste_command}")
-        if s.evidence:
-            console.print(
-                f"          [dim]evidence: {', '.join(s.evidence)}[/dim]",
-            )
-        console.print()
-
-
 @app.command("kpis", hidden=True)
 def kpis_cmd(
     since_days: Annotated[
@@ -2057,9 +1858,9 @@ def kpis_cmd(
     fired most), and the operator-bypass count (sparse data; reported
     as count, not ratio, until volume grows).
     """
-    from notari.learn import analyze
+    from notari.audit_summary import kpis_since
 
-    _, kpis = analyze(since_days=since_days)
+    kpis = kpis_since(since_days=since_days)
 
     if kpis.n_events == 0:
         console.print(
@@ -2804,7 +2605,6 @@ def tail(
         return
 
     # Tail: re-open and seek to end, poll for new lines.
-    import time
 
     with p.open() as f:
         f.seek(0, 2)
@@ -2877,10 +2677,26 @@ def audit_verify(
         raise typer.Exit(code=2)
     # Clean chain: advance the high-water-mark so a later truncation below this
     # length is detectable. seal_head re-verifies before writing, so it cannot
-    # seal over a broken chain.
-    with contextlib.suppress(Exception):
+    # seal over a broken chain. Sealing is best-effort (a read-only or full disk
+    # must not fail the verify), but we only CLAIM to have sealed when it really
+    # succeeded: the message previously said "sealed a high-water-mark" even when
+    # the write raised and was suppressed, reporting a durability guarantee that
+    # did not exist (security re-review 2026-07-23, N3).
+    sealed_ok = False
+    seal_error: Exception | None = None
+    try:
         seal_head(p, key)
-    sealed_note = "" if head else " (sealed a high-water-mark for truncation detection)"
+        sealed_ok = True
+    except Exception as e:  # best-effort seal, must never fail the verify
+        seal_error = e
+    if not sealed_ok:
+        console.print(
+            "[yellow]note[/yellow]: chain verified, but could not advance the "
+            f"high-water-mark ({seal_error}); truncation detection was not updated"
+        )
+    sealed_note = (
+        " (sealed a high-water-mark for truncation detection)" if sealed_ok and not head else ""
+    )
     console.print(f"[green]chain intact[/green]: {total} entries verified.{sealed_note}")
 
 
@@ -3946,221 +3762,48 @@ def telemetry_show(
 
 
 # --------------------------------------------------------------------------
-# journal - write a session log to the AgentOS vault
+# session-close - emit the session.close audit boundary
 # --------------------------------------------------------------------------
 
 
-@journal_app.command("save")
-def journal_save(
-    transcript: Annotated[
-        Path | None,
-        typer.Option(
-            "--transcript",
-            help="path to the Claude Code transcript JSONL (read from "
-            "stdin's transcript_path if not given)",
-        ),
-    ] = None,
-    sessions_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--out",
-            help="vault Sessions/ directory (default: "
-            "~/agentbrain/AgentOS-Vault/ClaudeCode/Sessions/)",
-        ),
+@app.command("session-close", hidden=True)
+def session_close_cmd(
+    session_id_opt: Annotated[
+        str | None,
+        typer.Option("--session-id", help="session to close (read from stdin JSON if omitted)"),
     ] = None,
 ) -> None:
-    """Render an auto-summary of a Claude Code transcript to the vault.
+    """Emit the `session.close` audit boundary for an ending session.
 
-    Designed to be called from a SessionEnd hook. When called by the
-    hook, Claude Code passes session_id / transcript_path / cwd / reason
-    on stdin as JSON. The session.close audit emission and drift check
-    fire unconditionally so receipts derive from clean session boundaries
-    even when no transcript is available; the journal markdown write is
-    skipped (with a friendly message) when transcript is missing.
+    This is the surviving half of the former `notari journal save`. The
+    journal markdown writer and the drift check were loop surface and are
+    gone; the audit boundary is not, because `receipt.derive_from_events`
+    reads `session.close` to set `Receipt.closed_at` and
+    `githook.find_active_session` ranks sessions on that field.
+
+    Designed to be called from a SessionEnd hook, which passes session_id,
+    cwd and reason on stdin as JSON. Idempotent: a second call for the same
+    session is a no-op, so a hook firing twice on exit is harmless.
     """
     payload: dict[str, Any] = {}
-    if transcript is None:
+    if session_id_opt is None:
         try:
             raw = json.loads(sys.stdin.read() or "{}")
             if isinstance(raw, dict):
                 payload = raw
         except json.JSONDecodeError:
             payload = {}
-        tp = payload.get("transcript_path")
-        if isinstance(tp, str) and tp:
-            transcript = Path(tp).expanduser()
 
-    session_id = str(payload.get("session_id") or "")
+    session_id = session_id_opt or str(payload.get("session_id") or "")
     cwd = str(payload.get("cwd") or "")
     reason = str(payload.get("reason") or "transcript_end")
-    if session_id:
-        from notari.journal import _check_session_drift, _emit_session_close
-
-        _emit_session_close(session_id, cwd, reason)
-        _check_session_drift(session_id, cwd)
-
-    if transcript is None:
-        Console(stderr=True).print(
-            "[dim]notari journal save: no transcript provided; "
-            "session.close emitted, journal markdown skipped.[/dim]",
-        )
+    if not session_id:
+        Console(stderr=True).print("[dim]no session_id; nothing to close.[/dim]")
         return
 
-    written = journal_mod.save_from_transcript(transcript, sessions_dir=sessions_dir)
-    Console().print(f"[green]wrote[/green] {written}")
+    from notari.receipt import emit_session_close
 
-
-# --------------------------------------------------------------------------
-# decay - Permission Decay framework
-# --------------------------------------------------------------------------
-
-
-@decay_app.command("show")
-def decay_show(
-    all_: Annotated[
-        bool,
-        typer.Option("--all", help="show healthy permissions too, not just decayed/approaching"),
-    ] = False,
-) -> None:
-    """List tracked permissions with decay status.
-
-    A permission decays when it has not been used in
-    `decay_after_days`. Decayed permissions are ignored at the gate
-    (the default risk fires) until you run `notari decay reaffirm`.
-    """
-    out = Console()
-    store = decay_mod.DecayStore.load()
-    perms = store.all()
-    if not perms:
-        out.print("[dim]no tracked permissions yet.[/dim]")
-        out.print(
-            "  permissions register the first time a config policy "
-            "override fires; check back after running Claude Code."
-        )
-        return
-
-    decayed = sorted(store.decayed(), key=lambda p: p.age_days, reverse=True)
-    approaching = sorted(store.approaching(), key=lambda p: p.days_left)
-    healthy = [p for p in perms if not p.is_decayed and p not in approaching]
-
-    if decayed:
-        out.print(f"[bold red]decayed ({len(decayed)})[/bold red] [dim]- action required[/dim]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("age (d)", justify="right")
-        t.add_column("window", justify="right")
-        t.add_column("uses", justify="right")
-        t.add_column("decay_action")
-        for p in decayed:
-            t.add_row(
-                p.kind,
-                p.pattern,
-                f"[red]{p.age_days}[/red]",
-                str(p.decay_after_days),
-                str(p.use_count),
-                p.decay_action,
-            )
-        out.print(t)
-        out.print()
-
-    if approaching:
-        out.print(f"[yellow]approaching decay ({len(approaching)})[/yellow]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("days left", justify="right")
-        t.add_column("uses", justify="right")
-        for p in approaching:
-            t.add_row(p.kind, p.pattern, f"[yellow]{p.days_left}[/yellow]", str(p.use_count))
-        out.print(t)
-        out.print()
-
-    if all_ and healthy:
-        out.print(f"[green]healthy ({len(healthy)})[/green]")
-        t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
-        t.add_column("kind", style="dim")
-        t.add_column("pattern")
-        t.add_column("days left", justify="right")
-        t.add_column("uses", justify="right")
-        t.add_column("last use", style="dim")
-        for p in healthy:
-            t.add_row(
-                p.kind,
-                p.pattern,
-                f"[green]{p.days_left}[/green]",
-                str(p.use_count),
-                str(p.last_use)[:19],
-            )
-        out.print(t)
-    elif healthy and not all_:
-        out.print(
-            f"[dim]+ {len(healthy)} healthy permission(s) (notari decay show --all to see)[/dim]"
-        )
-
-
-@decay_app.command("reaffirm")
-def decay_reaffirm(
-    pattern: Annotated[str, typer.Argument(help="tool pattern to reaffirm")],
-    kind: Annotated[
-        str,
-        typer.Option("--kind", help="permission kind (default: best-match policy)"),
-    ] = "",
-) -> None:
-    """Bump a permission's last_reaffirmed timestamp without using it."""
-    store = decay_mod.DecayStore.load()
-    out = Console()
-    if kind:
-        p = store.reaffirm(kind, pattern)
-        if p is None:
-            out.print(f"[yellow]no permission found at {kind}:{pattern}[/yellow]")
-            raise typer.Exit(code=1)
-        out.print(
-            f"[green]reaffirmed[/green] {p.key}  [dim](age 0d, {p.decay_after_days}d window)[/dim]"
-        )
-        return
-    # best-match: any kind matching the pattern
-    matches = [p for p in store.all() if p.pattern == pattern]
-    if not matches:
-        out.print(f"[yellow]no permission found for pattern '{pattern}'[/yellow]")
-        raise typer.Exit(code=1)
-    for m in matches:
-        store.reaffirm(m.kind, m.pattern)
-    out.print(
-        f"[green]reaffirmed[/green] {len(matches)} permission(s) matching pattern '{pattern}'"
-    )
-
-
-@decay_app.command("forget")
-def decay_forget(
-    pattern: Annotated[str, typer.Argument(help="tool pattern to drop")],
-    kind: Annotated[str, typer.Option("--kind")] = "",
-) -> None:
-    """Drop a tracked permission entirely (re-registers on next use)."""
-    store = decay_mod.DecayStore.load()
-    out = Console()
-    if kind:
-        if store.forget(kind, pattern):
-            out.print(f"[green]dropped[/green] {kind}:{pattern}")
-        else:
-            out.print(f"[yellow]no permission at {kind}:{pattern}[/yellow]")
-            raise typer.Exit(code=1)
-        return
-    matches = [p for p in store.all() if p.pattern == pattern]
-    for m in matches:
-        store.forget(m.kind, m.pattern)
-    out.print(f"[green]dropped[/green] {len(matches)} permission(s)")
-
-
-# --------------------------------------------------------------------------
-# version
-# --------------------------------------------------------------------------
-
-
-@app.command(rich_help_panel="Health & evidence")
-def version() -> None:
-    """Print the notari version."""
-    console.print(f"notari {__version__}")
+    emit_session_close(session_id, cwd, reason)
 
 
 # --------------------------------------------------------------------------
@@ -4952,329 +4595,6 @@ def trust_check(
         console.print(f"  [dim]not trusted[/dim] {resolved}")
         console.print(f"  [dim]add with: notari trust add {resolved}[/dim]")
         raise typer.Exit(code=1)
-
-
-# --------------------------------------------------------------------------
-# suggestions - the operator-facing surface for the learner's
-# loosening candidates + drift detections + operator-anomaly events.
-# Auto-tightenings are recorded too (for transparency) but already
-# applied.
-
-
-def _suggestion_key(s: dict[str, Any]) -> str:
-    """Stable key for a suggestion: pattern_id + type. Used to dedup
-    multiple firings of the same suggestion across days."""
-    pid = s.get("pattern_id") or s.get("session_id") or "(global)"
-    return f"{s.get('type', '?')}:{pid}"
-
-
-@suggestions_app.command("list")
-def suggestions_list(
-    only: Annotated[
-        str | None,
-        typer.Option(
-            "--only",
-            help="filter by type: tightening_auto_applied | loosening_candidate | operator_anomaly | drift_detected",
-        ),
-    ] = None,
-    limit: Annotated[
-        int,
-        typer.Option("--limit", "-n", help="max suggestions to show"),
-    ] = 50,
-) -> None:
-    """List learner-surfaced suggestions, newest first. Dedup by
-    (type, pattern_id) so a streak of the same suggestion shows once."""
-    from notari.learning import read_suggestions
-
-    raw = read_suggestions(limit=limit * 5)
-    raw.sort(key=lambda s: s.get("ts", 0), reverse=True)
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    for s in raw:
-        if only and s.get("type") != only:
-            continue
-        key = _suggestion_key(s)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(s)
-        if len(out) >= limit:
-            break
-    if not out:
-        console.print("[dim]no suggestions in the queue.[/dim]")
-        return
-    sev_color = {
-        "tightening_auto_applied": "yellow",
-        "loosening_candidate": "cyan",
-        "operator_anomaly": "red",
-        "drift_detected": "magenta",
-    }
-    for s in out:
-        color = sev_color.get(s.get("type", ""), "white")
-        ts = s.get("ts", 0)
-        try:
-            ts_label = datetime.fromtimestamp(float(ts)).strftime("%m-%d %H:%M")
-        except (ValueError, TypeError):
-            ts_label = "?"
-        console.print(
-            f"  [dim]{ts_label}[/dim]  [{color}]{s.get('type', '?')}[/{color}]  "
-            f"[bold]{s.get('pattern_id') or s.get('session_id') or ''}[/bold]"
-        )
-        ev = s.get("evidence", "")
-        if ev:
-            console.print(f"          [dim]{ev[:140]}[/dim]")
-        if s.get("type") == "loosening_candidate":
-            console.print(
-                f'          [bold]apply:[/bold] notari suggestions promote "{_suggestion_key(s)}"'
-            )
-
-
-@suggestions_app.command("show")
-def suggestions_show(
-    key: Annotated[
-        str,
-        typer.Argument(help="suggestion key from `notari suggestions list` (type:pattern)"),
-    ],
-) -> None:
-    """Show full detail for one suggestion."""
-    from notari.learning import read_suggestions
-
-    raw = read_suggestions(limit=1000)
-    matching = [s for s in raw if _suggestion_key(s) == key]
-    if not matching:
-        console.print(f"[yellow]no suggestion matching key:[/yellow] {key}")
-        raise typer.Exit(code=1)
-    s = matching[-1]
-    console.print(json.dumps(s, indent=2))
-
-
-@suggestions_app.command("promote")
-def suggestions_promote(
-    key: Annotated[
-        str,
-        typer.Argument(help="suggestion key (type:pattern)"),
-    ],
-    ttl_days: Annotated[
-        int,
-        typer.Option("--ttl-days", help="how long the override lives"),
-    ] = 30,
-) -> None:
-    """Promote a loosening_candidate to a real override. Writes to
-    `~/.notari/overrides.toml` with the given TTL. The operator's
-    explicit approval lives here - the learner never wrote it itself.
-    """
-    from notari.learning import read_suggestions
-
-    raw = read_suggestions(limit=1000)
-    matching = [
-        s for s in raw if _suggestion_key(s) == key and s.get("type") == "loosening_candidate"
-    ]
-    if not matching:
-        console.print(f"[yellow]no loosening_candidate matching key:[/yellow] {key}")
-        raise typer.Exit(code=1)
-    s = matching[-1]
-
-    overrides_path = Path(
-        os.environ.get(
-            "NOTARI_OVERRIDES",
-            str(Path.home() / ".notari" / "overrides.toml"),
-        )
-    ).expanduser()
-    overrides_path.parent.mkdir(parents=True, exist_ok=True)
-
-    pattern_id = str(s.get("pattern_id") or "")
-    # Make a TOML-safe section name
-    section = "".join(c if c.isalnum() or c in "_-" else "_" for c in pattern_id)[:60]
-    existing = overrides_path.read_text() if overrides_path.exists() else ""
-    block = (
-        f"\n[overrides.{section}]\n"
-        f'pattern_id = "{pattern_id}"\n'
-        f'promoted_at = "{datetime.now(UTC).isoformat()}"\n'
-        f"ttl_days = {ttl_days}\n"
-        f'evidence = "{s.get("evidence", "")[:200].replace(chr(34), chr(39))}"\n'
-    )
-    overrides_path.write_text(existing + block)
-    with contextlib.suppress(OSError):
-        overrides_path.chmod(0o600)
-
-    # Append a tracking entry to suggestions.jsonl
-    from notari.learning import append_suggestion, log_event
-
-    promo = {
-        "ts": time.time(),
-        "type": "loosening_promoted",
-        "pattern_id": pattern_id,
-        "ttl_days": ttl_days,
-        "promoted_via": "notari suggestions promote",
-        "evidence_source": s.get("evidence", ""),
-    }
-    append_suggestion(promo)
-    log_event(f"promoted pattern={pattern_id} ttl_days={ttl_days}")
-    console.print(
-        f"  [green]promoted[/green] {pattern_id}  "
-        f"[dim](ttl {ttl_days}d, written to {overrides_path})[/dim]"
-    )
-
-
-@suggestions_app.command("cleanup")
-def suggestions_cleanup(
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="show what would be removed, don't change anything"),
-    ] = False,
-) -> None:
-    """Remove stale per-token pattern rows from pattern_stats.json.
-
-    A pre-rc5 bug derived the pattern_id from the FLIPPED decision
-    reason after a token consume, producing one dead row per token
-    (e.g. `Bash:approved one-shot via notari approve aBc12`). This
-    command cleans those up. Real patterns are untouched.
-
-    Idempotent: a second invocation after the first removes nothing.
-    """
-    from notari.learning import cleanup_stale_patterns, find_stale_patterns
-
-    if dry_run:
-        stale = find_stale_patterns()
-        if not stale:
-            console.print("[dim]no stale rows to clean up.[/dim]")
-            return
-        console.print(f"would remove [yellow]{len(stale)}[/yellow] stale row(s):")
-        for pid in stale[:20]:
-            console.print(f"  [dim]{pid}[/dim]")
-        if len(stale) > 20:
-            console.print(f"  [dim]... and {len(stale) - 20} more[/dim]")
-        return
-    n, removed = cleanup_stale_patterns()
-    if n == 0:
-        console.print("[dim]nothing to clean up.[/dim]")
-        return
-    console.print(f"[green]removed[/green] {n} stale pattern row(s).")
-    for pid in removed[:10]:
-        console.print(f"  [dim]{pid}[/dim]")
-    if len(removed) > 10:
-        console.print(f"  [dim]... and {len(removed) - 10} more[/dim]")
-
-
-@suggestions_app.command("dismiss")
-def suggestions_dismiss(
-    key: Annotated[
-        str,
-        typer.Argument(help="suggestion key to dismiss"),
-    ],
-) -> None:
-    """Dismiss a suggestion. Appends a `dismissed` entry to
-    suggestions.jsonl so subsequent `list` calls hide it. Append-only;
-    no in-place edits."""
-    from notari.learning import append_suggestion, log_event
-
-    entry = {
-        "ts": time.time(),
-        "type": "dismissed",
-        "dismissed_key": key,
-    }
-    append_suggestion(entry)
-    log_event(f"dismissed key={key}")
-    console.print(f"  [red]dismissed[/red] {key}")
-
-
-# --------------------------------------------------------------------------
-# log - tail the learner's append-only logs in real time so the
-# operator can SEE what Notari is doing as it does it.
-
-import time as _time  # noqa: E402 - placement next to its sole user
-
-
-@app.command("log", hidden=True)
-def log_cmd(
-    follow: Annotated[
-        bool,
-        typer.Option("--follow", "-f", help="stream new entries as they arrive"),
-    ] = False,
-    n: Annotated[
-        int,
-        typer.Option("--lines", "-n", help="how many trailing lines to show"),
-    ] = 30,
-    show_suggestions: Annotated[
-        bool,
-        typer.Option(
-            "--suggestions/--no-suggestions",
-            help="also tail ~/.notari/suggestions.jsonl",
-        ),
-    ] = True,
-) -> None:
-    """Show the learner's recent activity. With --follow, streams new
-    entries in real time so you can watch Notari update itself.
-    """
-    from notari.learning import _log_path, _suggestions_path
-
-    log_path = _log_path()
-    sug_path = _suggestions_path()
-
-    if not log_path.exists() and not sug_path.exists():
-        console.print(f"[dim]no learner activity yet. The log lives at {log_path}.[/dim]")
-        return
-
-    def _print_recent() -> None:
-        if log_path.exists():
-            lines = log_path.read_text().splitlines()[-n:]
-            for line in lines:
-                console.print(line)
-        if show_suggestions and sug_path.exists():
-            sugs = sug_path.read_text().splitlines()[-n:]
-            for raw in sugs:
-                try:
-                    s = json.loads(raw)
-                    console.print(
-                        f"[dim](suggestion)[/dim] "
-                        f"[cyan]{s.get('type')}[/cyan] "
-                        f"{s.get('pattern_id') or s.get('session_id') or ''} "
-                        f"[dim]{s.get('evidence', '')[:100]}[/dim]"
-                    )
-                except json.JSONDecodeError:
-                    continue
-
-    _print_recent()
-    if not follow:
-        return
-
-    # Follow mode: poll for size changes. Sub-second granularity.
-    last_log_size = log_path.stat().st_size if log_path.exists() else 0
-    last_sug_size = sug_path.stat().st_size if sug_path.exists() else 0
-    try:
-        while True:
-            _time.sleep(0.4)
-            if log_path.exists():
-                sz = log_path.stat().st_size
-                if sz > last_log_size:
-                    with log_path.open() as f:
-                        f.seek(last_log_size)
-                        new = f.read()
-                    last_log_size = sz
-                    for line in new.splitlines():
-                        if line.strip():
-                            console.print(line)
-            if show_suggestions and sug_path.exists():
-                sz = sug_path.stat().st_size
-                if sz > last_sug_size:
-                    with sug_path.open() as f:
-                        f.seek(last_sug_size)
-                        new = f.read()
-                    last_sug_size = sz
-                    for raw in new.splitlines():
-                        if not raw.strip():
-                            continue
-                        try:
-                            s = json.loads(raw)
-                            console.print(
-                                f"[dim](suggestion)[/dim] "
-                                f"[cyan]{s.get('type')}[/cyan] "
-                                f"{s.get('pattern_id') or s.get('session_id') or ''}"
-                            )
-                        except json.JSONDecodeError:
-                            continue
-    except KeyboardInterrupt:
-        console.print("[dim]\n(stopped)[/dim]")
 
 
 def main() -> None:  # entry point for the [project.scripts] hook

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "task": "release 0.4.2: second security pass and loop extraction",
+  "task_source": "text",
+  "allowed_paths": [
+    "src/**",
+    "tests/**",
+    "docs/**",
+    "README.md",
+    ".github/**",
+    "action.yml",
+    "CHANGELOG.md",
+    "pyproject.toml",
+    "examples/**"
+  ],
+  "base_commit": "d866bc1dbf3d1e8aba6b385d5f9c6015bbc94e69",
+  "created_at": "2026-08-24T04:09:09.511465+00:00",
+  "contract_id": "978626a91082",
+  "approved_by": "Manu Marri",
+  "repo": "manumarri-sudo/notari"
+}

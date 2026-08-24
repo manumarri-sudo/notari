@@ -16,6 +16,7 @@ so the verdict is reproducible and explainable line by line.
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import json
 import logging
@@ -25,6 +26,7 @@ import re
 import select
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,11 +147,23 @@ _STDERR_CAP = 8192  # keep only enough stderr to explain a failure
 
 
 def _git_capture(args: list[str], root: Path, *, timeout: int, max_bytes: int) -> tuple[str, bool]:
-    """Run a git command, reading AT MOST ``max_bytes`` of stdout.
+    """Run a git command, reading AT MOST ``max_bytes`` of stdout as text.
 
-    Returns ``(text, truncated)``. Unlike ``subprocess.run(capture_output=True)``
+    Thin decode wrapper over ``_git_capture_bytes``; see it for the streaming +
+    timeout guarantees. ``errors="replace"`` keeps text hunks intact when a real
+    repo carries undecodable binary bytes."""
+    raw, truncated = _git_capture_bytes(args, root, timeout=timeout, max_bytes=max_bytes)
+    return raw.decode("utf-8", errors="replace"), truncated
+
+
+def _git_capture_bytes(
+    args: list[str], root: Path, *, timeout: int, max_bytes: int
+) -> tuple[bytes, bool]:
+    """Run a git command, reading AT MOST ``max_bytes`` of stdout as raw bytes.
+
+    Returns ``(data, truncated)``. Unlike ``subprocess.run(capture_output=True)``
     this streams and stops at the cap, so a candidate-crafted multi-gigabyte diff
-    cannot buffer the whole output into memory and OOM the runner.
+    (or file blob) cannot buffer the whole output into memory and OOM the runner.
 
     The wall-clock ``timeout`` is enforced on every read via ``select`` on the raw
     pipe fds, so it bounds a git process that hangs *between* bytes as well as one
@@ -225,7 +239,7 @@ def _git_capture(args: list[str], root: Path, *, timeout: int, max_bytes: int) -
         detail = b"".join(err_chunks).decode("utf-8", errors="replace").strip()
         msg = f"git command failed (rc={rc}): {detail or args}"
         raise VerifyError(msg)
-    return b"".join(chunks).decode("utf-8", errors="replace"), truncated
+    return b"".join(chunks), truncated
 
 
 def git_diff(
@@ -439,62 +453,147 @@ def _is_hex_sha(ref: str) -> bool:
 _UTF16_LE_BOM = b"\xff\xfe"
 _UTF16_BE_BOM = b"\xfe\xff"
 _UTF8_BOM = b"\xef\xbb\xbf"
+# Must be tested before the UTF-16 BOMs: the UTF-32-LE BOM is a superset of the
+# UTF-16-LE one.
+_UTF32_LE_BOM = b"\xff\xfe\x00\x00"
+_UTF32_BE_BOM = b"\x00\x00\xfe\xff"
 
 
-def _decode_blob(raw: bytes) -> str:
-    """Decode a git blob to text, handling UTF-16 and UTF-8 (with and without BOM).
+def _confidence_of(finding: policy.SecretFinding) -> str:
+    """ "low" for review-tier findings, "high" for blocking ones.
 
-    Returns the decoded string so ASCII-oriented secret patterns can match.
-    Falls back to latin-1 (lossless for arbitrary bytes) so we never silently
-    skip content."""
-    if raw.startswith(_UTF16_LE_BOM):
-        try:
-            return raw[2:].decode("utf-16-le")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF16_BE_BOM):
-        try:
-            return raw[2:].decode("utf-16-be")
-        except (UnicodeDecodeError, ValueError):
-            pass
-    if raw.startswith(_UTF8_BOM):
-        try:
-            return raw[3:].decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-    if b"\x00" in raw[:512]:
-        for enc in ("utf-16-le", "utf-16-be"):
-            try:
-                decoded = raw.decode(enc)
-                if "�" not in decoded[:256]:
-                    return decoded
-            except (UnicodeDecodeError, ValueError):
-                continue
+    Prefers the confidence recorded on the finding, since an anchored pattern with a
+    placeholder-looking value is demoted rather than dropped and that cannot be
+    recovered from the pattern name. Falls back to the pattern-name classification for
+    findings built before the field existed, which defaults to blocking.
+    """
+    from notari import secrets as _secrets_mod
+
+    carried = getattr(finding, "confidence", None)
+    if carried in ("low", "high"):
+        return str(carried)
+    return "low" if _secrets_mod.is_low_confidence(finding.pattern_name) else "high"
+
+
+def _decode_blob(raw: bytes) -> str | None:
+    """Text to scan, or None when the blob has no text to scan.
+
+    Three cases, and the ordering matters:
+
+      1. An explicit BOM says the encoding unambiguously, so decode exactly that.
+         UTF-32 BOMs are tested FIRST because the UTF-32-LE BOM begins with the
+         UTF-16-LE BOM, and checking UTF-16 first shreds a UTF-32 file.
+      2. No NUL bytes: ordinary text. UTF-8, falling back to latin-1, which maps
+         every byte and so never silently drops content.
+      3. NUL bytes and no BOM: BINARY, and None means "there is no text here".
+
+    Case 3 is a deliberate retreat from a previous design that tried to GUESS the
+    encoding of BOM-less NUL-bearing blobs by decoding them several ways and
+    reconciling the results. That machinery was the source of a clean-PASS defect in
+    seven consecutive review rounds, and the measurements said why: of 1,879
+    NUL-bearing files in this repository, TWO were genuinely wide-encoded text and
+    1,877 were PNGs, wheels and caches, on which it manufactured 867 phantom
+    credential matches. Guessing was strictly worse than declining.
+
+    What this gives up is stated in SECURITY-MODEL.md: a credential inside a
+    BOM-less UTF-16 file, or embedded in a binary, is not scanned. It is also not
+    reported as scanned. Git itself treats such a blob as binary and shows no diff,
+    and gitleaks and its peers make the same trade.
+    """
+    # A BOM is a COMMITMENT. Once one matches, decode that encoding and never fall
+    # through to another BOM test or to the binary rule. The previous version let a
+    # malformed payload fall past every branch into the NUL check, so appending ONE
+    # junk byte to a BOM-bearing UTF-16 file made it read as binary and skip the scan
+    # entirely: a bypass strictly broader than the documented limit, and available to
+    # anyone who can append a byte.
+    #
+    # `errors="replace"` rather than a hard failure, because a malformed sequence
+    # somewhere in the file must not cost the scan of the valid ASCII around it. The
+    # replacement character is not in any credential pattern's alphabet, so a damaged
+    # region simply does not match.
+    for bom, encoding in (
+        (_UTF32_LE_BOM, "utf-32-le"),
+        (_UTF32_BE_BOM, "utf-32-be"),
+        (_UTF16_LE_BOM, "utf-16-le"),
+        (_UTF16_BE_BOM, "utf-16-be"),
+        (_UTF8_BOM, "utf-8"),
+    ):
+        if raw.startswith(bom):
+            return raw[len(bom) :].decode(encoding, errors="replace")
+    if b"\x00" in raw:
+        return None
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("latin-1")
 
 
-def _read_candidate_blob(root: Path, candidate_sha: str, path: str) -> str | None:
+def _read_candidate_blob(
+    root: Path, candidate_sha: str, path: str, *, limits: ScanLimits
+) -> tuple[str | None, bool]:
     """Read a file from the candidate commit's tree, not the worktree.
 
-    Returns decoded text (handling UTF-16/UTF-8), or None if the blob doesn't
-    exist at that commit. Logs a warning on unexpected git failures so silent
-    scan skips are visible."""
+    Returns ``(text, truncated)``. `text` is None when the blob does not exist at
+    that commit OR when it has no text to scan (see `_decode_blob`: a BOM-less
+    NUL-bearing blob is binary), and `truncated` says whether the read hit the byte
+    ceiling. The read is bounded by the SAME size + timeout ceilings as the diff
+    (via ``_git_capture_bytes``): previously this was an unbounded
+    ``subprocess.run`` per touched file, so a single multi-gigabyte blob could
+    OOM the runner or a hung ``cat-file`` could stall the gate, bypassing the
+    50 MiB / timeout limits (security re-review 2026-07-23, N2). A timeout is
+    reported as truncated=True (unreadable but flagged incomplete); an absent /
+    unreadable blob logs and returns None."""
     try:
-        proc = subprocess.run(
+        raw, truncated = _git_capture_bytes(
             ["git", "cat-file", "blob", f"{candidate_sha}:{path}"],
-            cwd=root,
-            capture_output=True,
-            check=True,
+            root,
+            timeout=limits.git_timeout,
+            max_bytes=limits.max_diff_bytes,
         )
-    except FileNotFoundError:
-        return None
-    except subprocess.CalledProcessError as e:
+    except VerifyError as e:
+        if "timed out" in str(e):
+            # Flag it incomplete rather than silently skipping the scan.
+            return None, True
         _log.warning("blob read failed for %s:%s, %s", candidate_sha[:12], path, e)
+        return None, False
+    return _decode_blob(raw), truncated
+
+
+def _base_line_counts(
+    root: Path, base_sha: str | None, path: str, *, limits: ScanLimits
+) -> Counter[str] | None:
+    """Multiset of lines already present in `path` at the base commit, or None.
+
+    Used to keep the blob-level secret scan from BLOCKing a pre-existing credential
+    (or a false-positive-shaped line) that this change never touched: an unrelated
+    one-line edit must not fail because a secret sits elsewhere in the same file
+    (security re-review 2026-07-23, F5). A candidate line counts as introduced only
+    once its running occurrence count EXCEEDS the base count, so duplicating a secret
+    line (base has one, candidate adds a second identical one) is still caught, where
+    a plain set would have swallowed the copy (re-review defect 4). Called only for
+    in-place modifications; for an initial commit, a path with no base blob, or a base
+    that is binary, the multiset is empty and every candidate line is introduced.
+    `git cat-file` reads any `<sha>:<path>` tree blob, so the candidate-blob reader is
+    reused against the base here.
+
+    One multiset, because there is now exactly one decoding of a blob. The
+    per-decoding version of this function existed only to serve the multi-view
+    scanner, and both aggregates it tried (sum, then max) produced a clean-PASS
+    defect: summing over-counted the base, and max let a salvage view fabricate
+    copies that suppressed genuinely new ones.
+
+    None means the base blob EXISTS but has no readable text, which is different from
+    having no base at all: the first says "cannot attribute", the second says
+    "everything is new". Collapsing them into an empty Counter made a binary-to-text
+    transition treat every candidate line as introduced, so an untouched pre-existing
+    credential blocked an unrelated edit.
+    """
+    if not base_sha or base_sha == _EMPTY_TREE:
+        return Counter()
+    text, _ = _read_candidate_blob(root, base_sha, path, limits=limits)
+    if text is None:
         return None
-    return _decode_blob(proc.stdout)
+    return Counter(text.splitlines())
 
 
 def _block_result(
@@ -872,7 +971,9 @@ def verify(
     # (not the worktree) and run secret patterns over the decoded content. This
     # catches secrets that the diff-based scanner misses:
     #   - 100% renames (no added lines in the diff), H-4
-    #   - UTF-16/UTF-16BE files (diff --text garbles NUL bytes), round-6 H-1
+    #   - BOM-bearing UTF-16 / UTF-32 files (diff --text garbles NUL bytes),
+    #     round-6 H-1. Only BOM-bearing: a BOM-less wide encoding is indistinguishable
+    #     from binary and is skipped by both channels, documented as limit 8.
     #   - worktree != candidate divergence, round-6 H-2
     # Covers A (added), M (modified), R (renamed), C (copied). D (deleted) is
     # skipped since the file no longer exists in the candidate.
@@ -885,14 +986,71 @@ def verify(
         dest = cp.path
         if dest.startswith(".notari/"):
             continue
-        content = _read_candidate_blob(root, candidate_sha, dest)
-        if content is None:
+        text, blob_truncated = _read_candidate_blob(root, candidate_sha, dest, limits=limits)
+        if blob_truncated:
+            scan_dispositions.append(
+                f"oversized-blob: {dest} exceeded {limits.max_diff_bytes} bytes (or the "
+                "read timed out) and was truncated; secret scanning did not cover the "
+                "whole file"
+            )
+        if text is None:
+            # No text to scan: the blob is absent, or it is binary (NUL bytes and no
+            # BOM to say otherwise). Deliberately NOT a scan disposition. A
+            # disposition means "incomplete coverage" and fails closed in strict mode,
+            # so raising one per binary would block every pull request that adds a
+            # logo or a test fixture. The residual, that a credential inside a binary
+            # or a BOM-less wide-encoded file is not scanned, is recorded in
+            # SECURITY-MODEL.md instead of being paid for on every PR.
             continue
-        for lineno, line in enumerate(content.splitlines(), 1):
+        # For an IN-PLACE modification, only lines this change INTRODUCED can
+        # BLOCK: a pre-existing credential on an untouched line is not this
+        # contract's diff to answer for and must not fail an unrelated one-line
+        # edit (F5 re-review). Adds, renames, and copies bring the whole file
+        # content into (or across) scope, so they stay fully scanned - that is
+        # what catches a secret in a 100%-rename that has no added diff lines
+        # (H-4) or in a brand-new file.
+        if cp.status == "M":
+            base_counts = _base_line_counts(root, base, dest, limits=limits)
+            if base_counts is None:
+                # The base blob exists but has no readable text (it was binary, or a
+                # BOM-less wide encoding). We cannot tell which candidate lines are
+                # NEW, and assuming "all of them" is a false positive with teeth: a
+                # file whose base carried one stray NUL, edited only to remove that
+                # NUL, made an untouched pre-existing credential read as introduced
+                # and BLOCK an unrelated change.
+                #
+                # So the blob channel sits this file out. The diff channel still runs
+                # and still reports what it can attribute to this change, which is
+                # exactly the evidence we are missing here.
+                _log.info("blob scan skipped for %s: base blob has no readable text", dest)
+                continue
+        else:
+            # Adds, renames and copies bring the whole file into (or across) scope,
+            # so every line is introduced by definition.
+            base_counts = Counter()
+        seen_counts: Counter[str] = Counter()
+        for lineno, line in enumerate(text.splitlines(), 1):
+            seen_counts[line] += 1
+            # Suppress only as many occurrences of a line as the base had; the
+            # (N+1)th identical line is newly introduced and must be scanned, so a
+            # duplicated secret line cannot hide behind its pre-existing twin.
+            if seen_counts[line] <= base_counts.get(line, 0):
+                continue
             for hit in _secrets.scan(line):
                 blob_secret_findings.append(
-                    policy.SecretFinding(path=dest, line=lineno, pattern_name=hit.pattern_name)
+                    policy.SecretFinding(
+                        path=dest,
+                        line=lineno,
+                        pattern_name=hit.pattern_name,
+                        # Carried, not defaulted: the default "high" turned every
+                        # demoted anchored hit found on the blob path back into a
+                        # blocking one, so the same credential blocked or reviewed
+                        # depending on which channel happened to see it.
+                        confidence=hit.confidence,
+                    )
                 )
+
+    blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
     # Strict mode does NOT honor branch-authored exceptions (security review
     # P0-2): an unsigned .notari/exceptions.json could waive whole classes of
@@ -917,16 +1075,36 @@ def verify(
         else:
             applied.append(e)
 
-    # Merge diff-based and blob-based secret findings, dedup by (path, line, pattern).
+    # Merge diff-based and blob-based secret findings.
+    #
+    # (path, line, pattern) is NOT an identity: two DIFFERENT credentials of the same
+    # pattern can share a line, and set-deduplicating them dropped a real one from the
+    # evidence. So the merge COUNTS instead, suppressing a blob finding only as a
+    # restatement of a diff-channel sighting at the same line, and only up to the diff
+    # channel's own count for that key.
     all_secret_findings = list(evaluation.secret_findings)
-    seen_secrets: set[tuple[str, int, str]] = {
+    diff_counts: Counter[tuple[str, int, str]] = Counter(
         (f.path, f.line, f.pattern_name) for f in all_secret_findings
-    }
+    )
+    blob_seen: Counter[tuple[str, int, str]] = Counter()
     for f in blob_secret_findings:
         key = (f.path, f.line, f.pattern_name)
-        if key not in seen_secrets:
+        # COUNTED, not set-deduplicated. Two DIFFERENT credentials of the same pattern
+        # can share a line, and collapsing them by (path, line, pattern) dropped a
+        # real one from the evidence. A blob finding is only suppressed as a restatement
+        # of a diff-channel sighting up to the diff channel's own count for that key.
+        blob_seen[key] += 1
+        if blob_seen[key] > diff_counts.get(key, 0):
             all_secret_findings.append(f)
-            seen_secrets.add(key)
+        elif _confidence_of(f) != "low":
+            # Same finding from both channels with DIFFERENT confidence: the blocking
+            # reading wins. Keeping whichever channel happened to run first would let
+            # one channel's reading downgrade a credential the other read correctly.
+            for i, existing in enumerate(all_secret_findings):
+                if (existing.path, existing.line, existing.pattern_name) == key:
+                    if _confidence_of(existing) == "low":
+                        all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
+                    break
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:
@@ -1023,15 +1201,46 @@ def verify(
     # (and always, with no perimeter), but a human who signed block_secrets=false
     # downgrades a secret hit to a review signal rather than a hard fail. The
     # config is signed, so this can only be relaxed by the approver, never the PR.
-    secrets_block = bool(unwaived_secrets) and (perimeter is None or perimeter.block_secrets)
+    #
+    # Within that, findings are split by CONFIDENCE. The low-confidence inline
+    # shapes (keyword-plus-assignment, CLI password flags) match on a loosely
+    # structured value and cannot be made precise enough to hard-block: scanning
+    # notari's own sources produced 48 of them with no real credential present.
+    # They stay fully visible as review signal, while vendor-format matches and
+    # the anchored inline shapes keep blocking. This is the TruffleHog
+    # `--fail-verified` / GitHub push-protection posture, not a relaxation of the
+    # gate against a credential with a known format.
+    # The scanner's per-finding confidence wins over the pattern-name default,
+    # because an ANCHORED pattern whose value looks like a placeholder is demoted
+    # to review rather than dropped, and that cannot be recovered from the name.
+    blocking_secrets = [f for f in unwaived_secrets if _confidence_of(f) != "low"]
+    review_secrets = [f for f in unwaived_secrets if _confidence_of(f) == "low"]
+    secrets_block = bool(blocking_secrets) and (perimeter is None or perimeter.block_secrets)
     secrets_review = bool(unwaived_secrets) and not secrets_block
 
     reasons: list[str] = []
     reasons.extend(reasons_ancestry)
     reasons.extend(empty_diff_warning)
-    if unwaived_secrets:
+    # Surface an unrestricted per-task scope explicitly rather than letting a
+    # wide-open contract read as a scoped one (security re-review 2026-07-23,
+    # F2). This is a warning, not a block: the scope model deliberately keeps the
+    # signed perimeter (not the per-task scope) as the load-bearing boundary, so
+    # `--scope '**'` is a legitimate conscious opt-out that still verifies. The
+    # detector uses the enforcement matcher, so this now also fires on `**/**`
+    # and the other universal spellings a literal check missed.
+    if policy.scope_is_unrestricted(contract.allowed_paths):
+        reasons.append(
+            "warning: contract scope is unrestricted (every path is in scope); "
+            "the signed perimeter is the only boundary for this change"
+        )
+    if blocking_secrets:
         tail = "" if secrets_block else " (perimeter block_secrets=false: review, not block)"
-        reasons.append(f"{len(unwaived_secrets)} secret(s) detected on added lines{tail}")
+        reasons.append(f"{len(blocking_secrets)} secret(s) detected on added lines{tail}")
+    if review_secrets:
+        reasons.append(
+            f"{len(review_secrets)} possible credential(s) on added lines in a "
+            "low-confidence shape (review, not block)"
+        )
     if unwaived_scope:
         reasons.append(f"{len(unwaived_scope)} path(s) changed outside the approved scope")
     if forbidden_hits:
@@ -1225,8 +1434,16 @@ def verify(
                 "head_commit": head_commit or "",
                 "changed_files": len(inventory_paths),
                 "out_of_scope": list(unwaived_scope),
+                # `confidence` belongs in the audit record too: without it the
+                # tier that decided the verdict is unrecoverable from the evidence,
+                # so a later reader cannot tell why a finding did or did not block.
                 "secret_findings": [
-                    {"path": f.path, "line": f.line, "pattern": f.pattern_name}
+                    {
+                        "path": f.path,
+                        "line": f.line,
+                        "pattern": f.pattern_name,
+                        "confidence": _confidence_of(f),
+                    }
                     for f in unwaived_secrets
                 ],
                 "sensitive_surfaces": {k: list(v) for k, v in surface_hits.items()},

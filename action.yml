@@ -44,7 +44,7 @@ inputs:
       Action release was cut from. The Change Control engine (notari begin/verify)
       requires >=0.3.0; earlier versions do not contain it.
     required: false
-    default: "==0.4.1"
+    default: "==0.4.2"
   install-from-source:
     description: "Install notari from this checked-out repo instead of PyPI (used for dogfooding)."
     required: false
@@ -59,7 +59,7 @@ inputs:
     description: >-
       Gate identity PRIVATE key (PEM) used to sign the passport, so reviewers can
       verify the verdict with `notari verify-passport`. Pass from a repo/org secret,
-      e.g. ${{ secrets.NOTARI_GATE_KEY }}. Never commit this.
+      e.g. pass secrets.NOTARI_GATE_KEY from the calling workflow. Never commit this.
     required: false
     default: ""
   gate-pubkeys:
@@ -67,7 +67,7 @@ inputs:
       Trusted gate PUBLIC key(s) (PEM) matching the gate-key. When set, the wrapper
       re-verifies the passport's own signature before trusting the verdict, so a
       tampered or unsigned passport fails the job closed. Pass from a secret/variable,
-      e.g. ${{ vars.NOTARI_GATE_PUBKEYS }}.
+      e.g. pass vars.NOTARI_GATE_PUBKEYS from the calling workflow.
     required: false
     default: ""
   allow-unsigned-evidence:
@@ -82,7 +82,7 @@ inputs:
     description: >-
       Trusted approver PUBLIC keys (PEM) that may sign the perimeter/contract. Pass
       INLINE from a secret/variable so a PR cannot edit the trust root, e.g.
-      ${{ secrets.NOTARI_APPROVER_PUBKEYS }}. In strict mode (the default) the
+      pass secrets.NOTARI_APPROVER_PUBKEYS from the calling workflow. In strict mode (the default) the
       committed .notari/approvers/*.pub set is IGNORED, and a key path resolving
       inside the checkout is rejected; only these externally-pinned keys are
       trusted. In cooperative mode the committed set is used in addition.

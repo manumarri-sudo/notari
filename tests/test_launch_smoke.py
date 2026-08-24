@@ -1,10 +1,10 @@
 """Deterministic launch smoke test + readiness-harness self-test.
 
 Proves the core anti-manipulation loop end to end (a workflow edit outside the
-approved scope does not silently PASS; explain/fix-prompt are safe; teach only
-edits its managed block; lessons stay advisory) and that the launch-readiness
-harness both passes on the clean repo AND actually fails when a property is
-violated (so GO is real, not vacuous).
+approved scope does not silently PASS; explain/fix-prompt are safe; building
+the passport never moves the verdict) and that the launch-readiness harness
+both passes on the clean repo AND actually fails when a property is violated
+(so GO is real, not vacuous).
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import subprocess
 from pathlib import Path
 
 from notari import contract as contract_mod
-from notari import lessons as lessons_mod
 from notari import teach as teach_mod
 from notari import verify as verify_mod
 from notari.verify import Verdict
@@ -81,17 +80,23 @@ def test_launch_loop_smoke(tmp_path: Path) -> None:
         assert bad not in fp
     assert "do not weaken, bypass, or edit notari" in fp
 
-    # 4. lessons are advisory: recording never changes the verdict.
-    lessons_mod.record_mistakes(passport, tmp_path)
+    # 4. rendering the agent-facing surfaces is read-only with respect to the
+    # verdict. This used to be phrased as "lessons are advisory"; the lessons
+    # recorder is gone, but the property it protected is the one that matters
+    # and still has live subjects: nothing downstream of verify may feed back
+    # into it. Re-verifying after rendering must return the same verdict.
+    teach_mod.fix_prompt(passport)
+    teach_mod.agent_brief(
+        task=contract.task,
+        allowed_paths=list(contract.allowed_paths),
+        forbidden_paths=[],
+        review_surfaces=[],
+    )
     result2 = verify_mod.verify(contract=contract, root=tmp_path)
-    assert result2.verdict is result.verdict, "recording a mistake changed the verdict"
-
-    # 5. teach only edits its managed block; user content survives.
-    lessons_mod.promote("no-ci-edits-without-ci-scope", tmp_path)
-    teach_mod.teach(tmp_path, ["claude"])
-    claude = (tmp_path / "CLAUDE.md").read_text()
-    assert "never delete prod" in claude
-    assert teach_mod.BLOCK_START in claude and teach_mod.BLOCK_END in claude
+    assert result2.verdict is result.verdict, "a post-verify surface changed the verdict"
+    assert list(result2.out_of_scope) == list(result.out_of_scope), (
+        "a post-verify surface changed the evidence"
+    )
 
 
 def _load_readiness():

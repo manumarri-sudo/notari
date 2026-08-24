@@ -381,65 +381,6 @@ def check_audit_chain_intact(audit_path: Path | None = None) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
-def check_stale_pattern_stats() -> CheckResult:
-    """Surface stale per-token pattern rows from a pre-rc5 bug so the
-    operator can run `notari suggestions cleanup` to remove them."""
-    try:
-        from notari.learning import find_stale_patterns
-
-        stale = find_stale_patterns()
-    except Exception as e:
-        return CheckResult(
-            "stale pattern rows",
-            PASS,
-            f"learning module not loaded ({type(e).__name__})",
-        )
-    if not stale:
-        return CheckResult("stale pattern rows", PASS, "none")
-    return CheckResult(
-        "stale pattern rows",
-        WARN,
-        f"{len(stale)} per-token row(s) from a pre-rc5 bug",
-        fix="notari suggestions cleanup",
-    )
-
-
-def check_self_improvement_signals() -> CheckResult:
-    """Surface the highest-severity `notari learn` suggestion as a
-    doctor check so silent self-improvement signals don't sit unread.
-    Returns PASS when there's nothing actionable; WARN with a pointer
-    to `notari learn` when there is.
-    """
-    try:
-        from notari.learn import analyze
-
-        suggestions, _ = analyze(since_days=7)
-    except Exception as e:
-        return CheckResult(
-            "self-improvement",
-            PASS,
-            f"learn module not loaded ({type(e).__name__})",
-        )
-    if not suggestions:
-        return CheckResult("self-improvement", PASS, "no actionable signals in the last 7d")
-    high = [s for s in suggestions if s.severity == "high"]
-    if high:
-        top = high[0]
-        return CheckResult(
-            "self-improvement",
-            WARN,
-            f"{len(suggestions)} suggestion(s); top: {top.title}",
-            fix=f"see all: notari learn  ·  top action: {top.paste_command}",
-        )
-    top = suggestions[0]
-    return CheckResult(
-        "self-improvement",
-        PASS,
-        f"{len(suggestions)} medium/low suggestion(s); top: {top.title}",
-        fix="see all: notari learn",
-    )
-
-
 def check_otel_dual_write() -> CheckResult:
     """Surface OTel dual-write failures, if any, since process start.
 
@@ -465,48 +406,6 @@ def check_otel_dual_write() -> CheckResult:
     )
 
 
-def check_permission_decay() -> CheckResult:
-    """Surface decayed Notari permissions if any exist."""
-    try:
-        from notari import decay as _decay  # local import; optional path
-
-        store = _decay.DecayStore.load()
-    except Exception as e:
-        return CheckResult(
-            "permission decay",
-            WARN,
-            f"could not read decay store: {e}",
-            fix="Inspect ~/.notari/permissions.json manually.",
-        )
-    decayed = store.decayed()
-    approaching = store.approaching()
-    if decayed:
-        names = ", ".join(p.pattern for p in decayed[:5])
-        more = "" if len(decayed) <= 5 else f", +{len(decayed) - 5} more"
-        return CheckResult(
-            "permission decay",
-            WARN,
-            f"{len(decayed)} decayed: {names}{more}",
-            fix="Run `notari decay show` for the full list, "
-            "`notari decay reaffirm <pattern>` to refresh, or "
-            "`notari decay forget <pattern>` to retire.",
-        )
-    if approaching:
-        return CheckResult(
-            "permission decay",
-            PASS,
-            f"healthy · {len(approaching)} approaching window",
-        )
-    total = len(store.all())
-    if total == 0:
-        return CheckResult(
-            "permission decay",
-            PASS,
-            "no tracked permissions yet (auto-registered on first override)",
-        )
-    return CheckResult("permission decay", PASS, f"{total} healthy")
-
-
 def run_doctor(
     config_path: Path | None = None,
 ) -> DoctorReport:
@@ -523,9 +422,6 @@ def run_doctor(
     report.add(check_audit_chain_intact(audit_path=audit_path))
     report.add(check_claude_hook_installed())
     report.add(check_otel_dual_write())
-    report.add(check_permission_decay())
-    report.add(check_stale_pattern_stats())
-    report.add(check_self_improvement_signals())
     for r in check_upstream_executables(cfg):
         report.add(r)
     return report

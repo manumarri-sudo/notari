@@ -209,12 +209,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
     decision = decide(tool_name, tool_input)
     agent_id = "cursor"
 
-    # Snapshot for learning: original classifier reason before any
-    # downstream transformation (trust scope, approval consume).
-    # Mirrors the claude_code adapter so post-decision learning groups
-    # token-flipped approves with their preceding denies.
-    original_decision_reason = decision.reason
-
     # Trust-scope downshift (parity with claude_code adapter): a
     # default-HIGH-risk file-mutation tool inside a trusted directory
     # (listed in `[trust] paths` in config.toml) is downgraded to LOW
@@ -404,18 +398,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                         },
                         force_fsync=taint_state.trifecta_closed,
                     )
-
-    # Autonomous learning (parity with claude_code adapter). Same
-    # contract: skip pure-LOW allows, record decision otherwise, never
-    # let a learning failure break the hook. Use the ORIGINAL classifier
-    # reason so token-flipped approves group with their preceding denies.
-    if decision.permission != "allow" or approval_token_used:
-        with contextlib.suppress(Exception):
-            from notari import learning
-
-            learning.record_decision_learning(
-                tool_name, original_decision_reason, bool(approval_token_used)
-            )
 
     # Cursor's response shape (NOT Claude Code's hookSpecificOutput).
     response: dict[str, Any] = {"permission": decision.permission}

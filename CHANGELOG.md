@@ -2,7 +2,56 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] - say only what the code does
+## [0.4.2] - one product, second security pass
+
+The first release after the 2026-07-23 cross-vendor red team returned DO NOT
+LAUNCH. Every finding it left open is closed here with a pinning test, the
+product is narrowed to the Change Passport, and the consumer path is repaired:
+0.4.1 was written up but never published to PyPI, so the shipped Action
+template (`notari@7eec505`, default `==0.4.1`) could not install at all. This
+release exists on PyPI and the templates pin to it.
+
+### Fixed (security)
+
+- **Secret gate, both directions (F5).** The `env-secret` and `password-flag`
+  rules no longer fire on ordinary env lookups, placeholders, or documentation
+  flags (`test_scan_ignores_env_lookup_not_a_literal`,
+  `test_scan_ignores_placeholders_and_doc_flags`), the whole-file scan no
+  longer BLOCKs an unrelated edit because of a pre-existing line, and findings
+  are split by confidence so a low-confidence match reviews while a vendor
+  format match still blocks (`tests/test_secret_confidence.py`). The
+  env-assignment regex is pinned against polynomial backtracking
+  (`test_scan_env_secret_regex_is_not_redos`).
+- **Unrestricted scope is decided by the enforcing matcher (F2).**
+  `scope_is_unrestricted` asks `path_in_scope` whether a probe set is all
+  admitted, so `**/**`, `*/**`, `./**` and friends are flagged exactly like
+  `**`, and strict verify reads the flag and prints it on the passport.
+- **Passport wrapper containment (F1, N4).** Every ancestor of the passport
+  directory is opened with `dir_fd` and rejected if it is a symlink, before any
+  `mkdir`; the passport is written to a temp file and atomically renamed. The
+  template no longer nests `passport-dir` under the checkout path.
+- **Approval store locking (F9).** `issue`, `approve`, `revoke` and `consume`
+  all run under the same lock; without POSIX locking the store fails closed.
+- **Markdown sanitisation (F11).** Task text, every reason, approver name,
+  contract ids and exception reasons pass through `_md_text` / `_md_code`
+  before reaching `passport.md`.
+- **The wrapper fails closed.** An abort or signal before a verdict is
+  published writes an explicit "the gate did not complete" summary and exits
+  non-zero, so a missing check can never read as approval.
+
+### Removed
+
+- The "loop" surface: `lessons`, `teach`, `learn`, `insights`, `saves`,
+  `journal`, `decay`, and their adapters (3,331 lines). Notari is one product,
+  the Change Passport, with the local gate as the bundled on-ramp. The
+  `session.close` boundary survives as `notari session-close`.
+
+### Changed
+
+- Action template, `notari init`, README and `docs/secure-workflow.yml` pin to
+  the 0.4.2 release commit; `action.yml` defaults to `==0.4.2`.
+
+## [0.4.1] - say only what the code does (written, never published)
 
 A pre-launch review pass, half of it by an independent cross-vendor reviewer,
 turned up one dormant feature and several places where the docs promised more

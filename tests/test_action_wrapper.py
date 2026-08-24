@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,15 @@ def _git_env(home: Path) -> dict[str, str]:
     and `git` resolve, and a throwaway HOME so we never touch the real one."""
     venv_bin = str(Path(sys.executable).parent)
     env = dict(os.environ)
+    # Scrub every ambient GITHUB_* variable. These tests drive the wrapper, whose
+    # behaviour BRANCHES on the Actions environment, so inheriting the real one means
+    # the same test asserts different things depending on where it runs. Two of them
+    # passed locally and failed on CI for exactly this reason: a GitHub runner exports
+    # GITHUB_EVENT_NAME=pull_request, which tripped the strict-mode trigger check
+    # before the assertion's own subject was ever reached. Each test now opts INTO the
+    # Actions variables it wants.
+    for key in [k for k in env if k.startswith("GITHUB_")]:
+        del env[key]
     env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
     env["HOME"] = str(home)
     env.update(
@@ -366,3 +376,340 @@ def test_symlinked_publish_dir_is_refused(
     assert "symlink" in (proc.stdout + proc.stderr).lower()
     # Nothing was written into the outside dir.
     assert not (outside / "passport.json").exists()
+
+
+def test_symlinked_intermediate_component_is_refused(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """F1 re-review (2026-07-23): the leaf-only check plus the check-after-mkdir
+    order let a symlinked INTERMEDIATE component slip through. A PR plants
+    `pubdir` as a symlink to an outside dir and asks to publish into
+    `pubdir/nested`. `mkdir -p` would have followed the link and created the
+    dir OUTSIDE the checkout before the containment check ran. The wrapper must
+    refuse on the ancestor symlink, before creating anything."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")
+    # The intermediate component (not the leaf) is the symlink out of the tree.
+    (root / "pubdir").symlink_to(outside)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "pubdir/nested"},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "symlink" in (proc.stdout + proc.stderr).lower()
+    # mkdir -p must NOT have followed the link to create the dir outside.
+    assert not (outside / "nested").exists(), "mkdir followed a symlinked ancestor"
+
+
+def test_symlinked_dest_to_outside_directory_is_not_followed(
+    repo: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Re-review defect 1: a passport file committed as a symlink to an OUTSIDE
+    DIRECTORY. `mv -f` treats such a dest as the target directory and moves the
+    file INTO it (outside the checkout); GNU needs `-T` to avoid that. The
+    O_NOFOLLOW + renameat publish must replace the symlink with a real file in
+    place and leave the outside directory empty."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")  # out of scope -> real BLOCK passport
+    notari_dir = root / ".notari"
+    notari_dir.mkdir(exist_ok=True)
+    link = notari_dir / "passport.json"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(outside)  # symlink to a DIRECTORY
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        capture_output=True,
+        text=True,
+    )
+    # Nothing was written into the outside directory...
+    assert not (outside / "passport.json").exists(), proc.stderr
+    assert list(outside.iterdir()) == [], "the outside dir must stay empty"
+    # ...and the published passport is a REAL file inside .notari.
+    published = notari_dir / "passport.json"
+    assert published.is_file() and not published.is_symlink()
+    assert json.loads(published.read_text())["verdict"] == "BLOCK"
+
+
+def test_publish_into_clean_nested_dir_succeeds(repo: tuple[Path, dict[str, str]]) -> None:
+    """The hardening must not regress the ordinary case: publishing into a
+    real nested dir that does not yet exist works and lands a real file."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+
+    _run(["notari", "begin", "task: tidy src", "--scope", "src/**"], root, env)
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "contract"], root, env)
+
+    (root / "PAYLOAD.txt").write_text("x\n")  # out of scope -> real BLOCK passport
+    _run(["git", "add", "-A"], root, env)
+    _run(["git", "commit", "-qm", "pr"], root, env)
+
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "artifacts/notari"},
+        capture_output=True,
+        text=True,
+    )
+    published = root / "artifacts" / "notari" / "passport.json"
+    assert published.is_file() and not published.is_symlink(), proc.stderr
+    assert json.loads(published.read_text())["verdict"] == "BLOCK"
+
+
+def _run_wrapper_with_evidence(
+    root: Path,
+    env: dict[str, str],
+    bin_dir: Path,
+    tmp_path: Path,
+    *,
+    extra: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], str, str]:
+    """Drive the wrapper with the Actions evidence files wired up, and return the
+    process plus what actually landed in GITHUB_OUTPUT and GITHUB_STEP_SUMMARY."""
+    out_file = tmp_path / "gh_output"
+    sum_file = tmp_path / "gh_summary"
+    out_file.write_text("")
+    sum_file.write_text("")
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={
+            **env,
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": ".notari",
+            "GITHUB_OUTPUT": str(out_file),
+            "GITHUB_STEP_SUMMARY": str(sum_file),
+            **(extra or {}),
+        },
+        capture_output=True,
+        text=True,
+    )
+    return proc, out_file.read_text(), sum_file.read_text()
+
+
+class TestPublishFailureCannotSuppressTheVerdict:
+    """Round-6 finding P4: publishing the passport into the candidate-controlled
+    checkout ran BEFORE every evidence channel, unguarded under `set -euo
+    pipefail`. Committing `.notari/passport.json` as a DIRECTORY made the helper
+    raise, `set -e` aborted, and a real BLOCK reached nobody: no step output, no
+    job summary, no annotations, only a traceback that reads like broken tooling
+    and invites a maintainer override."""
+
+    def test_block_still_reaches_every_channel_when_publish_is_sabotaged(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=1, verdict="BLOCK", exit_code=1)
+        # The attack: the publish destination is already a directory.
+        sabotage = root / ".notari" / "passport.json"
+        sabotage.mkdir(parents=True, exist_ok=True)
+        (sabotage / "keep").write_text("x")
+
+        proc, output, summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        combined = proc.stdout + proc.stderr
+        # The verdict still reaches the durable channels.
+        assert "verdict=BLOCK" in output, (output, combined)
+        assert summary.strip(), combined
+        # It degrades to a warning, and exits 1 for the RIGHT reason (the BLOCK),
+        # not because a helper crashed.
+        assert "::warning::" in combined, combined
+        assert proc.returncode == 1, (proc.returncode, combined)
+        assert "Traceback" not in combined, combined
+
+    def test_pass_is_not_turned_into_a_failure_by_a_sabotaged_publish(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """The same fixture on a PASS verdict used to flip a green run red."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+        (root / ".notari" / "passport.json").mkdir(parents=True, exist_ok=True)
+
+        proc, output, _summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        assert proc.returncode == 0, (proc.returncode, proc.stdout + proc.stderr)
+        assert "verdict=PASS" in output
+
+    def test_absent_passport_markdown_does_not_abort_the_run(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """A guard on the absent-markdown path, which the `if` rewrite made
+        explicit. Note this was NOT a live bug: bash exempts non-final commands of
+        an AND-OR list from `set -e`, so the old `[[ -f md ]] && publish` yielded 1
+        without aborting. This test passes before and after that change; it exists
+        so the path stays covered, not as a regression proof."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin"
+        _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+        # Drop the markdown passport the fake verifier writes.
+        fake = bin_dir / "notari"
+        fake.write_text(
+            fake.read_text().replace('printf "# passport\\n" > "$dir/passport.md"\n', "")
+        )
+        fake.chmod(0o755)
+
+        proc, output, _summary = _run_wrapper_with_evidence(root, env, bin_dir, tmp_path)
+
+        assert proc.returncode == 0, (proc.returncode, proc.stdout + proc.stderr)
+        assert "verdict=PASS" in output
+
+    def test_temp_name_is_not_guessable_from_the_pid(self) -> None:
+        """The temp file was named `.notari.tmp.<pid>`, so a candidate who guessed
+        the pid could pre-create it as a directory and crash the publish; the
+        pre-unlink caught only FileNotFoundError."""
+        body = WRAPPER.read_text()
+        assert "os.getpid()" not in body
+        assert "os.urandom" in body
+
+    def test_backslash_is_not_treated_as_a_path_separator(self) -> None:
+        """A POSIX directory legitimately named `a\\b\\c` became three nested
+        directories."""
+        assert 'pub.replace("\\\\", "/")' not in WRAPPER.read_text()
+
+
+class TestAbortBeforeTheTrapIsInstalled:
+    """Round-6 wave-3b: `mktemp` ran BEFORE `trap on_exit EXIT`, so a failure to
+    create the private temp dir aborted with exit 1 and no trap coverage: no
+    ::error::, no fallback summary, and an exit code indistinguishable from a BLOCK
+    verdict. WORK is now declared and the trap installed first."""
+
+    def test_unusable_tmpdir_fails_closed_with_exit_2(
+        self, repo: tuple[Path, dict[str, str]]
+    ) -> None:
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        proc = subprocess.run(
+            ["bash", str(WRAPPER)],
+            cwd=root,
+            env={**env, "TMPDIR": "/nonexistent", "NOTARI_STRICT": "false"},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
+        assert "::error::" in (proc.stdout + proc.stderr)
+
+    def test_signals_use_a_separate_handler_and_fail_closed(self) -> None:
+        """An unhandled signal bypasses an EXIT trap entirely, so a cancelled job
+        explained nothing. But installing `on_exit` FOR the signals was worse: `$?`
+        inside a signal trap is the preceding command's status, normally 0, so a TERM
+        exited 0 and a cancelled run reported SUCCESS. Signals get their own handler
+        that always exits 2."""
+        body = WRAPPER.read_text()
+        assert "trap on_exit EXIT\n" in body
+        for sig in ("TERM", "INT", "HUP"):
+            assert f"trap 'on_signal {sig}' {sig}" in body
+        assert "trap on_exit EXIT INT TERM HUP" not in body
+
+    def test_a_terminated_run_exits_2_not_0(self, tmp_path: Path) -> None:
+        """Executes the real trap block, since this is exactly the case where
+        reading the code misleads."""
+        body = WRAPPER.read_text().splitlines()
+        start = next(i for i, ln in enumerate(body) if ln.startswith("on_exit()"))
+        end = next(i for i, ln in enumerate(body) if ln.startswith("trap 'on_signal HUP'"))
+        harness = tmp_path / "sig.sh"
+        harness.write_text(
+            'set -euo pipefail\nWORK=""\ncleanup(){ [[ -n "$WORK" ]] && rm -rf "$WORK"; return 0; }\n'
+            "EVIDENCE_EMITTED=0\nVERDICT_EXIT=0\n"
+            + "\n".join(body[start : end + 1])
+            + "\ntrue\nkill -TERM $$\nsleep 5\n"
+        )
+        proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+        assert proc.returncode == 2, (proc.returncode, proc.stdout + proc.stderr)
+        assert "SIGTERM" in (proc.stdout + proc.stderr)
+
+
+class TestRunnerEnvironmentGaps:
+    """Runner-environment behaviour nobody had exercised: every review so far read
+    the script or ran the embedded helper directly, never the whole wrapper with a
+    degraded interpreter."""
+
+    def test_missing_python3_fails_closed_with_evidence(
+        self, repo: tuple[Path, dict[str, str]], tmp_path: Path
+    ) -> None:
+        """The wrapper shells out to `python3 -I` to read the verdict. With no
+        python3 on PATH it used to abort with the raw 127; the EXIT trap now
+        normalises that to 2 and leaves a fallback job summary saying the gate did
+        not complete, so a missing check cannot read as approval."""
+        if not WRAPPER.exists():
+            pytest.skip("wrapper script not present")
+        root, env = repo
+        bin_dir = root.parent / "fakebin_nopy"
+        _install_fake_notari(bin_dir, rc=1, verdict="BLOCK", exit_code=1)
+
+        # A curated PATH: the tools the wrapper needs, deliberately without python3.
+        clean = tmp_path / "clean"
+        clean.mkdir()
+        for tool in ("bash", "git", "mktemp", "cat", "rm", "mkdir", "chmod", "env"):
+            found = shutil.which(tool)
+            if found:
+                (clean / tool).symlink_to(found)
+        assert shutil.which("python3", path=str(clean)) is None
+
+        out_file = tmp_path / "gh_output"
+        sum_file = tmp_path / "gh_summary"
+        out_file.write_text("")
+        sum_file.write_text("")
+        proc = subprocess.run(
+            ["bash", str(WRAPPER)],
+            cwd=root,
+            env={
+                **env,
+                "PATH": str(bin_dir) + os.pathsep + str(clean),
+                "NOTARI_STRICT": "false",
+                "NOTARI_PASSPORT_DIR": ".notari",
+                "GITHUB_OUTPUT": str(out_file),
+                "GITHUB_STEP_SUMMARY": str(sum_file),
+            },
+            capture_output=True,
+            text=True,
+        )
+        combined = proc.stdout + proc.stderr
+        assert proc.returncode == 2, (proc.returncode, combined)
+        assert "::error::" in combined
+        # No verdict was ever established, so no verdict is claimed...
+        assert "verdict=" not in out_file.read_text()
+        # ...but the run explains itself rather than failing silently.
+        assert "did not complete" in sum_file.read_text()

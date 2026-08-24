@@ -23,13 +23,16 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from rich.table import Table
+
+from notari import events as ev
+from notari.config import default_audit_path
 
 # Audit event type that the overnight gate writes for auto-approved HIGH
 # rows. See `src/notari/adapters/claude_code.py` for the producer.
@@ -672,3 +675,189 @@ def render_table(stats: SummaryStats) -> Table:
             )
 
     return table
+
+
+# ---------------------------------------------------------------------------
+# Gate-health KPIs
+#
+# Moved here from learn.py when the loop surface was removed. These are a pure
+# fold over the audit chain, with no dependency on lessons, suggestions,
+# overrides or decay; learn.py only ever bundled them alongside its suggestion
+# generators in a single return tuple. `notari kpis` is the sole caller.
+#
+# audit_summary already owns load_events / _parse_ts / filter_events over the
+# same log, which is why this is the home rather than a new module.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class KPIReport:
+    """The KPIs that genuinely tell you whether the gate is healthy.
+
+    Designed against the actual shape of your audit log (5500+ events
+    as of v0.2.0a1-rc3). Each metric maps to something the data can
+    answer concretely; no framework name-drops without data behind them.
+
+    `noise_ratio` is the headline number. The other two are absolute
+    incident counters (lower is better; zero is normal).
+    """
+
+    window_days: int
+    n_events: int
+    n_asks: int
+    n_blocks: int
+    n_allowed: int
+    n_taint_closures: int
+    n_cascade_events: int
+    top_blocked_patterns: list[tuple[str, int]] = field(default_factory=list)
+    n_overrides: int = 0  # operator-bypasses via notari approve
+
+    @property
+    def noise_ratio(self) -> float:
+        """Asks per real block. The 991/84 problem. Under 5 is healthy.
+        Over 20 is a sign the gate is training approve-fatigue."""
+        if self.n_blocks <= 0:
+            # Floor of 1 so a brand-new install (zero blocks) doesn't
+            # divide-by-zero. Once any block fires the real ratio applies.
+            return float(self.n_asks)
+        return self.n_asks / self.n_blocks
+
+    @property
+    def health(self) -> str:
+        """One-word verdict on the gate's friction load."""
+        r = self.noise_ratio
+        if r < 5:
+            return "healthy"
+        if r < 20:
+            return "loud"
+        return "broken"
+
+
+def _normalize_block_reason(reason: str) -> str:
+    """Collapse the many historical formats of a verdict.blocked reason
+    string to a stable pattern key. Without this, the same underlying
+    rule (rm -rf) shows up as 4+ distinct top-pattern rows because old
+    classifier versions emitted longer suffixes ("Notari blocked: rm
+    -rf. To allow, lower the risk..." vs "rm -rf").
+
+    Returns the bare classifier head ("rm -rf", "vercel --prod",
+    "DROP TABLE/DATABASE/SCHEMA", "TRUNCATE TABLE", etc.).
+    """
+    if not reason:
+        return ""
+    s = reason
+    # Old format prefix
+    if s.startswith("Notari blocked: "):
+        s = s[len("Notari blocked: ") :]
+    # Drop the suggestion tail in every known format variant.
+    for sep in (" · try", " - try", ".  ↪ try", " ↪ try", ". To allow", " · ", " - "):
+        idx = s.find(sep)
+        if idx >= 0:
+            s = s[:idx]
+            break
+    return s.strip().rstrip(".").strip()
+
+
+def _iter_audit_events(path: Path | None = None) -> Iterable[dict[str, Any]]:
+    p = path or default_audit_path()
+    if not p.exists():
+        return
+    with p.open() as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                yield obj
+
+
+def _in_window(evt: Mapping[str, Any], since: datetime | None) -> bool:
+    """Window filter for the KPI fold.
+
+    Guards the type before delegating rather than widening the existing
+    `_parse_ts` signature. learn.py carried its own `_parse_ts(ts: object)`
+    that swallowed non-string input; audit_summary's takes `str` and would
+    raise TypeError on a corrupt row, which its other callers rely on not
+    happening. Coercing here keeps that contract untouched and still means a
+    malformed `ts` drops the row instead of aborting the fold.
+    """
+    if since is None:
+        return True
+    raw = evt.get("ts")
+    if not isinstance(raw, str):
+        return False
+    t = _parse_ts(raw)
+    return t is not None and t >= since
+
+
+def derive_kpis(
+    events: list[dict[str, Any]],
+    window_days: int = 7,
+) -> KPIReport:
+    """Fold events into the three KPIs that genuinely measure gate health.
+
+    See the KPIReport docstring for what each one means and why it was
+    picked. Override rate is reported as a count, not a ratio, because
+    the data is too sparse to make ratios meaningful yet (most logs
+    have a handful of operator-bypasses lifetime).
+    """
+    n_asks = 0
+    n_blocks = 0
+    n_allowed = 0
+    n_closures = 0
+    n_cascades = 0
+    n_overrides = 0
+    pattern_hits: dict[str, int] = {}
+    for e in events:
+        et = e.get("type")
+        payload = e.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        if et == ev.VERDICT_ASK:
+            n_asks += 1
+        elif et == ev.VERDICT_BLOCKED:
+            n_blocks += 1
+            reason = str(payload.get("reason") or "")
+            head = _normalize_block_reason(reason)
+            if head:
+                pattern_hits[head] = pattern_hits.get(head, 0) + 1
+        elif et == ev.VERDICT_ALLOWED:
+            n_allowed += 1
+            reason = str(payload.get("reason") or "")
+            if reason.startswith("approved one-shot"):
+                n_overrides += 1
+        elif et == ev.SESSION_TAINT_UPDATE:
+            tri = payload.get("trifecta") or {}
+            if isinstance(tri, Mapping) and all(tri.values()):
+                n_closures += 1
+        elif et == ev.AGENT_CASCADE_AFFECTED:
+            n_cascades += 1
+
+    top = sorted(pattern_hits.items(), key=lambda kv: -kv[1])[:8]
+
+    return KPIReport(
+        window_days=window_days,
+        n_events=len(events),
+        n_asks=n_asks,
+        n_blocks=n_blocks,
+        n_allowed=n_allowed,
+        n_taint_closures=n_closures,
+        n_cascade_events=n_cascades,
+        top_blocked_patterns=top,
+        n_overrides=n_overrides,
+    )
+
+
+def kpis_since(path: Path | None = None, since_days: int = 7) -> KPIReport:
+    """Read the audit chain and fold it into the gate-health KPIs.
+
+    Replaces the KPI half of the old `learn.analyze`, which returned
+    `(suggestions, kpis)`; the suggestion half was loop surface and is gone.
+    `since_days=0` means full history.
+    """
+    since: datetime | None = None
+    if since_days > 0:
+        since = datetime.now(UTC) - timedelta(days=since_days)
+    events = [e for e in _iter_audit_events(path) if _in_window(e, since)]
+    return derive_kpis(events, window_days=since_days)

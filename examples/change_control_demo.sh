@@ -93,7 +93,7 @@ line "Agent forges the signed verdict BLOCK -> PASS"
 python3 -c "import json,pathlib; p=pathlib.Path('$OUT/passport.json'); d=json.loads(p.read_text()); d['verdict']='PASS'; p.write_text(json.dumps(d))"
 "$Q" verify-passport "$OUT/passport.json" --gate-key "$W/gate.pem.pub" | sed 's/^/  /' || true
 
-# --- The action loop: explain the block, hand the agent a fix, learn the lesson ---
+# --- After the block: explain it, hand the agent a fix, brief the next one ---
 line "explain the block in plain English (+ a paste-ready fix prompt)"
 git checkout -q -- . 2>/dev/null; git clean -fdq .notari 2>/dev/null || true
 git checkout -q pr/disable-the-gate
@@ -103,11 +103,7 @@ git checkout -q pr/disable-the-gate
 line "the compact prompt to hand Claude Code / Codex / Cursor"
 "$Q" explain --passport "$OUT/passport.json" --fix-prompt | sed 's/^/  /' | head -6
 
-line "repeated mistakes become a lesson; promote it; teach future agents"
-"$Q" lessons | sed 's/^/  /' | head -6
-LID="$("$Q" lessons --json | python3 -c 'import json,sys; p=json.load(sys.stdin)["patterns"]; print(p[0]["lesson_id"] if p else "")')"
-[ -n "$LID" ] && "$Q" lessons promote "$LID" | sed 's/^/  /' | head -2
-"$Q" teach --agents claude,codex | sed 's/^/  /'
-grep -q "notari-lessons:start" "$W/CLAUDE.md" 2>/dev/null && echo "  ✓ lesson written into CLAUDE.md (managed block)"
+line "the pre-work brief the next agent reads before it starts"
+"$Q" agent-brief | sed 's/^/  /' | head -8
 
 echo; echo "demo repo: $W"

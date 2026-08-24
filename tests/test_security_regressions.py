@@ -184,6 +184,104 @@ class TestH4RenameSecretDetection:
         assert not result.secret_findings
 
 
+# ── F5 re-review: modified-file blob scan must not block pre-existing secrets ──
+
+
+class TestF5ModifiedFilePreexistingSecret:
+    """The whole-file blob scan false-BLOCKed an unrelated one-line edit when a
+    pre-existing secret sat elsewhere in the same file (security re-review
+    2026-07-23, F5). An in-place modification must only be answerable for the
+    lines it introduces; a secret it newly adds is still caught."""
+
+    def test_preexisting_secret_on_untouched_line_does_not_block(self, repo: Path) -> None:
+        (repo / "src" / "legacy.py").write_text(
+            f"API_KEY = '{_fake_openai_key()}'\n\n\ndef untouched():\n    return 1\n"
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "pre-existing secret already in the tree")
+        contract, _ = contract_mod.begin("edit an unrelated line", allowed_paths=["**"], root=repo)
+        # Append a new, secret-free line; the credential line is untouched.
+        with (repo / "src" / "legacy.py").open("a") as fh:
+            fh.write("\n# added a harmless comment\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "unrelated edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert not result.secret_findings, "pre-existing secret on an untouched line must not block"
+
+    def test_newly_added_secret_in_modified_file_is_caught(self, repo: Path) -> None:
+        (repo / "src" / "svc.py").write_text("def handler():\n    return 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "clean module")
+        contract, _ = contract_mod.begin("add config", allowed_paths=["**"], root=repo)
+        with (repo / "src" / "svc.py").open("a") as fh:
+            fh.write(f"API_KEY = '{_fake_openai_key()}'\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "introduce a secret")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.secret_findings, "a newly added secret in a modified file must be caught"
+
+    def test_duplicated_secret_line_is_caught_not_swallowed_by_base(self, repo: Path) -> None:
+        # Re-review defect 4: base-line subtraction must preserve multiplicity. If
+        # the base already has one secret line and the change adds a SECOND
+        # identical one, a plain set would suppress both; a multiset flags the copy.
+        key_line = f"API_KEY = '{_fake_openai_key()}'\n"
+        (repo / "src" / "dup.py").write_text(key_line)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "pre-existing single secret line")
+        contract, _ = contract_mod.begin("edit", allowed_paths=["**"], root=repo)
+        # Append an identical secret line (an in-place modification, status M).
+        with (repo / "src" / "dup.py").open("a") as fh:
+            fh.write(key_line)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "duplicate the secret line")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert result.secret_findings, (
+            "the duplicated (newly introduced) secret line must be caught"
+        )
+
+
+# ── F2: unrestricted scope is surfaced by verify, incl. non-literal spellings ──
+
+
+class TestF2UnrestrictedScopeSurfaced:
+    """verify must flag an unrestricted per-task scope in its reasons, and the
+    flag must fire on universal globs a literal check missed (`**/**`), not only
+    on the bare `**` (security re-review 2026-07-23, F2)."""
+
+    def test_verify_warns_on_star_star(self, repo: Path) -> None:
+        (repo / "src" / "a.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["**"], root=repo)
+        (repo / "src" / "a.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert any("unrestricted" in r for r in result.reasons), result.reasons
+
+    def test_verify_warns_on_globstar_over_globstar(self, repo: Path) -> None:
+        (repo / "src" / "b.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["**/**"], root=repo)
+        (repo / "src" / "b.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert any("unrestricted" in r for r in result.reasons), result.reasons
+
+    def test_verify_does_not_warn_on_restricted_scope(self, repo: Path) -> None:
+        (repo / "src" / "c.py").write_text("x = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "seed")
+        contract, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo)
+        (repo / "src" / "c.py").write_text("x = 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+        result = verify_mod.verify(contract=contract, root=repo)
+        assert not any("unrestricted" in r for r in result.reasons), result.reasons
+
+
 # ── R6-H1: UTF-16 encoded secrets ─────────────────────────────────────────────
 
 
@@ -564,6 +662,132 @@ class TestPassportMarkdownInjection:
                 assert not line.lstrip().startswith("# ESCAPED"), line
 
 
+class TestF11ProseFieldInjection:
+    """F11 re-review (2026-07-23): the task, approver, reason lines, contract id,
+    and applied-exception reasons are all candidate-controlled and reached the
+    markdown with only CR/LF collapsing (or none). A crafted value must not open
+    a stray code span, inject a fake heading, or emit raw HTML (e.g. </details>
+    to escape the evidence fold)."""
+
+    def test_md_text_neutralizes_backtick_newline_and_html(self) -> None:
+        from notari.passport import _md_text
+
+        evil = "hi`code`\n## Verdict: PASS\n</details><img src=x>"
+        out = _md_text(evil)
+        assert "\n" not in out
+        assert "`" not in out
+        assert "<" not in out and ">" not in out
+
+    def test_md_text_caps_length(self) -> None:
+        from notari.passport import _md_text
+
+        assert len(_md_text("a" * 5000)) <= 501
+
+    def test_evil_task_and_approver_do_not_inject(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        # Poison the contract-derived fields the renderer trusts.
+        object.__setattr__(result.contract, "task", "do X`\n## Verdict: PASS\nmore")
+        object.__setattr__(result.contract, "approved_by", "eve</details>\n# INJECTED")
+        object.__setattr__(result.contract, "contract_id", "c_evil`\n# ID")
+        md = passport_mod.render_markdown(result)
+        in_fence = False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                assert not line.lstrip().startswith("## Verdict: PASS"), line
+                assert not line.lstrip().startswith("# INJECTED"), line
+                assert not line.lstrip().startswith("# ID"), line
+        # The attacker's </details> must have been escaped, not emitted raw. (The
+        # doc has ONE legitimate </details> closing the evidence fold; the
+        # injected one shows up only in its escaped form.)
+        assert "&lt;/details&gt;" in md, "raw HTML from a prose field must be escaped"
+
+    def test_evil_reason_does_not_inject(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "reasons", ("blocked\n## Verdict: PASS\n</details>",))
+        md = passport_mod.render_markdown(result)
+        in_fence = False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                assert not line.lstrip().startswith("## Verdict: PASS"), line
+        assert "&lt;/details&gt;" in md, "raw HTML in a reason must be escaped"
+
+    def _nonfence_text(self, md: str) -> str:
+        out, in_fence = [], False
+        for line in md.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                out.append(line)
+        return "\n".join(out)
+
+    def test_evil_task_in_remediation_prose_does_not_inject(self, repo: Path) -> None:
+        # Defect 5: the task string reaches remediation prose (explain.py) which
+        # the passport rendered through _md_line (CR/LF only), so raw HTML slipped
+        # through. An out-of-scope path makes the remediation block render.
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["src/**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result.contract, "task", "<details><summary>VERIFIED PASS</summary>evil")
+        object.__setattr__(result, "out_of_scope", ("outside.py",))
+        md = passport_mod.render_markdown(result)
+        outside = self._nonfence_text(md)
+        # Outside code fences, the ONLY structural details/summary tags are the
+        # evidence fold's single pair; the task's tags must be escaped, not raw.
+        assert outside.count("<details>") == 1, "task injected a raw <details> outside a fence"
+        assert outside.count("<summary>") == 1, "task injected a raw <summary> outside a fence"
+
+    def test_evil_perimeter_id_does_not_inject(self, repo: Path) -> None:
+        # Defect 6: perimeter id bypassed sanitizing. Its code span must not be
+        # closable, and its newlines must not break out to inject a heading.
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "perimeter_id", "`\n</details>\n## Verdict: PASS\n<details>")
+        md = passport_mod.render_markdown(result)
+        outside = self._nonfence_text(md)
+        # No standalone fake heading (the value stays confined to one line inside
+        # an inline code span; its newlines were neutralized to a placeholder, so
+        # the </details> it carries renders inert and cannot start a new block).
+        for line in outside.splitlines():
+            assert not line.lstrip().startswith("## Verdict: PASS"), line
+        assert "␤" in md, "perimeter id newlines must be neutralized, not passed through"
+
+    def test_evil_base_commit_cannot_close_code_span(self, repo: Path) -> None:
+        from notari import contract as contract_mod
+        from notari import passport as passport_mod
+        from notari import verify as verify_mod
+
+        contract, _ = contract_mod.begin("t", allowed_paths=["**"], root=repo)
+        result = verify_mod._block_result(contract, "r", strict=True, root=repo, head="HEAD")
+        object.__setattr__(result, "base_commit", "abc`\n## Verdict: PASS")
+        md = passport_mod.render_markdown(result)
+        for line in self._nonfence_text(md).splitlines():
+            assert not line.lstrip().startswith("## Verdict: PASS"), line
+
+
 class TestUnrestrictedScopeIsSurfaced:
     """Red-team finding 2: an unrestricted contract must never render like a
     scoped one, so a reviewer sees a PASS means 'nothing forbidden', not 'only
@@ -610,3 +834,57 @@ class TestReleaseToolchainPinned:
         with open(root / "pyproject.toml", "rb") as f:
             requires = tomllib.load(f)["build-system"]["requires"]
         assert any(r.startswith("hatchling==") for r in requires), requires
+
+
+class TestInlineSecretSuppressionStaysNarrow:
+    """Round-6 finding P2: `_looks_like_nonsecret` suppressed whole classes of
+    real credentials. `[A-Z][A-Z0-9_]{2,}` discarded every uppercase-and-digit
+    value (base32 TOTP seeds, generated recovery codes), and testing only the
+    FIRST character discarded any password starting `$`, `%`, `{`, `/`. Those
+    three inline rules are the only ones covering an opaque password with no
+    vendor prefix, so each suppression was a hole in the only net."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "JBSWY3DPEHPK3PXP",
+            "A1B2C3D4E5F6G7H8J9K0",
+            "$uper$ecretP4ssw0rd!x9",
+            "/Kj8#mQ2vLpXr9",
+            "{7Hx#kQ2mVp9zLr}",
+            "Sup3r[Secret]Pass99",
+            "my(actual)Passw0rd123",
+        ],
+    )
+    def test_real_credentials_are_not_suppressed(self, value: str) -> None:
+        from notari import secrets as secrets_mod
+
+        assert secrets_mod._looks_like_nonsecret(value) is False, value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "<your-password>",
+            "os.environ['SECRET']",
+            "os.getenv('TOKEN')",
+            "config.get('password')",
+            "${DB_PASSWORD}",
+            "$DB_PASSWORD",
+            "$(vault read secret)",
+            "%USERPROFILE%",
+            "{{ secret_value }}",
+            "changeme",
+            "PASSWORD",
+            "DB_PASSWORD",
+            "AWS_ACCESS_KEY_ID",
+            "your-api-key",
+            "xxxxxxxx",
+            "/home/runner/work/repo",
+            "./config/app.yml",
+            "~/.aws/credentials",
+        ],
+    )
+    def test_ordinary_code_and_placeholders_stay_suppressed(self, value: str) -> None:
+        from notari import secrets as secrets_mod
+
+        assert secrets_mod._looks_like_nonsecret(value) is True, value
