@@ -2,7 +2,7 @@
 # Pinned exactly so the wheel/sdist build backend is reproducible and the
 # OIDC-privileged release job cannot resolve an unbounded (possibly compromised)
 # hatchling at publish time (security red-team 2026-07-22, finding 7).
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
