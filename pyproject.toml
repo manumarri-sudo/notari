@@ -90,7 +90,7 @@ dev = [
     "pytest-benchmark>=5.2.3",
     "hypothesis>=6.155.7",
     "syrupy>=5.3.4",
-    "ruff==0.15.20",   # pinned so CI's format-check matches local formatting exactly
+    "ruff==0.16.5",   # pinned so CI's format-check matches local formatting exactly
     "mypy>=2.1.0",
     "pyright>=1.1.411",
     "pip-audit>=2.10.1",
