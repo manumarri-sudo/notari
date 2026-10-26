@@ -107,8 +107,6 @@ contract, and more. Eleven BLOCK; the twelfth is the documented line-split
 secret limit. A thirteenth shape that earns an undeserved PASS is the single
 most useful thing you can send.
 
-<!-- mcp-name: io.github.manumarri-sudo/notari -->
-
 [![PyPI](https://img.shields.io/pypi/v/notari.svg)](https://pypi.org/project/notari/)
 [![Python versions](https://img.shields.io/pypi/pyversions/notari.svg)](https://pypi.org/project/notari/)
 [![CI](https://img.shields.io/github/actions/workflow/status/manumarri-sudo/notari/ci.yml?branch=main&label=ci)](https://github.com/manumarri-sudo/notari/actions/workflows/ci.yml)

@@ -45,6 +45,9 @@ rule's "try instead" text recommends, so the advice could not be followed.
 - `action.yml` defaults to `==0.4.3`; `CITATION.cff` catches up from 0.4.1.
 - `scripts/verify_launch_readiness.py` documents `uv run python ...`: outside the
   project venv the behaviour checks fail on import and read as product failures.
+- README drops the invisible `mcp-name` registry comment. Notari stopped being an
+  MCP server in the Change Control pivot; the 2026-07-09 journal scheduled the
+  removal for the next routine release.
 
 ## [0.4.2] - one product, second security pass
 
