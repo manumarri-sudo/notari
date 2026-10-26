@@ -1,21 +1,25 @@
 {
   "version": 1,
-  "task": "release 0.4.2: second security pass and loop extraction",
+  "task": "release 0.5.0: the drop-in scan is the product, chain counter fix, docs and diagram",
   "task_source": "text",
   "allowed_paths": [
     "src/**",
     "tests/**",
     "docs/**",
+    "scripts/**",
     "README.md",
     ".github/**",
     "action.yml",
     "CHANGELOG.md",
+    "CITATION.cff",
     "pyproject.toml",
+    "uv.lock",
     "examples/**"
   ],
-  "base_commit": "d866bc1dbf3d1e8aba6b385d5f9c6015bbc94e69",
-  "created_at": "2026-08-24T04:09:09.511465+00:00",
-  "contract_id": "978626a91082",
+  "base_commit": "c6c472b337a4e9ea6a9dc0d0419c78a8af2146cc",
+  "created_at": "2026-10-26T06:36:56.796888+00:00",
+  "contract_id": "50412708ff83",
   "approved_by": "Manu Marri",
+  "expires_at": "2026-11-09T06:36:56.797027+00:00",
   "repo": "manumarri-sudo/notari"
 }
