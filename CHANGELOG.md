@@ -29,8 +29,20 @@ second step.
   `notari/change-control`, fails closed without a contract
   (`tests/test_action_wrapper.py::test_scan_mode_*`, `test_boundary_mode_*`). New
   input `base-sha`, defaulting to the pull request's base.
+- **Scan fails closed on nothing.** A base that is not behind the head (a push or
+  `workflow_dispatch` run with no base, `--base HEAD`, swapped refs) is exit 2,
+  "nothing to scan", never a green check on an empty diff; an explicit base that
+  does not resolve (`NOTARI_BASE_SHA` on a shallow checkout) is exit 2 instead of
+  a silent fallthrough to `main`; the wrapper requires `head_commit` in scan mode
+  as it did in strict mode (third review, 2026-10-26).
 - **Passports carry `mode`** (`scan` or `boundary`), and a scan passport says "none
-  (scan mode)" for scope instead of warning about an unrestricted contract.
+  (scan mode)" for scope instead of warning about an unrestricted contract;
+  `notari explain --fix-prompt` says "Mode: scan" instead of an approved task.
+- **`scripts/bump_action_pin.py`** moves the Action pin at all five sites to a
+  release commit in one move and refuses anything but a full SHA. The pins in
+  this tree still point at the 0.4.2 action, which has no `mode` input: the
+  scan workflow does not work until the 0.5.0 pin-bump commit lands, which is
+  the release step (docs/LAUNCH-DRY-RUN-0.3.0.md, section 6).
 - `docs/scan-workflow.yml`, the one-file install; README and QUICKSTART lead with
   it and keep the signed boundary as the second step. The dogfood workflow and
   `docs/secure-workflow.yml` set `mode: boundary` explicitly.

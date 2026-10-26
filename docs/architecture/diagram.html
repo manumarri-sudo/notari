@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Notari: how the change control gate works, and where its boundary is</title>
+<title>Notari: how the gate works, and where its boundary is</title>
 <style>
   :root {
     --paper:  #f7f5f0;
@@ -91,12 +91,14 @@
   }
   ol.steps code, .note code, .muted-note code, li code {
     font-family: var(--mono); font-size: 11.5px;
-    background: #f4f2ed; border-radius: 4px; padding: 1px 4px;
+    background: #f4f2ed; border-radius: 4px; padding: 1px 2px;
   }
+  h2 code { padding: 0; background: none; font-size: inherit; letter-spacing: inherit; }
+  .nowrap { white-space: nowrap; }
 
   .arrow {
     display: flex; align-items: center; justify-content: center;
-    color: #b8b1a3; font-size: 22px; padding-top: 30px;
+    color: #8a8273; font-size: 22px; padding-top: 30px;
   }
 
   /* ---------- verdicts ---------- */
@@ -151,7 +153,7 @@
   no keys and no config: every pull request diff is checked for leaked secrets, edits to the gate's
   own surfaces, and sensitive surfaces, and the evidence is posted as a status check. <b>Boundary</b>
   adds a human-signed perimeter and contract, so the same run also measures where the change went
-  and issues a signed <b>Change Passport</b> anyone can re-verify later. There is no model anywhere
+  and issues a <b>Change Passport</b>, gate-signed when CI holds a gate key, that anyone can re-verify later. There is no model anywhere
   in either verdict, so it cannot be prompt-injected, and every box below corresponds to a command,
   a file, or a module that exists in the repository today.
 </p>
@@ -169,7 +171,8 @@
         <span class="flag">base-sha:</span> pull_request.base.sha<br>
         <span class="flag">head-sha:</span> pull_request.head.sha</div>
       <div class="note">
-        Copied from <code>docs/scan-workflow.yml</code>. No keys to generate, no contract to sign,
+        Abridged from <code>docs/scan-workflow.yml</code>, which also carries the checkout step,
+        <code>checkout-path</code>, and the permissions block. No keys to generate, no contract to sign,
         nothing to configure. <code>pull_request_target</code> runs it from the base branch, the pull
         request is checked out into a data-only directory, and the token is never written into
         that tree. Make <code>notari/scan</code> a required status check and a BLOCK cannot merge.
@@ -188,6 +191,15 @@
         pull request but its diff: a contract or perimeter file added, edited, or deleted in the PR
         changes nothing, because <code>notari scan</code> never opens one.
       </div>
+      <div class="note"><b>What it cannot do from inside this lane:</b></div>
+      <ol class="steps">
+        <li>Remove the scan, because <span class="nowrap"><code>pull_request_target</code></span> runs the
+            workflow from the base branch, not from the pull request.</li>
+        <li>Hide a secret behind a rename or a binary, because the inventory keeps both ends of a
+            rename and scans added, renamed, and copied files in full.</li>
+        <li>Turn a BLOCK into a green check by editing the workflow or the action manifest, because
+            that edit is itself a BLOCK.</li>
+      </ol>
     </div>
   </div>
 
@@ -201,11 +213,14 @@
         the verify engine with a synthetic every-path contract, so the evidence rules are exactly
         the boundary mode's:</div>
       <ol class="steps">
-        <li>Secrets on added lines: a vendor-format match (26 patterns in <code>secrets.py</code>)
-            is a <b>BLOCK</b>; a loose shape such as <code>DB_PASSWORD = "..."</code> is a review.</li>
+        <li>Secrets: added, renamed, and copied files in full, and the new lines of modified files,
+            against the 26 vendor patterns and 6 inline shapes in <code>secrets.py</code>. A vendor
+            match is a <b>BLOCK</b>; a loose shape such as <code>DB_PASSWORD = "..."</code> is a
+            review.</li>
         <li>Gate tamper: any edit under <code>.github/workflows/</code>, <code>.github/actions/</code>,
-            <code>action.yml</code>, or <code>.notari/approvers/</code> is a <b>BLOCK</b>
-            (<code>GATE_TAMPER_GLOBS</code> in <code>perimeter.py</code>).</li>
+            <code>action.yml</code> or <code>action.yaml</code>, the perimeter files, or the approver
+            key directory is a <b>BLOCK</b> (the <code>GATE_TAMPER_GLOBS</code> list in
+            <code>perimeter.py</code>).</li>
         <li>Sensitive surfaces: CI config, dependency lockfiles, test files, agent instruction files,
             and git configuration such as <code>.gitattributes</code> are listed for review, with
             submodule pointers and symlinks.</li>
@@ -220,7 +235,7 @@
   </div>
 </div>
 
-<h2>Mode 2, the signed boundary (opt in with <code>mode: boundary</code>)</h2>
+<h2>Mode 2, the signed boundary (opt in with mode: boundary)</h2>
 <div class="lanes">
 
   <div class="lane">
@@ -264,7 +279,7 @@
             workflow from the base branch, not from the pull request.</li>
         <li>Forge the contract or the perimeter, because both carry Ed25519 signatures it has no key for.</li>
         <li>Weaken a strict verdict with a waiver, because <code>.notari/exceptions.json</code> is ignored
-            entirely under <code>--strict</code>.</li>
+            entirely under <span class="nowrap"><code>--strict</code></span>.</li>
       </ol>
     </div>
   </div>
@@ -278,11 +293,12 @@
       <div class="note">Deterministic, in this order, every run:</div>
       <ol class="steps">
         <li>Build the authoritative changed-path inventory from
-            <code>git diff --name-status -z --find-renames</code>, keeping <b>both ends of a rename</b>
+            <span class="nowrap"><code>git diff --name-status -z --find-renames</code></span>, keeping <b>both ends of a rename</b>
             and including binary and mode-only changes.</li>
         <li>Match every changed path against the signed scope.</li>
-        <li>Scan <b>each touched file</b> (whole blob from the candidate, not just added lines) for the 26 vendor patterns plus 6 inline-credential shapes in <code>secrets.py</code>.</li>
-        <li>Classify sensitive surfaces: CI and workflow files, lockfiles, test deletions, and git
+        <li>Scan each added, renamed, or copied file in full, and the new lines of each modified file,
+            for the 26 vendor patterns plus 6 inline-credential shapes in <code>secrets.py</code>.</li>
+        <li>Classify the perimeter's review surfaces, by default CI files, lockfiles, and git
             configuration such as <code>.gitattributes</code> that can control diff visibility.</li>
         <li>Apply logged exceptions, which strict mode discards.</li>
         <li>Compose the verdict and chain a <code>verification.run</code> event into the audit log.</li>
@@ -296,9 +312,9 @@
 </div>
 
 <div class="verdicts">
-  <div class="verdict vp"><div class="v">PASS</div><div class="d">In scope, no secrets, no forbidden surface. Exits 0, the build goes green.</div></div>
-  <div class="verdict vr"><div class="v">NEEDS_REVIEW</div><div class="d">Something a human should look at (submodule bump, out-of-scope symlink). The hardened template defaults to <code>block-on-review</code>, so it fails the build unless you opt out.</div></div>
-  <div class="verdict vb"><div class="v">BLOCK</div><div class="d">Out of bounds or a secret in an added line. Exits non-zero, CI fails.</div></div>
+  <div class="verdict vp"><div class="v">PASS</div><div class="d">No secrets, nothing forbidden, no review surface; in boundary mode, in scope as well. Exits 0, the build goes green.</div></div>
+  <div class="verdict vr"><div class="v">NEEDS_REVIEW</div><div class="d">Something a human should look at (a loose secret shape, a lockfile, a submodule bump, a symlink). Exits 0 by default; set <code>block-on-review</code>, on in <code>docs/secure-workflow.yml</code>, to fail the build.</div></div>
+  <div class="verdict vb"><div class="v">BLOCK</div><div class="d">A vendor-format secret, a gate-tamper edit, or in boundary mode an out-of-bounds path. Exits 1, CI fails.</div></div>
 </div>
 
 <h2>What you are left holding</h2>
@@ -322,8 +338,10 @@
       <div class="t">Anyone can re-check it</div>
       <div class="cmd">notari verify-passport passport.json</div>
       <div class="note">
-        Re-verifies the verdict <b>and</b> the signature, months later, on a different machine,
-        without trusting Notari's runtime or a screenshot. A forged PASS fails the signature.
+        Checks the gate's Ed25519 signature on the passport against a trusted gate public key
+        (<span class="nowrap"><code>--gate-key</code></span>), months later and on a different machine, so a
+        flipped verdict or a forged PASS fails. It needs the gate key CI signed with, and it does not
+        re-run the diff.
       </div>
     </div>
   </div>
@@ -335,10 +353,10 @@
       <div class="t">Explain it, then hand the fix to the agent</div>
       <div class="cmd">notari explain --fix-prompt</div>
       <div class="note">
-        Every finding comes with what is wrong, the exact <code>git</code> command to undo it, and a
-        compact prompt for the coding agent that lists only the reverts and splits needed and tells
-        it not to weaken, bypass, or edit the gate to get past it. Works on scan and boundary
-        passports alike.
+        <code>notari explain</code> shows what is wrong and the exact <code>git</code> command to undo
+        it; <span class="nowrap"><code>--fix-prompt</code></span> emits only a compact prompt for the coding
+        agent that lists the reverts and splits needed and tells it not to weaken, bypass, or edit
+        the gate to get past it. Works on scan and boundary passports alike.
       </div>
     </div>
   </div>
@@ -377,9 +395,10 @@
     <div class="src">contract.py</div>
   </div>
   <div class="guard">
-    <div class="g">Secrets are caught in the whole file</div>
-    <div class="w">26 vendor patterns plus 6 inline-credential shapes are matched against every
-      touched file, not just added lines, so a rename or a UTF-16 file cannot hide one.</div>
+    <div class="g">Secrets are caught beyond the diff text</div>
+    <div class="w">26 vendor patterns plus 6 inline-credential shapes are matched against every added,
+      renamed, or copied file in full and the new lines of every modified file, so a pure rename or a
+      BOM-marked UTF-16 file cannot hide one.</div>
     <div class="src">secrets.py</div>
   </div>
 </div>

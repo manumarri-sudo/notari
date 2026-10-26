@@ -17,8 +17,8 @@ Most teams start and stop here. Copy
 [`docs/scan-workflow.yml`](scan-workflow.yml) to
 `.github/workflows/notari-scan.yml` and open a pull request. Every PR now gets a
 `notari/scan` status: **BLOCK** on a leaked secret or an edit to your workflows,
-action manifests, or approver keys; **NEEDS_REVIEW** on CI config, lockfiles, git
-config, submodule pointers, or symlinks; **PASS** otherwise, with renames and
+action manifests, or approver keys; **NEEDS_REVIEW** on CI config, lockfiles, test files, agent
+instruction files, git config, submodule pointers, or symlinks; **PASS** otherwise, with renames and
 binaries listed. Make the check required in branch protection and a BLOCK cannot
 merge. Nothing below is needed for that. The same check runs locally on a branch:
 

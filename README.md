@@ -6,10 +6,12 @@
 # notari
 
 > **Notari** is a drop-in check for AI-authored pull requests. On every PR it
-> scans the diff and **BLOCKs** a leaked secret (26 vendor formats on added
-> lines) or an edit to your workflows, action manifests, or approver keys, flags
-> CI config, dependency lockfiles, git config, submodule pointers, and symlinks
-> for **NEEDS_REVIEW**, and otherwise stamps **PASS**, with renames, binaries,
+> scans the diff and **BLOCKs** a leaked secret (26 vendor formats, matched in
+> full against added, renamed, and copied files and against the new lines of
+> modified files) or an edit to your workflows, action manifests, or approver
+> keys, flags other CI config, dependency lockfiles, test files, agent
+> instruction files, git config, submodule pointers, and symlinks for
+> **NEEDS_REVIEW**, and otherwise stamps **PASS**, with renames, binaries,
 > and mode changes listed rather than hidden. The verdict is deterministic,
 > there is no model in it, so it cannot be prompt-injected, and it needs no
 > keys and no config. It does **not** judge whether the code is correct: it
@@ -86,7 +88,8 @@ Four surfaces, each stated at its real strength rather than its most flattering 
 
 **1. The gate, which is the provable boundary.** In CI, outside the agent's reach,
 every changed path outside `.notari/` is measured against a signed scope and a signed
-perimeter, each touched file is scanned for 26 vendor secret patterns, and renames
+perimeter, added, renamed, and copied files are scanned in full and modified files on
+their new lines for 26 vendor secret patterns, and renames
 (both endpoints), mode-only changes, binaries, symlinks, submodules, and
 `.gitattributes` diff-hiding are all in the inventory rather than blind spots. You name
 the scope per task (`--scope`), so a narrow scope means "only these paths", and the
@@ -287,11 +290,11 @@ notari verify                 # local/cooperative: advisory, forgeable by the ag
    `git diff --name-status -z --find-renames <base_commit>..<candidate>`, both
    rename endpoints, binary and mode-only changes included,
 2. matches every changed path (both ends of a rename) against the contract scope,
-3. scans each touched file for the 26 vendor-format secret patterns in
-   [`src/notari/secrets.py`](src/notari/secrets.py), reading the whole file from the
-   candidate commit (not just added lines) so a 100% rename or a UTF-16 file cannot
-   hide a credential,
-4. classifies sensitive surfaces (CI/workflow files, lockfiles, test deletions,
+3. scans each added, renamed, or copied file in full, and the new lines of each
+   modified file, for the 26 vendor-format secret patterns in
+   [`src/notari/secrets.py`](src/notari/secrets.py), so a 100% rename or a BOM-marked
+   UTF-16 file cannot hide a credential,
+4. classifies the perimeter's review surfaces (by default CI files, lockfiles, and
    git configuration like `.gitattributes` that controls diff visibility),
 5. applies any logged exceptions in `.notari/exceptions.json` (ignored entirely in
    strict mode, an unsigned waiver file cannot weaken a strict verdict),

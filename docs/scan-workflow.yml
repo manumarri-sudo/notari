@@ -1,12 +1,15 @@
 # Notari scan, the drop-in workflow. Copy this into .github/workflows/notari-scan.yml.
 #
 # What it does on every pull request, with no keys and no config:
-#   BLOCK        a leaked secret on an added line (26 vendor formats), or an edit
-#                to .github/workflows/**, .github/actions/**, action.yml, or
-#                .notari/approvers/** (the gate's own surfaces)
+#   BLOCK        a leaked secret (26 vendor formats, matched in full against
+#                added, renamed and copied files and against the new lines of
+#                modified files), or an edit to .github/workflows/**,
+#                .github/actions/**, action.yml / action.yaml, the perimeter
+#                files, or .notari/approvers/** (the gate's own surfaces)
 #   NEEDS_REVIEW a loose secret shape (DB_PASSWORD = "..."), or a change to CI
-#                config, a dependency lockfile, .gitattributes / .gitignore /
-#                .gitmodules, a submodule pointer, or a symlink
+#                config, a dependency lockfile, a test file, an agent instruction
+#                file (CLAUDE.md, AGENTS.md, .cursorrules), .gitattributes /
+#                .gitignore / .gitmodules, a submodule pointer, or a symlink
 #   PASS         everything else, with renames, binaries and mode changes listed
 #
 # The diff is measured from the pull request's merge-base to its head, the same
@@ -18,8 +21,14 @@
 #
 # pull_request_target runs this workflow from the base branch, so a pull request
 # cannot edit it away; the PR is checked out into a data-only subdirectory and
-# the token is not persisted into that tree. If your repo does not accept forks
-# you may use pull_request instead; the scan does not need any secret.
+# the token is not persisted into that tree. The scan needs no secret, so
+# pull_request would also run it, but under pull_request the PR controls this
+# file and can delete the scan step, so a required check is only as strong as
+# the trigger: keep pull_request_target.
+#
+# The uses: line must point at a release commit whose action.yml has the mode
+# and base-sha inputs (0.5.0 or later). An older pin runs the strict boundary
+# verifier instead and fails closed without a contract.
 #
 name: notari-scan
 

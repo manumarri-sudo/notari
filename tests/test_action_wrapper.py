@@ -860,3 +860,18 @@ def test_scan_mode_rejects_malformed_inputs(
     )
     assert proc.returncode == 2
     assert needle in (proc.stdout + proc.stderr)
+
+
+def test_scan_mode_requires_head_commit_binding(repo: tuple[Path, dict[str, str]]) -> None:
+    """Third review: the passport-to-status binding was strict-only, so a scan
+    passport with no head_commit skipped it. Scan mode requires it too."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    bin_dir = root.parent / "fakebin_scan_nohead"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+    proc = _wrapper(
+        root, env, {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTARI_MODE": "scan"}
+    )
+    assert proc.returncode == 2
+    assert "head_commit" in (proc.stdout + proc.stderr)

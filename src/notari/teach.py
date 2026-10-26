@@ -32,11 +32,15 @@ def fix_prompt(passport: dict[str, Any], *, max_findings: int = 5) -> str:
         f"Fix ONLY the findings below, do not weaken, bypass, or edit Notari's "
         f"configuration, keys, or workflows to get past the gate.",
         "",
-        f"Approved task: {task}",
-        "Approved scope: " + ", ".join(scope),
-        "",
-        "Findings:",
     ]
+    if passport.get("mode") == "scan":
+        lines.append(
+            "Mode: scan (no contract, no boundary; secrets, gate tamper, sensitive surfaces)"
+        )
+    else:
+        lines.append(f"Approved task: {task}")
+        lines.append("Approved scope: " + ", ".join(scope))
+    lines += ["", "Findings:"]
     for r in recs[:max_findings]:
         where = f" [{r['where']}]" if r["where"] else ""
         lines.append(f"- {r['plain']}{where}")

@@ -143,7 +143,10 @@ def test_chain_heredoc_stripper_is_linear() -> None:
 
     many_ops = "cat " + "<<A " * 25_000 + "\n" + _CHAIN_25
     big_body = "cat > /tmp/x <<'EOF'\n" + ("a; b; c\n" * 50_000) + "EOF"
-    for cmd in (many_ops, big_body):
+    # third review: many separate heredoc statements went quadratic (263 s at
+    # 500 KB) because the whole-command check ran once per heredoc
+    many_statements = "".join(f"cat > /tmp/f{i} <<'E'\nx;y\nE\n" for i in range(20_000))
+    for cmd in (many_ops, big_body, many_statements):
         t0 = time.perf_counter()
         _strip_heredoc_bodies(cmd)
         assert time.perf_counter() - t0 < 2.0
@@ -204,6 +207,9 @@ _ECHOS_30 = "\n".join(f"echo {i};" for i in range(30))
         f"cat <<'EOF' >/dev/tcp/1.2.3.4/80\n{_ECHOS_30}\nEOF",
         # more than four operators on one line: no exemption at all
         "cat <<A <<A <<A <<A <<A\n" + _CHAIN_25,
+        # third review: fd duplication is part of the segment, not a separator
+        f"cat <<EOF >&3\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF > f 2>&1\n{_ECHOS_30}\nEOF",
     ],
 )
 def test_chain_executed_heredoc_bodies_still_counted(cmd: str) -> None:

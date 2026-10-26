@@ -60,7 +60,11 @@ def _reject_option_shaped(ref: str, what: str) -> None:
 def resolve_base(root: Path, base: str | None, env: dict[str, str]) -> str:
     """Return the full SHA of the base ref: explicit `base`, else NOTARI_BASE_SHA,
     else the first fallback ref that exists in this repo."""
-    candidates = [base] if base else [env.get("NOTARI_BASE_SHA", ""), *_BASE_FALLBACKS]
+    # An explicit base, from the flag or from CI's NOTARI_BASE_SHA, must resolve:
+    # falling through to a default branch would scan a different diff than the
+    # one asked for, and a shallow checkout would turn that into a quiet PASS.
+    explicit = base or env.get("NOTARI_BASE_SHA", "")
+    candidates = [explicit] if explicit else list(_BASE_FALLBACKS)
     for ref in candidates:
         if not ref:
             continue
@@ -116,6 +120,16 @@ def scan(
     env = dict(os.environ) if env is None else env
     base_sha = resolve_base(root, base, env)
     mb = merge_base(root, base_sha, head)
+    head_sha = _git(root, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}")
+    if head_sha == mb:
+        # Nothing between base and head: a push or workflow_dispatch run with no
+        # base, `--base HEAD`, or swapped refs. A green check on a scan of
+        # nothing is exactly the fail-open this mode must not have.
+        msg = (
+            f"nothing to scan: base {base_sha[:12]} is not behind head {head!r} "
+            "(merge-base equals head); pass --base <the ref the change targets>"
+        )
+        raise verify_mod.VerifyError(msg)
     return verify_mod.verify(
         contract=scan_contract(mb),
         root=root,

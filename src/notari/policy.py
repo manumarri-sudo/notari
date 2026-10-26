@@ -966,7 +966,10 @@ _BODY_EXPANSION_RE = re.compile(r"\$\(|`")
 # More heredoc operators than this on one line is not a shape bash users
 # write; stop exempting rather than analyse each one (linear time, closed).
 _MAX_HEREDOCS_PER_LINE: Final[int] = 4
-_SEGMENT_SEP_RE = re.compile(r"[;&|]")
+# Segment separators: `;`, `|`, `||`, `&&`, and a background `&`, but not the
+# `&` of an fd duplication (`>&3`, `2>&1`), which stays inside its segment so
+# the escape check can see it.
+_SEGMENT_SEP_RE = re.compile(r";|\|\|?|&&|(?<![<>])&")
 
 
 def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, bool, int]:
@@ -1004,7 +1007,13 @@ def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, bool, int]:
 
 
 def _heredoc_is_data_sink(
-    cmd: str, masked: str, line_start: int, op_start: int, delim_end: int, line_end: int
+    masked: str,
+    line_start: int,
+    op_start: int,
+    delim_end: int,
+    line_end: int,
+    *,
+    executor_anywhere: bool,
 ) -> bool:
     """True when the segment that owns this heredoc operator is a plain
     `cat`/`tee` whose body can only land in a file or on stdout.
@@ -1014,7 +1023,7 @@ def _heredoc_is_data_sink(
     duplicates an fd, redirects into /dev or /proc, or substitutes a command;
     or the command anywhere uses process substitution, a fifo, or `exec`.
     """
-    if _EXECUTOR_ANYWHERE_RE.search(masked):
+    if executor_anywhere:
         return False
     rest = masked[delim_end:line_end]
     if "|" in rest or rest.rstrip().endswith("\\"):
@@ -1057,6 +1066,9 @@ def _strip_heredoc_bodies(cmd: str) -> str:
         return cmd
     out = list(cmd)
     masked = _mask_quoted(cmd)
+    # Whole-command checks run once: per-heredoc they made a command with many
+    # heredoc statements quadratic (263 s at 500 KB in review).
+    executor_anywhere = bool(_EXECUTOR_ANYWHERE_RE.search(masked))
     n = len(cmd)
     line_start = 0
     while line_start < n:
@@ -1078,7 +1090,12 @@ def _strip_heredoc_bodies(cmd: str) -> str:
                 continue
             strip_tabs = op.group(1) == "-"
             sink = exempt_allowed and _heredoc_is_data_sink(
-                cmd, masked, line_start, op.start(), delim_end, line_end
+                masked,
+                line_start,
+                op.start(),
+                delim_end,
+                line_end,
+                executor_anywhere=executor_anywhere,
             )
             pos = body_start
             body_end = n

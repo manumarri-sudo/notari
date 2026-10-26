@@ -260,8 +260,8 @@ fi
 #     than the one being gated (security review H-6). In strict mode the passport
 #     MUST contain a valid head_commit; an empty one bypasses the binding check.
 HEAD_COMMIT="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("head_commit") or "")' "$PASSPORT_JSON")"
-if [[ -n "$STRICT_FLAG" && -z "$HEAD_COMMIT" ]]; then
-  echo "::error::strict mode requires the passport to contain a head_commit SHA; failing closed."
+if [[ ( -n "$STRICT_FLAG" || "$MODE" == "scan" ) && -z "$HEAD_COMMIT" ]]; then
+  echo "::error::${MODE} mode requires the passport to contain a head_commit SHA; failing closed."
   exit 2
 fi
 # The passport head_commit must match the SHA used for the Status Check,

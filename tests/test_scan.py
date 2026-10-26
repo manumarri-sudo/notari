@@ -124,6 +124,17 @@ class TestNoContractNoKeys:
         assert "scan mode" in md
         assert "unrestricted" not in md
 
+    def test_fix_prompt_speaks_scan_not_contract(self, pr: Path) -> None:
+        from notari.teach import fix_prompt
+
+        _commit(pr, ".github/workflows/ci.yml", "# tampered\n")
+        result = scan_mod.scan(root=pr, base="main", env={})
+        prompt = fix_prompt(passport_mod.build_passport(result))
+        assert "Mode: scan" in prompt
+        assert "Approved task" not in prompt and "Approved scope" not in prompt
+        assert "do not weaken, bypass, or edit" in prompt
+        assert ".github/workflows/ci.yml" in prompt
+
     def test_boundary_passport_says_boundary(self, pr: Path) -> None:
         from notari import contract as contract_mod
         from notari import verify as verify_mod
@@ -147,6 +158,25 @@ class TestBaseResolution:
     def test_falls_back_to_main(self, pr: Path) -> None:
         result = scan_mod.scan(root=pr, env={})
         assert result.base_commit == _git(pr, "rev-parse", "main")
+
+    def test_base_equal_to_head_is_an_error_not_a_pass(self, pr: Path) -> None:
+        """Third review: `--base HEAD` (or a push run whose fallbacks resolve to
+        HEAD) scanned nothing and said PASS on a branch carrying a key."""
+        _commit(pr, "src/app.py", f'KEY = "{_VENDOR}"\n')
+        with pytest.raises(VerifyError, match="nothing to scan"):
+            scan_mod.scan(root=pr, base="HEAD", env={})
+
+    def test_swapped_refs_are_an_error(self, pr: Path) -> None:
+        _commit(pr, "src/app.py", f'KEY = "{_VENDOR}"\n')
+        with pytest.raises(VerifyError, match="nothing to scan"):
+            scan_mod.scan(root=pr, base="feature", head="main", env={})
+
+    def test_unresolvable_env_base_does_not_fall_through(self, pr: Path) -> None:
+        """A bogus NOTARI_BASE_SHA (a shallow checkout, a typo) must not quietly
+        scan against main instead; that is a different diff than CI asked for."""
+        _commit(pr, "src/app.py", f'KEY = "{_VENDOR}"\n')
+        with pytest.raises(VerifyError, match="no base ref"):
+            scan_mod.scan(root=pr, env={"NOTARI_BASE_SHA": "0" * 40})
 
     def test_no_base_anywhere_is_an_error_not_a_pass(self, pr: Path) -> None:
         _git(pr, "branch", "-m", "main", "trunk")
@@ -182,6 +212,13 @@ class TestCli:
         result = CliRunner().invoke(app, ["scan", "--no-passport"])
         assert result.exit_code == 2
         assert "scan failed" in result.output
+
+    def test_base_head_exits_two_not_green(self, pr: Path, monkeypatch) -> None:
+        _commit(pr, "src/app.py", f'KEY = "{_VENDOR}"\n')
+        monkeypatch.chdir(pr)
+        result = CliRunner().invoke(app, ["scan", "--base", "HEAD", "--no-passport"])
+        assert result.exit_code == 2
+        assert "nothing to scan" in result.output
 
     def test_json_output(self, pr: Path, monkeypatch) -> None:
         monkeypatch.chdir(pr)

@@ -10,7 +10,7 @@
 #   bash examples/bypass_probes.sh            # verdict table
 #   VERBOSE=1 bash examples/bypass_probes.sh  # full verifier output per probe
 #
-# Expected result as of 0.4.2: eleven BLOCK, and probe 10 PASSes because secret
+# Expected result as of 0.5.0: eleven BLOCK, and probe 10 PASSes because secret
 # detection is line-based and a credential split across two lines is a
 # documented limit (docs/SECURITY-MODEL.md). If you find a thirteenth shape that
 # gets an undeserved PASS, that is the most useful bug report this project can
