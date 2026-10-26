@@ -50,14 +50,27 @@ rule's "try instead" text recommends, so the advice could not be followed.
   reads it, so `E'O'F`, `"EO"F`, `E\OF`, `'EOF'x` and CRLF lines pair correctly;
   `<<-` tab stripping; operator order; unterminated runs to the end; `<<` after
   `#` or inside `$(( ))` is not an operator) and blanks only a body consumed by a
-  plain `cat` or `tee` with no pipe or substitution on the line. Every other
-  body (`bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`, `cat <<EOF |
-  php`, `tee >(bash) <<EOF`, and so on) keeps counting exactly as before. The
-  count runs before ANSI-C decoding so `$'<<EOF'` stays one quoted word. A
-  hostile review of the first cut found that blanking every body hid executed
-  commands; the 28 shapes it produced are pinned CRITICAL in
-  `test_chain_executed_heredoc_bodies_still_counted`, next to the benign
-  shapes in `test_chain_heredoc_*` that must not count.
+  plain `cat` or `tee` when nothing could run it: no pipe or line continuation
+  after the operator, no fd duplication, device redirection or substitution in
+  the segment, no process substitution, fifo or `exec` anywhere in the command,
+  and no `$(` or backtick in the body unless the delimiter was quoted. Every
+  other body (`bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`, `cat
+  <<EOF | php`, `cat <<EOF 2>&1 | bash`, `exec 3> >(bash); cat <<EOF >&3`,
+  `tee >(bash) <<EOF`, and so on) keeps counting exactly as before. The count
+  runs before ANSI-C decoding so `$'<<EOF'` stays one quoted word, and a line
+  with more than four heredoc operators gets no exemption, which keeps the pass
+  linear (a 100 KB operator run took 28 s in the first cut). Two hostile review
+  rounds produced the 38 executed shapes pinned CRITICAL in
+  `test_chain_executed_heredoc_bodies_still_counted`, next to the benign shapes
+  in `test_chain_heredoc_*` that must not count.
+- **Accepted trade-off, stated plainly.** A plain file write whose body has
+  more than 20 segments and is later run (`cat > x.sh <<'EOF' ... EOF; bash
+  x.sh`) was CRITICAL before only because the body inflated the chain count; it
+  now classifies by its verbs, like the under-20 case always did (architectural
+  limit 3, `test_residual_write_then_run_payload`). The same applies to a
+  heredoc written to `~/.bashrc` or a cron directory. The body is still scanned
+  by every CRITICAL and HIGH pattern; a persistence-path rule is a separate
+  follow-up.
 - **`notari status` no longer judges workflows that merely mention notari.** A
   workflow counts as a gate when it runs the action or the CLI (`uses:
   org/notari@`, `install-from-source`, `notari verify`, `pip install notari`),

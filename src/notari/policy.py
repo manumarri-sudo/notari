@@ -948,34 +948,51 @@ _HEREDOC_OP_RE = re.compile(r"(?<!<)<<(?!<)([-~]?)\s*")
 _COMMENT_TAIL_RE = re.compile(r"(?:^|\s)#")
 _ARITH_RE = re.compile(r"\$?\(\((?:[^()]|\([^()]*\))*\)\)")
 # Commands that only read their stdin as data. A heredoc fed to one of these
-# is exempt from the chain count; a heredoc fed to anything else keeps its
-# body counted, exactly as before, because `bash <<EOF`, `env bash <<EOF`,
-# `source /dev/stdin <<EOF`, `cat <<EOF | php` and every interpreter not on a
-# list all execute the body.
+# is exempt from the chain count when nothing else on the command could run
+# the body; a heredoc fed to anything else keeps its body counted, exactly as
+# before, because `bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`,
+# `cat <<EOF | php` and every interpreter not on a list all execute the body.
 _HEREDOC_SINKS: Final[frozenset[str]] = frozenset({"cat", "tee"})
 _SHELL_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
-_SUBST_RE = re.compile(r"\$\(|`|[<>]\(")
+# Anywhere in the command: a process substitution, a fifo, or `exec` can turn
+# a later "write to a file" into "feed an interpreter" (`exec 3> >(bash); cat
+# <<EOF >&3`). Inside the segment: fd duplication, or a redirection into a
+# device path, hands the body to something other than a file.
+_EXECUTOR_ANYWHERE_RE = re.compile(r"[<>]\(|\bmkfifo\b|(?:^|[;&|(\s])exec\b")
+_SEGMENT_ESCAPE_RE = re.compile(r"\$\(|`|[<>]&|&>|[<>]\s*/(?:dev|proc)/")
+# Inside an UNQUOTED-delimiter body the shell expands `$(...)` and backticks,
+# so such a body is not data (`cat <<EOF\n$(cmd1; cmd2)\nEOF`).
+_BODY_EXPANSION_RE = re.compile(r"\$\(|`")
+# More heredoc operators than this on one line is not a shape bash users
+# write; stop exempting rather than analyse each one (linear time, closed).
+_MAX_HEREDOCS_PER_LINE: Final[int] = 4
+_SEGMENT_SEP_RE = re.compile(r"[;&|]")
 
 
-def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, int]:
+def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, bool, int]:
     """Read a heredoc delimiter word from `raw[start:end]` the way bash does.
 
     Quotes are removed and may be partial (`E'O'F` is `EOF`), a backslash
     escapes the next character, `\r` is an ordinary character (so a CRLF
     opener line pairs with a CRLF terminator line), and the word ends at
-    unquoted whitespace or a shell operator. Returns (delimiter, index after).
+    unquoted whitespace or a shell operator. Returns (delimiter, quoted, end):
+    bash expands the body only when no part of the delimiter was quoted; `end`
+    is the index just past the word.
     """
     i = start
     out: list[str] = []
+    quoted = False
     while i < end:
         ch = raw[i]
         if ch in "'\"":
+            quoted = True
             j = raw.find(ch, i + 1, end)
             if j == -1:
                 j = end
             out.append(raw[i + 1 : j])
             i = j + 1
         elif ch == "\\" and i + 1 < end:
+            quoted = True
             out.append(raw[i + 1])
             i += 2
         elif ch in " \t\n;&|<>()":
@@ -983,24 +1000,33 @@ def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, int]:
         else:
             out.append(ch)
             i += 1
-    return "".join(out), i
+    return "".join(out), quoted, i
 
 
-def _heredoc_is_data_sink(masked: str, line_start: int, op_start: int, line_end: int) -> bool:
+def _heredoc_is_data_sink(
+    cmd: str, masked: str, line_start: int, op_start: int, delim_end: int, line_end: int
+) -> bool:
     """True when the segment that owns this heredoc operator is a plain
-    `cat`/`tee` whose output is not piped and that contains no substitution.
-    Only then is the body known to be data rather than executed text."""
-    seg_start = line_start
-    for m in re.finditer(r"[;&|]", masked[line_start:op_start]):
-        seg_start = line_start + m.end()
-    seg_end_m = re.search(r"[;&|]", masked[op_start:line_end])
-    seg_end = op_start + seg_end_m.start() if seg_end_m else line_end
-    if seg_end < line_end and masked[seg_end] == "|":
-        return False  # `cat <<EOF | something` hands the body to something
-    segment = masked[seg_start:seg_end]
-    if _SUBST_RE.search(segment):
+    `cat`/`tee` whose body can only land in a file or on stdout.
+
+    Refused, and therefore counted as before, when: anything after the
+    operator on the opener line pipes or continues the line; the segment
+    duplicates an fd, redirects into /dev or /proc, or substitutes a command;
+    or the command anywhere uses process substitution, a fifo, or `exec`.
+    """
+    if _EXECUTOR_ANYWHERE_RE.search(masked):
         return False
-    words = [w for w in masked[seg_start:op_start].replace("(", " ").split() if w]
+    rest = masked[delim_end:line_end]
+    if "|" in rest or rest.rstrip().endswith("\\"):
+        return False
+    seg_start = line_start
+    for m in _SEGMENT_SEP_RE.finditer(masked, line_start, op_start):
+        seg_start = m.end()
+    seg_end_m = _SEGMENT_SEP_RE.search(masked, op_start, line_end)
+    seg_end = seg_end_m.start() if seg_end_m else line_end
+    if _SEGMENT_ESCAPE_RE.search(masked, seg_start, seg_end):
+        return False
+    words = masked[seg_start:op_start].replace("(", " ").split()
     while words and _SHELL_ASSIGN_RE.match(words[0]):
         words.pop(0)
     if not words:
@@ -1020,11 +1046,12 @@ def _strip_heredoc_bodies(cmd: str) -> str:
 
     Fail-closed by construction: every heredoc's extent is tracked with bash
     semantics (operator order, `<<-` tab stripping, bash delimiter quoting,
-    terminator equal to the delimiter, unterminated runs to the end), but only
-    a body consumed by a plain data sink (see `_heredoc_is_data_sink`) is
-    blanked. Any other body stays in the text and keeps counting, as before.
-    Output keeps the input's length and newlines. Pattern matching never uses
-    this: the scanners keep seeing every body.
+    terminator equal to the delimiter, unterminated runs to the end), but a
+    body is blanked only when `_heredoc_is_data_sink` accepts its segment and
+    the body itself cannot expand (quoted delimiter, or no `$(` / backtick in
+    it). Every other body stays in the text and keeps counting. Output keeps
+    the input's length and newlines. Pattern matching never uses this: the
+    scanners keep seeing every body. Linear in the command length.
     """
     if "<<" not in cmd:
         return cmd
@@ -1041,15 +1068,20 @@ def _strip_heredoc_bodies(cmd: str) -> str:
         if cm:
             search_end = cm.start()
         arith = [(m.start(), m.end()) for m in _ARITH_RE.finditer(masked, line_start, search_end)]
-        for op in _HEREDOC_OP_RE.finditer(masked, line_start, search_end):
+        ops = list(_HEREDOC_OP_RE.finditer(masked, line_start, search_end))
+        exempt_allowed = len(ops) <= _MAX_HEREDOCS_PER_LINE
+        for op in ops:
             if any(a <= op.start() < b for a, b in arith):
                 continue
-            delim, _ = _heredoc_delimiter(cmd, op.end(), line_end)
+            delim, quoted, delim_end = _heredoc_delimiter(cmd, op.end(), line_end)
             if not delim:
                 continue
             strip_tabs = op.group(1) == "-"
-            blank = _heredoc_is_data_sink(masked, line_start, op.start(), line_end)
+            sink = exempt_allowed and _heredoc_is_data_sink(
+                cmd, masked, line_start, op.start(), delim_end, line_end
+            )
             pos = body_start
+            body_end = n
             while pos < n:
                 end = cmd.find("\n", pos)
                 if end == -1:
@@ -1058,12 +1090,16 @@ def _strip_heredoc_bodies(cmd: str) -> str:
                 if strip_tabs:
                     probe = probe.lstrip("\t")
                 if probe == delim:
+                    body_end = pos
                     pos = end + 1
                     break
-                if blank:
-                    for k in range(pos, end):
-                        out[k] = " "
                 pos = end + 1
+            else:
+                body_end = n
+            if sink and (quoted or not _BODY_EXPANSION_RE.search(cmd, body_start, body_end)):
+                for k in range(body_start, body_end):
+                    if out[k] != "\n":
+                        out[k] = " "
             body_start = pos
         line_start = body_start
     return "".join(out)
