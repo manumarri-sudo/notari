@@ -100,7 +100,7 @@ def test_workflow_running_the_cli_is_a_gate(tmp_path: Path) -> None:
     wf.mkdir(parents=True, exist_ok=True)
     (wf / "gate.yml").write_text(
         "on:\n  pull_request:\njobs:\n  cc:\n    steps:\n"
-        "      - run: pip install notari==0.4.3\n      - run: notari verify --strict\n"
+        "      - run: pip install notari==0.5.0\n      - run: notari verify --strict\n"
     )
     assert [p.name for p in readiness._notari_workflow_files(tmp_path)] == ["gate.yml"]
 

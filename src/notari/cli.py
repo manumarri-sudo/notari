@@ -332,6 +332,72 @@ def _uncommitted_setup_files(root: Path) -> list[str]:
     return dirty
 
 
+@app.command("scan", rich_help_panel="Core")
+def scan_cmd(
+    base: Annotated[
+        str | None,
+        typer.Option(
+            "--base",
+            help="base ref the pull request targets (default: NOTARI_BASE_SHA, then the "
+            "branch upstream, origin/HEAD, origin/main, main, master).",
+        ),
+    ] = None,
+    head: Annotated[
+        str,
+        typer.Option("--head", help="ref to scan (default HEAD)."),
+    ] = "HEAD",
+    passport_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--passport-dir",
+            help="where to write passport.json + passport.md (default: <repo>/.notari).",
+        ),
+    ] = None,
+    write_passport: Annotated[
+        bool,
+        typer.Option("--passport/--no-passport", help="write the passport artifacts."),
+    ] = True,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="print the machine-readable passport to stdout."),
+    ] = False,
+) -> None:
+    """Scan a pull request for secrets, gate tamper, and sensitive surfaces. No
+    contract, no keys.
+
+    The drop-in check: the diff from merge-base(base, head) to head is scanned
+    for secrets on added lines (vendor formats BLOCK, loose shapes review), edits
+    to the gate's own surfaces (workflows, action manifests, approver keys: BLOCK),
+    and sensitive surfaces (CI, lockfiles, git config: review), with renames,
+    binaries, symlinks and submodules in the inventory. Exit 0 on PASS or
+    NEEDS_REVIEW, 1 on BLOCK, 2 when no verdict could be produced. It never reads
+    .notari/contract.json; a signed boundary is `notari verify`.
+    """
+    from notari import passport as passport_mod
+    from notari import scan as scan_mod
+    from notari.contract import repo_root
+
+    try:
+        root = repo_root()
+        with AuditLog(path=default_audit_path(), hmac_key=_hmac_key()) as audit:
+            result = scan_mod.scan(root=root, base=base, head=head, audit=audit)
+    except NotariError as e:
+        console.print(f"[red]scan failed:[/red] {e}")
+        raise typer.Exit(code=2) from e
+
+    if write_passport:
+        out_dir = passport_dir or (root / ".notari")
+        json_path, md_path = passport_mod.write_passport(result, out_dir=out_dir)
+        console.print(f"[dim]passport: {md_path} · {json_path}[/dim]")
+
+    out = Console()
+    if as_json:
+        out.print_json(data=passport_mod.build_passport(result))
+    else:
+        out.print(passport_mod.render_markdown(result))
+    raise typer.Exit(code=result.verdict.exit_code)
+
+
 @app.command("verify", rich_help_panel="Core")
 def verify_cmd(
     head: Annotated[
@@ -1098,6 +1164,7 @@ jobs:
           persist-credentials: false
       - uses: {_NOTARI_ACTION_PIN}  # v0, SHA-pinned; bump on release
         with:
+          mode: "boundary"
           strict: "true"
           block-on-review: "true"
           head: ${{{{ github.event.pull_request.head.sha }}}}

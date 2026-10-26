@@ -2,7 +2,40 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.3] - the local gate stops blocking its own advice
+## [0.5.0] - the drop-in scan is the product
+
+Three and a half months after launch, Notari had no external adopter: zero stars,
+zero outside issues, and a download curve shaped like CI bots. The signed boundary
+asked a team to adopt keys, contracts, and a strict gate before it delivered
+anything. This release narrows the product to the part a team can adopt in one
+pull request with no keys and no config, and keeps the boundary as the opt-in
+second step.
+
+### Added
+
+- **`notari scan`.** The diff from merge-base(base, head) to head is scanned for
+  secrets on added lines (vendor formats BLOCK, loose shapes review), edits to the
+  gate's own surfaces (workflows, action manifests, approver keys: BLOCK), and
+  sensitive surfaces (CI, lockfiles, git config: review), with renames, binaries,
+  symlinks and submodules in the inventory. It reuses the verify engine through a
+  synthetic every-path contract, so the evidence rules are exactly `notari verify`'s,
+  and it never reads `.notari/contract.json`. Base comes from `--base`, then
+  `NOTARI_BASE_SHA`, then the branch upstream, `origin/HEAD`, `origin/main`,
+  `main`, `master`; no base is an error (exit 2), never a PASS. Option-shaped refs
+  are rejected (`tests/test_scan.py`).
+- **The Action defaults to `mode: scan`.** No keys, no contract, status context
+  `notari/scan`, strict and key inputs ignored, `pull_request` accepted (the scan
+  needs no secret). `mode: boundary` is the 0.4 Action unchanged: strict by default,
+  `notari/change-control`, fails closed without a contract
+  (`tests/test_action_wrapper.py::test_scan_mode_*`, `test_boundary_mode_*`). New
+  input `base-sha`, defaulting to the pull request's base.
+- **Passports carry `mode`** (`scan` or `boundary`), and a scan passport says "none
+  (scan mode)" for scope instead of warning about an unrestricted contract.
+- `docs/scan-workflow.yml`, the one-file install; README and QUICKSTART lead with
+  it and keep the signed boundary as the second step. The dogfood workflow and
+  `docs/secure-workflow.yml` set `mode: boundary` explicitly.
+
+### Fixed (local gate)
 
 A diagnostic of the October audit log found 35 local-gate blocks, 27 of them
 the intended interpreter-heredoc rule and 5 of them a bug: the subcommand-chain
@@ -10,8 +43,6 @@ counter read the body of a heredoc as shell syntax, so a twelve-line file write
 (`cat > app.js <<'EOF' ... EOF`) counted as a 27-segment chain and was blocked
 as a CVE-2025-59536-class bypass. That was also the exact shape the heredoc
 rule's "try instead" text recommends, so the advice could not be followed.
-
-### Fixed
 
 - **Chain counter ignores heredoc bodies that are data.** `_strip_heredoc_bodies`
   tracks every heredoc with bash semantics (operator found on the quote-masked

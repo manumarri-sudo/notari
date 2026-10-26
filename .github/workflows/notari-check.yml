@@ -39,6 +39,10 @@ jobs:
         # Consumers pin a published tag so a PR cannot modify the gate.
         uses: ./
         with:
+          # This repo dogfoods the signed boundary. Consumers get the drop-in
+          # scan by default (mode: scan) and opt into boundary when they have
+          # signed a perimeter and contract.
+          mode: "boundary"
           install-from-source: "true"
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}

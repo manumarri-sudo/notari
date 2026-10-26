@@ -5,40 +5,74 @@
 
 # notari
 
-> **Notari** issues a signed **Change Passport** for every AI-authored pull
-> request: a receipt any reviewer or auditor can re-verify from the signature
-> alone, without re-running Notari or trusting a screenshot, recording which
-> files a human approved the agent to touch and
-> whether it stayed inside them. A human signs the boundary once; in CI, Notari
-> checks each pull request against it and stamps the passport **PASS**,
-> **NEEDS_REVIEW**, or **BLOCK**. There is no model in that verdict, so it cannot
-> be prompt-injected. It does **not** judge whether the code is correct: it
+> **Notari** is a drop-in check for AI-authored pull requests. On every PR it
+> scans the diff and **BLOCKs** a leaked secret (26 vendor formats on added
+> lines) or an edit to your workflows, action manifests, or approver keys, flags
+> CI config, dependency lockfiles, git config, submodule pointers, and symlinks
+> for **NEEDS_REVIEW**, and otherwise stamps **PASS**, with renames, binaries,
+> and mode changes listed rather than hidden. The verdict is deterministic,
+> there is no model in it, so it cannot be prompt-injected, and it needs no
+> keys and no config. It does **not** judge whether the code is correct: it
 > attests to *where* the change went and whether it leaked a secret, the part a
-> human most often skims past on a large agent PR. **Alpha**; treat
+> human most often skims past on a large agent PR. When you want more than a
+> scan, the same Action verifies each PR against a **human-signed boundary** and
+> issues a signed **Change Passport** a reviewer can re-verify from the signature
+> alone. **Alpha**; treat
 > [the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
 > as the source of truth over any one-line claim.
 
-## Start here: one command
+## Start here: one workflow file, no keys
 
-```bash
-uvx notari init
+```yaml
+# .github/workflows/notari-scan.yml
+on:
+  pull_request_target:
+    branches: [main]
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: _pr_checkout
+          persist-credentials: false
+      - uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # release action, SHA-pinned
+        with:
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          checkout-path: _pr_checkout
 ```
 
-Nothing to install first. In one command, inside any git repo, that generates an
-approver keypair and a gate keypair, signs a secure-by-default perimeter, writes
-the hardened GitHub workflow (`pull_request_target`, SHA-pinned, the pull request
-checked out into a data-only directory), gitignores your private keys, and then
-prints your honest posture plus the exact steps still missing. Measured from a
-clean machine with no Python tooling configured, the CLI resolves and runs in
-about a second and a half.
+That is the whole install. The next pull request gets a `notari/scan` status
+check, a job summary with the evidence, and a failed job on BLOCK; make the check
+required in branch protection and a BLOCK cannot merge. The full template with
+the reasoning behind each line is [`docs/scan-workflow.yml`](docs/scan-workflow.yml).
 
-Prefer a persistent install? `pipx install notari` or `pip install notari`, then
-`notari init`. Either way the next two commands are the whole daily loop:
+Want it locally, before the PR? `uvx notari scan --base main` runs the same
+check on your branch and exits 1 on BLOCK. Nothing to install first; from a
+clean machine the CLI resolves and runs in about a second and a half.
+
+## Then, if you want a signed boundary
+
+The scan tells you what an agent touched. The boundary lets a human say, in
+advance and under a signature the agent cannot forge, what it *may* touch:
 
 ```bash
+uvx notari init                                            # keys, signed perimeter, hardened workflow
 notari begin "add rate limiting" --scope "src/api/**"    # sign what the agent may touch
 notari verify --strict                                    # in CI: PASS, NEEDS_REVIEW, or BLOCK
 ```
+
+`notari init` generates an approver keypair and a gate keypair, signs a
+secure-by-default perimeter, writes the hardened workflow with `mode: boundary`,
+gitignores your private keys, and prints your honest posture plus the exact steps
+still missing. Prefer a persistent install? `pipx install notari` or
+`pip install notari`.
 
 > `notari init` automatically forbids directories that look sensitive (`auth`,
 > `migrations`, `infra`, `terraform`, `deploy`, and similar). Forbidden beats contract
@@ -300,6 +334,7 @@ jobs:
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
       - uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # 0.4.2 release action
         with:
+          mode: "boundary"
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           checkout-path: _pr_checkout
@@ -320,14 +355,18 @@ checkout so no candidate-controlled Python module (pip.py, json.py) can shadow
 trusted imports during Notari installation. A full secure template is at
 [`docs/secure-workflow.yml`](docs/secure-workflow.yml).
 
-The composite action ([`action.yml`](action.yml)) runs `notari verify --strict`,
-publishes a commit Status Check, and fails the job on `BLOCK`. The approver public
-key and gate signing key come from repo/org secrets a PR cannot read or edit, that is
-what makes the trust root external. If a PR has no `.notari/contract.json`,
-verification **errors and the job fails closed** (exit 2), rather than passing
-silently, so deleting or omitting the contract cannot wave a change through.
-Initialize Change Control on the base branch (`notari begin --key`) before requiring
-the check.
+The composite action ([`action.yml`](action.yml)) has two modes. **`mode: scan`**,
+the default, runs `notari scan`: no contract, no keys, the evidence rules on the
+pull request diff, published as the `notari/scan` status. It never reads
+`.notari/contract.json`, so a PR that adds, edits, or deletes one changes nothing.
+**`mode: boundary`** (the snippet above) runs `notari verify --strict`, publishes
+the `notari/change-control` status, and fails the job on `BLOCK`. The approver
+public key and gate signing key come from repo/org secrets a PR cannot read or
+edit, that is what makes the trust root external. In boundary mode, if a PR has no
+`.notari/contract.json`, verification **errors and the job fails closed** (exit 2),
+rather than passing silently, so deleting or omitting the contract cannot wave a
+change through. Initialize Change Control on the base branch (`notari begin --key`)
+before requiring the check.
 
 ## After a BLOCK: explain and fix
 
@@ -511,8 +550,10 @@ read [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) before using them).
 
 ## What's shipping today vs. on the roadmap
 
-**Shipping (0.3.0), with on-disk evidence:** the Change Control flow
-(`begin`/`verify`/passport + GitHub Action), the HMAC-chained audit log (32k+ entries
+**Shipping (0.5.0), with on-disk evidence:** the drop-in scan (`notari scan` and
+the Action's default `mode: scan`: secrets, gate tamper, sensitive surfaces, no
+keys), the Change Control flow
+(`begin`/`verify`/passport + the Action's `mode: boundary`), the HMAC-chained audit log (32k+ entries
 dogfooded, truncation-detectable, `notari audit verify` clean), the local PreToolUse
 gate with Touch ID approvals and 26-pattern secret detection, the write-then-run AST
 scan, and the read-side surfaces (receipts, trifecta, pins). The full test

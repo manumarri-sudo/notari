@@ -11,6 +11,25 @@ deterministic PASS / NEEDS_REVIEW / BLOCK verdict with the evidence behind it, s
 an autonomous coding agent cannot quietly edit your workflows, your migrations, or
 leak a secret without a human seeing it.
 
+## 0. The drop-in scan (about 1 minute, no keys)
+
+Most teams start and stop here. Copy
+[`docs/scan-workflow.yml`](scan-workflow.yml) to
+`.github/workflows/notari-scan.yml` and open a pull request. Every PR now gets a
+`notari/scan` status: **BLOCK** on a leaked secret or an edit to your workflows,
+action manifests, or approver keys; **NEEDS_REVIEW** on CI config, lockfiles, git
+config, submodule pointers, or symlinks; **PASS** otherwise, with renames and
+binaries listed. Make the check required in branch protection and a BLOCK cannot
+merge. Nothing below is needed for that. The same check runs locally on a branch:
+
+```bash
+uvx notari scan --base main     # exit 0 on PASS / NEEDS_REVIEW, 1 on BLOCK
+```
+
+The rest of this guide is the signed boundary: a human states, under a signature
+the agent cannot forge, which paths the agent may touch, and CI verifies each PR
+against it.
+
 ## Install
 
 ```bash

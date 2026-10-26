@@ -48,6 +48,26 @@ Everything in the "what it does well" list below is *within* that boundary;
 everything in the "known limits" list is a consequence of *where the boundary
 is drawn*.
 
+## Scan mode (the default Action) versus boundary mode
+
+`mode: scan` (`notari scan`) is the drop-in check. It has no trust root: no
+approver key, no gate key, no contract, nothing a PR could forge because there is
+nothing to forge. What it proves is narrower and should be read that way: the
+pull request diff, measured from the merge-base GitHub shows, contains no secret
+on an added line that matches a vendor format, no edit to the workflows, action
+manifests or approver keys, and every review-class surface it touched is listed.
+A scan passport is unsigned evidence, not an attestation of an approved boundary,
+and its `mode` field says `scan` so nothing downstream can mistake one for the
+other. The control plane invariant below still holds: the scan runs from the base
+branch under `pull_request_target` and the candidate is data. Scan mode never
+reads `.notari/contract.json`, so adding, editing or deleting a contract in a PR
+changes nothing about the scan.
+
+`mode: boundary` (`notari verify --strict`) is everything below this line: a
+human-signed perimeter and contract, an external trust root, and a gate-signed
+passport. The rest of this document describes boundary mode unless it says
+otherwise.
+
 ## What Notari defends against well
 
 For the common case (a capable but non-adversarial agent, or a careless one,

@@ -1228,7 +1228,12 @@ def verify(
     # `--scope '**'` is a legitimate conscious opt-out that still verifies. The
     # detector uses the enforcement matcher, so this now also fires on `**/**`
     # and the other universal spellings a literal check missed.
-    if policy.scope_is_unrestricted(contract.allowed_paths):
+    if contract.task_source == "scan":
+        reasons.append(
+            "scan mode: no contract or boundary; checked secrets, gate tamper and "
+            "sensitive surfaces only"
+        )
+    elif policy.scope_is_unrestricted(contract.allowed_paths):
         reasons.append(
             "warning: contract scope is unrestricted (every path is in scope); "
             "the signed perimeter is the only boundary for this change"
@@ -1387,7 +1392,9 @@ def verify(
         reasons.append(f"warning: perimeter provenance unverified ({provenance.detail})")
     if strict_no_perimeter:
         reasons.append("strict mode requires a signed perimeter, but none is configured")
-    if not contract_prov.status.is_trustworthy:
+    if not contract_prov.status.is_trustworthy and contract.task_source != "scan":
+        # A scan has no contract to have provenance; the "scan mode" reason
+        # above already says there is no boundary.
         reasons.append(f"warning: contract provenance unverified ({contract_prov.detail})")
 
     # Strict fails closed on incomplete scan coverage; cooperative degrades it to
@@ -1414,7 +1421,9 @@ def verify(
     else:
         verdict = Verdict.PASS
         reasons.append(
-            "diff is within the approved boundary: in scope, no secrets, nothing forbidden"
+            "no secrets, no gate tamper, no sensitive surface touched"
+            if contract.task_source == "scan"
+            else "diff is within the approved boundary: in scope, no secrets, nothing forbidden"
         )
         if provenance is not None and provenance.status.is_trustworthy:
             reasons.append(provenance.detail)
