@@ -2,6 +2,50 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - the local gate stops blocking its own advice
+
+A diagnostic of the October audit log found 35 local-gate blocks, 27 of them
+the intended interpreter-heredoc rule and 5 of them a bug: the subcommand-chain
+counter read the body of a heredoc as shell syntax, so a twelve-line file write
+(`cat > app.js <<'EOF' ... EOF`) counted as a 27-segment chain and was blocked
+as a CVE-2025-59536-class bypass. That was also the exact shape the heredoc
+rule's "try instead" text recommends, so the advice could not be followed.
+
+### Fixed
+
+- **Chain counter ignores heredoc bodies.** `_strip_heredoc_bodies` blanks the
+  body of every heredoc (operator found on the quote-masked form so a `<<`
+  inside a string cannot open a fake body; delimiter read raw so `<<'EOF'`
+  works; `<<-` tab stripping; bodies consumed in operator order; unterminated
+  bodies run to the end) before `_count_chain_segments` runs. Pattern matching
+  still sees the body. Pinned by `test_chain_heredoc_*` in
+  `tests/test_security_gates_2026_05.py`, including a real 25-segment chain after
+  a terminator and a quoted `<<` followed by a real chain, both still CRITICAL.
+- **`notari status` no longer judges workflows that merely mention notari.** A
+  workflow counts as a gate when it runs the action or the CLI (`uses:
+  org/notari@`, `install-from-source`, `notari verify`, `pip install notari`),
+  not when the word appears in a comment or a PyPI URL. Notari's own
+  `release.yml` was being reported as "referenced but not pinned"
+  (`test_workflow_that_only_mentions_notari_is_not_a_gate`).
+
+### Added (security)
+
+- **Two heredoc-adjacent shapes join the interpreter-heredoc class.** With
+  bodies no longer counted, `cat <<'EOF' | bash` would have classified by its
+  verb; it is now "heredoc piped to interpreter", and `python3 - <<< '...'` is
+  "interpreter here-string", the same class as `python -c`
+  (`test_heredoc_into_interpreter_stays_critical`).
+- **`notari state`.** One truthful line for session banners: "Notari is on" or
+  "Notari is PAUSED for N more min (reason), K call(s) let through". The Claude
+  Code SessionStart banner was a hard-coded "Notari is on" that kept printing
+  during a pause (`tests/test_pause.py::test_state_*`).
+
+### Changed
+
+- `action.yml` defaults to `==0.4.3`; `CITATION.cff` catches up from 0.4.1.
+- `scripts/verify_launch_readiness.py` documents `uv run python ...`: outside the
+  project venv the behaviour checks fail on import and read as product failures.
+
 ## [0.4.2] - one product, second security pass
 
 The first release after the 2026-07-23 cross-vendor red team returned DO NOT

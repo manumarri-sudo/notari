@@ -2403,6 +2403,31 @@ def on_cmd() -> None:
         )
 
 
+@app.command("state", rich_help_panel="Safety")
+def state_cmd() -> None:
+    """one line: is the gate on, or paused until when? For session banners.
+
+    The Claude Code SessionStart banner used to be a hard-coded "Notari is on",
+    which kept printing while the gate was paused. This prints the truth and
+    exits 0 either way, so a hook can call it without fallback logic."""
+    from notari import pause as _pause
+    from notari.config import default_audit_path
+
+    state = _pause.load_state()
+    active, reason = _pause.is_paused(state)
+    log = default_audit_path()
+    if not active:
+        typer.echo(f"\N{FEATHER} Notari is on \N{MIDDLE DOT} audit: {log}")
+        return
+    remaining = state.remaining()
+    mins = int(remaining.total_seconds() // 60) if remaining else 0
+    typer.echo(
+        f"\N{DOUBLE VERTICAL BAR} Notari is PAUSED for {mins} more min "
+        f"({reason}) \N{MIDDLE DOT} {state.allowed_count} call(s) let through "
+        f"\N{MIDDLE DOT} resume: notari on"
+    )
+
+
 # Memorable aliases: `notari pause` / `notari resume` do the same as off / on.
 @app.command("pause", hidden=True)
 def pause_cmd(

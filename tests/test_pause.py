@@ -140,3 +140,52 @@ def test_paused_hook_allows_critical_and_logs_marker(monkeypatch, tmp_path: Path
     assert len(allowed) == 1
     assert allowed[0]["payload"]["pause_reason"] == "maintenance"
     assert allowed[0]["payload"]["tool_name"] == "Bash"
+
+
+# ---------------------------------------------------------------------------
+# `notari state`: the one-line banner must tell the truth about a pause
+# ---------------------------------------------------------------------------
+
+
+def test_state_reports_on_when_not_paused(monkeypatch, tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    _isolate(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["state"])
+    assert result.exit_code == 0
+    assert "Notari is on" in result.output
+    assert "PAUSED" not in result.output
+
+
+def test_state_reports_pause_with_remaining_and_count(monkeypatch, tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    _isolate(monkeypatch, tmp_path)
+    pause_mod.pause(duration_hours=1, reason="classifier false positive")
+    pause_mod.record_allowed_while_paused()
+    pause_mod.record_allowed_while_paused()
+    result = CliRunner().invoke(app, ["state"])
+    assert result.exit_code == 0
+    assert "PAUSED" in result.output
+    assert "classifier false positive" in result.output
+    assert "2 call(s)" in result.output
+    assert "Notari is on" not in result.output
+
+
+def test_state_reports_on_after_pause_expires(monkeypatch, tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from notari.cli import app
+
+    _isolate(monkeypatch, tmp_path)
+    pause_mod.pause(duration_hours=1, reason="x")
+    st = pause_mod.load_state()
+    st.expires_at = (pause_mod._now() - timedelta(minutes=1)).isoformat()
+    pause_mod.save_state(st)
+    result = CliRunner().invoke(app, ["state"])
+    assert result.exit_code == 0
+    assert "Notari is on" in result.output

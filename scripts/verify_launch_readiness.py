@@ -5,7 +5,7 @@ Inspects files and exercises real behavior, no LLM, no trust of commit
 messages, generated scorecards, or local lesson counts. Emits a machine-readable
 report and exits non-zero unless every required check passes.
 
-    python scripts/verify_launch_readiness.py --json > launch-readiness.json
+    uv run python scripts/verify_launch_readiness.py --json > launch-readiness.json
 
 This does NOT run ruff / mypy / pytest / build, those are declared in
 `commands_required` and must be run and green separately (CI does this). This

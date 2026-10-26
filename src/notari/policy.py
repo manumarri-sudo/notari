@@ -601,6 +601,26 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
         "Heredocs hide what's about to run. Write the script to a file first "
         "and run it: `cat > /tmp/work.py <<'EOF' ... EOF && python /tmp/work.py`",
     ),
+    # Here-string into an interpreter: `python3 - <<< 'import os; ...'`. Same
+    # class as `python -c` and the heredoc above (the program is the argument),
+    # and the single quotes blank it under masking, so scan raw.
+    (
+        r"(?:^|[;&|]\s*)(?:python\d?|node|ruby|perl|bash|sh|zsh)\b[^<\n]*<<<",
+        "interpreter here-string",
+        "Here-strings hide what's about to run. Write the script to a file first "
+        "and run it: `cat > /tmp/work.py <<'EOF' ... EOF && python /tmp/work.py`",
+    ),
+    # Heredoc fed to an interpreter through a pipe: `cat <<'EOF' | bash`. The
+    # body is the program, exactly as in `bash <<'EOF'`; the chain counter no
+    # longer counts heredoc bodies, so this shape must be named here or a short
+    # body would classify by its verb (`cat`).
+    (
+        r"<<[-~]?\s*['\"]?[\w.-]+['\"]?[^\n|]*\|\s*(?:sudo\s+)?"
+        r"(?:python\d?|node|ruby|perl|bash|sh|zsh|fish|dash|ksh)\b",
+        "heredoc piped to interpreter",
+        "Heredocs hide what's about to run. Write the script to a file first "
+        "and run it: `cat > /tmp/work.sh <<'EOF' ... EOF && bash /tmp/work.sh`",
+    ),
     # find for credential-file extensions, with the glob commonly quoted
     # (`-name "*.env"`). Masking blanks the quoted glob; scan raw.
     (
@@ -929,13 +949,76 @@ SUBCOMMAND_CHAIN_LIMIT: Final[int] = 20
 _CHAIN_RE = re.compile(r"(?:&&|\|\||;|(?<!\|)\|(?!\|))")
 
 
+# A heredoc operator outside quotes: `<<EOF`, `<<-EOF`, `<< 'EOF'`. The
+# negative lookarounds keep `<<<` (a here-string, which is an argument, not a
+# body) out. Matched on the quote-masked form so a `<<` inside a quoted string
+# cannot start a fake body that swallows the real commands that follow it.
+_HEREDOC_OP_RE = re.compile(r"(?<!<)<<(?!<)([-~]?)\s*")
+# The delimiter word, read from the RAW command at the operator's end because
+# it is usually quoted (`<<'EOF'`) and masking blanks quoted text.
+_HEREDOC_DELIM_RE = re.compile(r"'([^'\n]+)'|\"([^\"\n]+)\"|\\?([^\s;&|<>()'\"]+)")
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """Blank every heredoc body so its text is not read as shell syntax.
+
+    `cat > app.js <<'EOF' ... EOF` feeds the body to `cat` as stdin; the
+    semicolons and pipes inside it are JavaScript, not subcommands. Before
+    this, a twelve-line file write counted as a 27-segment chain and tripped
+    the chain-bypass gate, which also made the gate's own "write the script
+    to a file first" advice impossible to follow.
+
+    Mirrors bash: bodies are consumed in operator order, one per operator on
+    the opener line; the terminator is a line equal to the delimiter (leading
+    tabs stripped for `<<-`); an unterminated body runs to the end of the
+    command. Output keeps the input's length and newlines. Only the chain
+    counter uses this: pattern matching still sees the body, because a
+    destructive literal written to a file and run later is exactly what the
+    scanners should keep seeing.
+    """
+    if "<<" not in cmd:
+        return cmd
+    out = list(cmd)
+    masked = _mask_quoted(cmd)
+    n = len(cmd)
+    line_start = 0
+    while line_start < n:
+        nl = cmd.find("\n", line_start)
+        line_end = n if nl == -1 else nl
+        body_start = line_end + 1
+        for op in _HEREDOC_OP_RE.finditer(masked, line_start, line_end):
+            dm = _HEREDOC_DELIM_RE.match(cmd, op.end(), line_end)
+            if dm is None:
+                continue
+            delim = dm.group(1) or dm.group(2) or dm.group(3)
+            strip_tabs = op.group(1) == "-"
+            pos = body_start
+            while pos < n:
+                end = cmd.find("\n", pos)
+                if end == -1:
+                    end = n
+                probe = cmd[pos:end]
+                if strip_tabs:
+                    probe = probe.lstrip("\t")
+                if probe == delim:
+                    pos = end + 1
+                    break
+                for k in range(pos, end):
+                    out[k] = " "
+                pos = end + 1
+            body_start = pos
+        line_start = body_start
+    return "".join(out)
+
+
 def _count_chain_segments(cmd: str) -> int:
     """Count subcommand segments split by `&&`, `||`, `;`, `|`.
 
-    Operates on the quote-masked form so chaining operators *inside*
-    quoted strings don't inflate the count (e.g. `echo 'a; b; c'`).
+    Operates on the quote-masked form with heredoc bodies blanked, so
+    chaining operators inside quoted strings (`echo 'a; b; c'`) or inside a
+    heredoc body (a file being written) don't inflate the count.
     """
-    masked = _mask_quoted(cmd)
+    masked = _mask_quoted(_strip_heredoc_bodies(cmd))
     parts = _CHAIN_RE.split(masked)
     return sum(1 for p in parts if p.strip())
 

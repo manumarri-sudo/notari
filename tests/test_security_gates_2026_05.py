@@ -15,6 +15,8 @@ late-April / early-May 2026:
 
 from __future__ import annotations
 
+import pytest
+
 from notari.policy import (
     SUBCOMMAND_CHAIN_LIMIT,
     Risk,
@@ -68,6 +70,90 @@ def test_chain_inside_quotes_not_counted() -> None:
     cmd = "echo '" + "; ".join([f"item{i}" for i in range(30)]) + "'"
     c = classify_command(cmd)
     assert "subcommand chain" not in c.reason
+
+
+_JS_BODY = "\n".join(f"  var x{i} = {i}; y{i} = x{i} + 1;" for i in range(12))
+_CHAIN_25 = "; ".join(f"echo {i}" for i in range(25))
+
+
+def test_chain_heredoc_body_not_counted() -> None:
+    """A file written through `cat > f <<'EOF'` is stdin data, not a chain of
+    subcommands. Before the fix, a twelve-line JavaScript body counted as 27
+    segments and the chain gate blocked a plain file write (audit log,
+    2026-10-26, right before the operator paused the gate)."""
+    from notari.policy import _count_chain_segments
+
+    cmd = f"S=/tmp/s; cat > $S/collect.js <<'EOF'\n(function(){{\n{_JS_BODY}\n}})();\nEOF"
+    assert _count_chain_segments(cmd) == 2
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the gate's own advice: write the script to a file, then run it
+        f"cat > /tmp/w.py <<'EOF'\n{_JS_BODY}\nEOF\npython /tmp/w.py",
+        # unquoted and double-quoted delimiters
+        f"cat > /tmp/w.js <<EOF\n{_JS_BODY}\nEOF",
+        f'cat > /tmp/w.js <<"EOF"\n{_JS_BODY}\nEOF',
+        # <<- strips leading tabs from the body and the terminator
+        f"cat > /tmp/a <<-EOF\n\t{_JS_BODY}\n\tEOF",
+        # two heredocs in one command, consumed in order
+        f"cat > /tmp/a <<'A'\n{_JS_BODY}\nA\ncat > /tmp/b <<'B'\n{_JS_BODY}\nB",
+        # an indented look-alike terminator does not end the body (bash semantics)
+        f"cat <<'EOF'\n  EOF\n{_JS_BODY}\nEOF",
+    ],
+)
+def test_chain_heredoc_shapes_not_counted(cmd: str) -> None:
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+def test_chain_after_heredoc_still_counted() -> None:
+    """Blanking the body must not blank the commands that follow the
+    terminator: a real 25-segment chain after a heredoc still trips the gate."""
+    cmd = f"cat > /tmp/a <<'EOF'\nhello\nEOF\n{_CHAIN_25}"
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert "subcommand chain" in c.reason
+
+
+def test_chain_quoted_heredoc_operator_is_not_an_opener() -> None:
+    """`<<` inside a quoted string is text. If it opened a body, every command
+    on the following lines would be blanked, a bypass of the chain gate."""
+    cmd = 'echo "usage: cmd <<EOF"\n' + _CHAIN_25 + "\nEOF"
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert "subcommand chain" in c.reason
+
+
+def test_chain_unterminated_heredoc_body_runs_to_end() -> None:
+    """Without a terminator the shell feeds everything to stdin; nothing in
+    the body executes as a subcommand, so it is not counted."""
+    cmd = "cat <<'EOF'\n" + _CHAIN_25
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+@pytest.mark.parametrize(
+    "cmd, reason",
+    [
+        # with bodies no longer counted, a heredoc piped into an interpreter
+        # must be named on its own or a short body would classify as `cat`
+        ("cat <<'EOF' | bash\necho hi\nEOF", "heredoc piped to interpreter"),
+        ("cat <<EOF | sh\necho hi\nEOF", "heredoc piped to interpreter"),
+        # sudo is caught earlier by its own rule; the verdict is what matters
+        ("cat <<EOF | sudo sh\necho hi\nEOF", "sudo invocation"),
+        # a here-string is the program as an argument, same class as -c
+        ("python3 - <<< 'print(1); print(2)'", "interpreter here-string"),
+        ("bash <<< 'echo hi'", "interpreter here-string"),
+        # the existing shapes keep their verdict
+        ("python3 - <<'EOF'\nprint(1)\nEOF", "interpreter heredoc"),
+        ("bash <<'EOF'\necho hi\nEOF", "interpreter heredoc"),
+    ],
+)
+def test_heredoc_into_interpreter_stays_critical(cmd: str, reason: str) -> None:
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert c.reason == reason
 
 
 # ---------------------------------------------------------------------------

@@ -66,8 +66,23 @@ def _notari_workflow_files(root: Path) -> list[Path]:
     return [
         p
         for p in sorted(wf_dir.glob("*.y*ml"))
-        if p.is_file() and re.search(r"notari", p.read_text(errors="replace"), re.I)
+        if p.is_file() and _WIRES_NOTARI_RE.search(p.read_text(errors="replace"))
     ]
+
+
+# A workflow wires Notari in when it runs the action (`uses: org/notari@sha`,
+# `uses: ./` with `install-from-source`) or the CLI (`notari verify`, `pip
+# install notari`). The word alone is not enough: a release or docs workflow
+# that mentions notari in a comment or a PyPI URL is not a gate, and flagging
+# it as "referenced but not pinned" was a false blocker (notari's own
+# release.yml tripped it).
+_WIRES_NOTARI_RE = re.compile(
+    r"uses:\s*[\w.-]+/notari@"
+    r"|install-from-source"
+    r"|\bnotari\s+(?:verify|begin|init|guard|status)\b"
+    r"|pip\s+install\b[^\n]*\bnotari\b",
+    re.I,
+)
 
 
 def _workflow_issue(text: str) -> str | None:
