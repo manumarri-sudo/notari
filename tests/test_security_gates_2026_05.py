@@ -133,15 +133,74 @@ def test_chain_unterminated_heredoc_body_runs_to_end() -> None:
     assert "subcommand chain" not in classify_command(cmd).reason
 
 
+_ECHOS_30 = "\n".join(f"echo {i};" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the body is executed by whatever is on the other side of the pipe,
+        # listed or not: the count must stay as it was before the heredoc fix
+        f"cat <<'EOF' | /bin/bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | env bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | php\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | tee f | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | xargs -I{{}} bash -c {{}}\n{_ECHOS_30}\nEOF",
+        # wrappers and interpreters outside the pattern list execute the body
+        f"env bash <<EOF\n{_ECHOS_30}\nEOF",
+        f"nohup bash <<EOF\n{_ECHOS_30}\nEOF",
+        f"source /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f". /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f"osascript <<EOF\n{_ECHOS_30}\nEOF",
+        f"awk -f /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f"eval \"$(cat <<'EOF'\n{_ECHOS_30}\nEOF\n)\"",
+        f"bash <(cat <<EOF\n{_ECHOS_30}\nEOF\n)",
+        f"tee >(bash) <<EOF\n{_ECHOS_30}\nEOF",
+        f"cat $(true) <<EOF\n{_ECHOS_30}\nEOF",
+        # `<<` that is not a heredoc: the lines after it run
+        f"echo hi # <<EOF\n{_ECHOS_30}",
+        f"cat # <<EOF\n{_ECHOS_30}",
+        f"echo $((1<<EOF))\n{_ECHOS_30}",
+        f"cat $((1<<EOF))\n{_ECHOS_30}",
+        f"(( x = 1 <<EOF ))\n{_ECHOS_30}",
+        f"echo $'<<EOF'\n{_ECHOS_30}\nEOF",
+        f"cat $'<<EOF'\n{_ECHOS_30}\nEOF",
+        # delimiter quoting the way bash reads it: the body ends at EOF / EOFx
+        f"cat <<E'O'F\nx\nEOF\n{_ECHOS_30}",
+        f'cat <<"EO"F\nx\nEOF\n{_ECHOS_30}',
+        f"cat <<E\\OF\nx\nEOF\n{_ECHOS_30}",
+        f"cat <<'EOF'x\nx\nEOFx\n{_ECHOS_30}",
+        f"cat <<EOF\r\nx\r\nEOF\r\n{_ECHOS_30}",
+        # a heredoc opener inside an executed body must not swallow what follows
+        f"bash <<EOF\ncat <<X\nEOF\n{_ECHOS_30}",
+    ],
+)
+def test_chain_executed_heredoc_bodies_still_counted(cmd: str) -> None:
+    """Review of the first heredoc fix (2026-10-26): blanking every body hid
+    commands the shell runs. Only a plain cat/tee sink is exempt; each shape
+    here executes its thirty segments and must stay CRITICAL."""
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL, (cmd[:40], c.reason)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat <<EOF | dash-fmt\nx\nEOF",
+        "cat <<EOF | python3 -m json.tool\nx\nEOF",
+        "cat <<EOF | jq .\nx\nEOF",
+        "cat <<EOF | tee file\nx\nEOF",
+    ],
+)
+def test_heredoc_piped_to_a_tool_is_not_critical_by_shape(cmd: str) -> None:
+    """A short heredoc piped to a formatter classifies by its content, not by
+    a pipe-target name match (the first fix's regex false-fired on these)."""
+    assert classify_command(cmd).risk is not Risk.CRITICAL
+
+
 @pytest.mark.parametrize(
     "cmd, reason",
     [
-        # with bodies no longer counted, a heredoc piped into an interpreter
-        # must be named on its own or a short body would classify as `cat`
-        ("cat <<'EOF' | bash\necho hi\nEOF", "heredoc piped to interpreter"),
-        ("cat <<EOF | sh\necho hi\nEOF", "heredoc piped to interpreter"),
-        # sudo is caught earlier by its own rule; the verdict is what matters
-        ("cat <<EOF | sudo sh\necho hi\nEOF", "sudo invocation"),
         # a here-string is the program as an argument, same class as -c
         ("python3 - <<< 'print(1); print(2)'", "interpreter here-string"),
         ("bash <<< 'echo hi'", "interpreter here-string"),

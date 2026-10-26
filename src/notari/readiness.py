@@ -71,16 +71,19 @@ def _notari_workflow_files(root: Path) -> list[Path]:
 
 
 # A workflow wires Notari in when it runs the action (`uses: org/notari@sha`,
-# `uses: ./` with `install-from-source`) or the CLI (`notari verify`, `pip
-# install notari`). The word alone is not enough: a release or docs workflow
-# that mentions notari in a comment or a PyPI URL is not a gate, and flagging
-# it as "referenced but not pinned" was a false blocker (notari's own
-# release.yml tripped it).
+# `uses: org/notari-action@sha`, `uses: ./.github/actions/notari`, `uses: ./`
+# with `install-from-source`), runs the CLI (`notari verify`, `notari --base x
+# verify`), installs the package (`pip`, `pip3`, `pipx`, `uv`), or names
+# itself after Notari. The word alone in a comment or a PyPI URL is not a gate:
+# flagging notari's own release.yml as "referenced but not pinned" was a false
+# blocker. When in doubt the match is broad, because the failure mode of
+# checking a non-gate is one spurious line, and of missing a gate is silence.
 _WIRES_NOTARI_RE = re.compile(
-    r"uses:\s*[\w.-]+/notari@"
+    r"uses:\s*\S*notari"
     r"|install-from-source"
-    r"|\bnotari\s+(?:verify|begin|init|guard|status)\b"
-    r"|pip\s+install\b[^\n]*\bnotari\b",
+    r"|\bnotari\b[^\n]*\b(?:verify|begin|init|guard|status|ci|check|scan|gate)\b"
+    r"|\b(?:pip3?|pipx|uv)\b[^\n]*\b(?:install|add)\b[^\n]*\bnotari\b"
+    r"|\bname:[^\n]*notari",
     re.I,
 )
 

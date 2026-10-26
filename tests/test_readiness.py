@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from notari import attest, readiness
 from notari import perimeter as perimeter_mod
 from notari import provenance as provenance_mod
@@ -100,6 +102,27 @@ def test_workflow_running_the_cli_is_a_gate(tmp_path: Path) -> None:
         "on:\n  pull_request:\njobs:\n  cc:\n    steps:\n"
         "      - run: pip install notari==0.4.3\n      - run: notari verify --strict\n"
     )
+    assert [p.name for p in readiness._notari_workflow_files(tmp_path)] == ["gate.yml"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # self-checkout gate that only names itself after Notari
+        "name: Notari gate\non:\n  pull_request:\njobs:\n  cc:\n    steps:\n      - uses: ./\n",
+        "jobs:\n  cc:\n    steps:\n      - uses: ./.github/actions/notari\n",
+        "jobs:\n  cc:\n    steps:\n      - uses: org/notari-action@0123456789abcdef\n",
+        "jobs:\n  cc:\n    steps:\n      - run: notari --base main verify\n",
+        "jobs:\n  cc:\n    steps:\n      - run: pipx install notari && notari status\n",
+        "jobs:\n  cc:\n    steps:\n      - run: uv tool install notari\n",
+    ],
+)
+def test_workflow_wiring_shapes_are_gates(tmp_path: Path, text: str) -> None:
+    """Every way a workflow can wire Notari in is still checked (review of the
+    first filter, 2026-10-26: it missed `uses: ./`, `-action@`, `pipx`)."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "gate.yml").write_text(text)
     assert [p.name for p in readiness._notari_workflow_files(tmp_path)] == ["gate.yml"]
 
 

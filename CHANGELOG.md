@@ -13,14 +13,20 @@ rule's "try instead" text recommends, so the advice could not be followed.
 
 ### Fixed
 
-- **Chain counter ignores heredoc bodies.** `_strip_heredoc_bodies` blanks the
-  body of every heredoc (operator found on the quote-masked form so a `<<`
-  inside a string cannot open a fake body; delimiter read raw so `<<'EOF'`
-  works; `<<-` tab stripping; bodies consumed in operator order; unterminated
-  bodies run to the end) before `_count_chain_segments` runs. Pattern matching
-  still sees the body. Pinned by `test_chain_heredoc_*` in
-  `tests/test_security_gates_2026_05.py`, including a real 25-segment chain after
-  a terminator and a quoted `<<` followed by a real chain, both still CRITICAL.
+- **Chain counter ignores heredoc bodies that are data.** `_strip_heredoc_bodies`
+  tracks every heredoc with bash semantics (operator found on the quote-masked
+  form so a `<<` inside a string cannot open a body; delimiter read the way bash
+  reads it, so `E'O'F`, `"EO"F`, `E\OF`, `'EOF'x` and CRLF lines pair correctly;
+  `<<-` tab stripping; operator order; unterminated runs to the end; `<<` after
+  `#` or inside `$(( ))` is not an operator) and blanks only a body consumed by a
+  plain `cat` or `tee` with no pipe or substitution on the line. Every other
+  body (`bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`, `cat <<EOF |
+  php`, `tee >(bash) <<EOF`, and so on) keeps counting exactly as before. The
+  count runs before ANSI-C decoding so `$'<<EOF'` stays one quoted word. A
+  hostile review of the first cut found that blanking every body hid executed
+  commands; the 28 shapes it produced are pinned CRITICAL in
+  `test_chain_executed_heredoc_bodies_still_counted`, next to the benign
+  shapes in `test_chain_heredoc_*` that must not count.
 - **`notari status` no longer judges workflows that merely mention notari.** A
   workflow counts as a gate when it runs the action or the CLI (`uses:
   org/notari@`, `install-from-source`, `notari verify`, `pip install notari`),
@@ -30,10 +36,8 @@ rule's "try instead" text recommends, so the advice could not be followed.
 
 ### Added (security)
 
-- **Two heredoc-adjacent shapes join the interpreter-heredoc class.** With
-  bodies no longer counted, `cat <<'EOF' | bash` would have classified by its
-  verb; it is now "heredoc piped to interpreter", and `python3 - <<< '...'` is
-  "interpreter here-string", the same class as `python -c`
+- **Here-strings join the interpreter-heredoc class.** `python3 - <<< '...'`
+  is "interpreter here-string", the same class as `python -c`
   (`test_heredoc_into_interpreter_stays_critical`).
 - **`notari state`.** One truthful line for session banners: "Notari is on" or
   "Notari is PAUSED for N more min (reason), K call(s) let through". The Claude
