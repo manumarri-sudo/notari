@@ -192,7 +192,7 @@ PASSPORT_MD="$WORK/passport.md"
 #    are the only sanctioned codes. Anything else (or a missing passport) is an
 #    error, never a pass.
 if [[ "$NOTARI_RC" != "0" && "$NOTARI_RC" != "1" ]] || [[ ! -f "$PASSPORT_JSON" ]]; then
-  echo "::error::notari verify failed to produce a verdict (rc=$NOTARI_RC)"
+  echo "::error::notari $([[ "$MODE" == "scan" ]] && echo scan || echo verify) failed to produce a verdict (rc=$NOTARI_RC)"
   cat "$WORK/stderr" 2>/dev/null || true
   exit 2
 fi
