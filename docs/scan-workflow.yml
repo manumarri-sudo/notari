@@ -19,6 +19,10 @@
 # Make notari/scan a required status check in branch protection and the BLOCK
 # cannot be merged. To fail the job on NEEDS_REVIEW too, set block-on-review.
 #
+# A run with nothing between base and head (an empty pull request, or a push or
+# workflow_dispatch run with no base) exits 2 and shows red on purpose: a green
+# check on a scan of nothing would be the fail-open this mode must not have.
+#
 # pull_request_target runs this workflow from the base branch, so a pull request
 # cannot edit it away; the PR is checked out into a data-only subdirectory and
 # the token is not persisted into that tree. The scan needs no secret, so
