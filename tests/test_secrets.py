@@ -480,3 +480,31 @@ def test_scan_env_secret_regex_is_not_redos():
     elapsed = time.perf_counter() - start
     assert "env-secret" not in hits
     assert elapsed < 1.0, f"scan took {elapsed:.2f}s, possible ReDoS"
+
+
+# ---------------------------------------------------------------------------
+# 0.5.1: two low-confidence rules that fired 67 times in six months and never on
+# a real credential (audit-log read, 2026-11-08).
+# ---------------------------------------------------------------------------
+
+
+def test_attached_pflag_needs_a_tool_that_takes_one() -> None:
+    from notari.secrets import redact
+
+    # ffmpeg long flags are not MySQL passwords; every out-of-repo hit was one.
+    ffmpeg = "ffmpeg -i in.mov -pix_fmt yuv420p -profile:v high -preset slow out.mp4"
+    assert not [h for h in scan(ffmpeg) if h.pattern_name == "mysql-pflag"]
+    assert any(h.pattern_name == "mysql-pflag" for h in scan("mysql -u root -phunter2Secret9 app"))
+    assert any(h.pattern_name == "mysql-pflag" for h in scan("7z x -pSup3rSecret9 archive.7z"))
+    # Redaction keeps erring toward removal; only the verdict scanner narrows.
+    assert "hunter2Secret9" not in redact("mysql -u root -phunter2Secret9")
+
+
+def test_plural_credential_names_are_counts_not_credentials() -> None:
+    code = (
+        'tokens = {"input_tokens": usage.get("input_tokens"), "output_tokens": 2}\n'
+        "max_tokens=102400000000\n"
+        "reply = call(prompt, tokens=tokens, api_keys=load_keys())\n"
+    )
+    assert not [h for h in scan(code) if h.pattern_name == "env-secret"]
+    assert any(h.pattern_name == "env-secret" for h in scan('API_TOKEN = "abcdefghijklmnop1234"'))

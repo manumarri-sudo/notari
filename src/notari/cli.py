@@ -2458,7 +2458,22 @@ def off_cmd(
     # default, so a hijacked agent can't neuter Notari via its own CLI.
     _require_disable_auth(console, no_biometric=no_biometric)
 
-    state = _pause.pause(duration_hours=hours, reason=reason)
+    # Pausing over a live pause starts a new window and resets its counter, so
+    # close the old bracket on the record first; otherwise the log shows two
+    # gate.paused with one gate.resumed and the first window's calls vanish
+    # from every recap (2026-07-12).
+    state, superseded = _pause.replace_pause(duration_hours=hours, reason=reason)
+    if superseded is not None:
+        _emit_gate_event(
+            "gate.resumed",
+            {
+                "trigger": "superseded",
+                "reason": superseded.reason,
+                "allowed_while_paused": superseded.allowed_count,
+                "allowed_by_log": superseded.allowed_by_log,
+                "pause_set_at": superseded.set_at,
+            },
+        )
     _emit_gate_event(
         "gate.paused",
         {
@@ -2466,6 +2481,7 @@ def off_cmd(
             "expires_at": state.expires_at,
             "duration_hours": round(hours, 4),
             "set_via": "notari off",
+            "pause_set_at": state.set_at,
         },
     )
     console.print(
@@ -2487,25 +2503,35 @@ def on_cmd() -> None:
     from notari import pause as _pause
 
     console = Console()
-    was_paused, _ = _pause.is_paused()
-    state = _pause.resume()
+    state = _pause.resume_if_paused()
+    if state is None:
+        console.print("[dim]gate was already on. nothing to resume.[/dim]")
+        return
     _emit_gate_event(
         "gate.resumed",
         {
             "trigger": "manual",
             "reason": state.reason,
             "allowed_while_paused": state.allowed_count,
+            "allowed_by_log": state.allowed_by_log,
+            "pause_set_at": state.set_at,
         },
     )
-    if not was_paused:
-        console.print("[dim]gate was already on. nothing to resume.[/dim]")
-        return
     console.print("[bold green]notari gate ON[/bold green] - full gating restored.")
     if state.allowed_count:
         console.print(
             f"recap: [bold]{state.allowed_count}[/bold] call(s) were allowed while paused. "
             "review them: [dim]notari audit show --since 24h[/dim] (look for gate_paused)."
         )
+        _print_allowed_by_log(console, state.allowed_by_log)
+
+
+def _print_allowed_by_log(console: Console, by_log: dict[str, int]) -> None:
+    """Where the paused calls were written, when more than one log took them."""
+    if len(by_log) < 2:
+        return
+    for path, n in sorted(by_log.items(), key=lambda kv: -kv[1]):
+        console.print(f"  {n} in {path}", style="dim", markup=False)
 
 
 @app.command("state", rich_help_panel="Safety")
@@ -2566,6 +2592,7 @@ def _print_pause_status(console: Console) -> None:
         console.print(f"[bold yellow]gate is OFF[/bold yellow] (paused) - reason: {reason}")
         console.print(f"auto-resumes in ~{mins} min (at {state.expires_at}).")
         console.print(f"calls allowed so far this window: [bold]{state.allowed_count}[/bold]")
+        _print_allowed_by_log(console, state.allowed_by_log)
     else:
         console.print("[bold green]gate is ON[/bold green] - normal gating active.")
 

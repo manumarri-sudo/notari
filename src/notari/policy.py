@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import fnmatch
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, cast
@@ -374,8 +374,9 @@ CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
     # path. (Within the app-layer model: a write that does NOT go through a
     # gated tool still bypasses this - see docs/SECURITY-MODEL.md.)
     (
-        r"(?:>>?|\btee\b|\bsed\s+-i|\btruncate\b|\brm\b|\bmv\b|\bcp\b|\bdd\b|\bln\b)"
-        r"[^|;]*(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
+        # Keep mutating verbs and their targets within the same shell segment.
+        r"(?:\btee\b|\bsed\s+-i|\btruncate\b|\brm\b|\bmv\b|\bcp\b|\bdd\b|\bln\b)"
+        r"[^|;&\n]*(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
         r"\.notari/(?:config\.toml|key|overrides\.toml|pause\.json))",
         "write/delete targeting the gate's own config (settings.json / config.toml)",
         "Editing the gate's config to disable it is a privilege-escalation shape. "
@@ -663,7 +664,9 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
         # overnight.json were not, and writing a forged record into approvals.json
         # flipped a CRITICAL deny to allow with no human in the loop. Any file under
         # the gate's own state directory is self-tamper, including ones added later.
-        r"(?:>>?|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\bdd\b|\binstall\b|\brm\b|\bln\b)[^|\n]*"
+        # Redirect targets are checked separately before the raw patterns.
+        r"(?:\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\bdd\b|\binstall\b|\brm\b|\bln\b)"
+        r"[^|;&\n]*"
         r"(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
         r"\.notari/[^\s\"';|&]+)",
         "write/delete targeting the gate's own config/state (quoted-path form)",
@@ -870,7 +873,8 @@ _USER_BASH_ALLOWLIST: tuple[re.Pattern[str], ...] | None = None
 
 _QUOTE_RE = re.compile(
     r"""
-    (?P<sq>'(?:\\.|[^'\\])*')          # single-quoted: literal except \'
+    (?P<escaped>\\[\s\S])            # an escaped quote cannot open a region
+    | (?P<sq>'(?:\\.|[^'\\])*')        # single-quoted: literal except \'
     | (?P<dq>"(?:\\.|[^"\\])*")        # double-quoted: backslash escapes
     | (?P<ansic>\$'(?:\\.|[^'\\])*')   # $'...'
     """,
@@ -903,7 +907,7 @@ def _mask_quoted(cmd: str) -> str:
 
     def _blank(m: re.Match[str]) -> str:
         s = m.group(0)
-        if len(s) <= 2:
+        if m.lastgroup == "escaped" or len(s) <= 2:
             return s
         inner = s[1:-1]
         if m.lastgroup == "dq":
@@ -919,6 +923,26 @@ def _mask_quoted(cmd: str) -> str:
         return s[0] + (" " * len(inner)) + s[-1]
 
     return _QUOTE_RE.sub(_blank, cmd)
+
+
+_OUTPUT_REDIRECT_RE = re.compile(r"(?<![<>])(?:&>>?|<>|>>?(?:\||&)?)(?![>&])[ \t]*(?:\\\n[ \t]*)*")
+# Each alternative begins with a distinct character, including the two dollar
+# forms. Keep substitutions opaque and never execute a word to resolve it.
+_OUTPUT_WORD_RE = re.compile(
+    r"""(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\\n])*"|'[^'\n]*'|\$\([^\n)]*\)|"""
+    r"""`[^`\n]*`|\$(?!\()|[^\s|;&<>()"'\\$`])+"""
+)
+_GATE_OUTPUT_PATH_RE = re.compile(
+    r"\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|\.notari/[^\s\"';|&]+"
+)
+
+
+def shell_output_targets(command: str, masked: str) -> Iterator[str]:
+    """Yield output filenames, excluding fd duplication and quoted operators."""
+    for redirect in _OUTPUT_REDIRECT_RE.finditer(masked):
+        target = _OUTPUT_WORD_RE.match(command, redirect.end())
+        if target:
+            yield target[0].replace("\\\n", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1240,6 +1264,12 @@ def classify_command(command: str) -> CommandClassification:
     # before the user allowlist. This is the kill-test P0.1 fix: a user
     # allowlist must never be able to downgrade the never-downgradable class.
     masked = _mask_quoted(cmd)
+    if any(_GATE_OUTPUT_PATH_RE.search(target) for target in shell_output_targets(cmd, masked)):
+        return CommandClassification(
+            Risk.CRITICAL,
+            "write targeting the gate's own config/state (shell redirect)",
+            "Change policy deliberately via `notari` commands, not by rewriting the files",
+        )
     for rex, reason, suggestion in _CRITICAL_CMD_RE:
         if rex.search(masked):
             return CommandClassification(Risk.CRITICAL, reason, suggestion)

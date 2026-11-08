@@ -285,6 +285,13 @@ def scan(
             # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
             # shapes are specific enough to report unconditionally.
             value = text[s:e]
+            # Shape-of-the-line checks for the two noisiest rules (see the
+            # constants' comments): an attached `-p` password needs a tool that
+            # takes one on the same line, and a plural name is not a credential.
+            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(_line_text(text, s)):
+                continue
+            if label == "env-secret" and _PLURAL_CREDENTIAL_NAME_RE.search(text[m.start() : s]):
+                continue
             # The length floor is low-confidence-only: a real DSN password can
             # legitimately be short (a brief password in a redis:// DSN), so floor only the
             # shapes whose match is loosely structured.
@@ -442,6 +449,30 @@ _MIN_INLINE_SECRET_LEN: Final[int] = 10
 # precision, those two rules contributing 3 of the 48. `mysql-pflag` already
 # carries its own >= 6 plus non-lowercase requirement in the regex.
 _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
+
+# `-p<value>` with the password ATTACHED to the flag is a convention of a few
+# tools: the MySQL family and the 7-Zip / RAR archivers. On a line that names
+# none of them, `-p` plus a long token is some other program's long flag
+# (`ffmpeg -pix_fmt yuv420p`, `-profile:v`). The six-month audit log
+# (2026-11-08) held 67 secret-in-write blocks, none a real credential, and every
+# `mysql-pflag` hit outside Notari's own tests was ffmpeg or a `-p` identifier.
+_ATTACHED_PFLAG_TOOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)\b(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
+)
+# A PLURAL credential name (`tokens`, `max_tokens`, `api_keys`, `secrets`) names a
+# count or a collection, not one credential. `tokens = {"input_tokens": ...}` and
+# `tokens=tokens` were the dominant env-secret false positive in that same log.
+_PLURAL_CREDENTIAL_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?:password|passwd|secret|token|api[-_]?key|pwd)s\s*=\s*$"
+)
+
+
+def _line_text(text: str, offset: int) -> str:
+    """The line of `text` that contains `offset`."""
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    return text[start:] if end < 0 else text[start:end]
+
 
 # Lowercased values that are stand-ins, not secrets. Kept small and literal;
 # fuzzier stand-ins are caught by the substring list below.

@@ -189,3 +189,86 @@ def test_state_reports_on_after_pause_expires(monkeypatch, tmp_path: Path) -> No
     result = CliRunner().invoke(app, ["state"])
     assert result.exit_code == 0
     assert "Notari is on" in result.output
+
+
+# ---------------------------------------------------------------------------
+# 0.5.1: the recap must reconcile with the rows (six-month audit read, 2026-11-08)
+# ---------------------------------------------------------------------------
+
+
+def test_record_allowed_tracks_each_log(monkeypatch, tmp_path: Path) -> None:
+    # A project with its own .notari/ routes its rows to a per-project log while
+    # the recap lands in the global one; 180 of a 186-call recap sat in a project
+    # log on 2026-07-27. The split is what lets a reader of one log reconcile.
+    _isolate(monkeypatch, tmp_path)
+    pause_mod.pause(reason="x")
+    pause_mod.record_allowed_while_paused("/a/audit.log.jsonl")
+    pause_mod.record_allowed_while_paused("/a/audit.log.jsonl")
+    pause_mod.record_allowed_while_paused("/b/.notari/audit.log.jsonl")
+    s = pause_mod.load_state()
+    assert s.allowed_count == 3
+    assert s.allowed_by_log == {"/a/audit.log.jsonl": 2, "/b/.notari/audit.log.jsonl": 1}
+
+
+def test_concurrent_increments_are_not_lost(monkeypatch, tmp_path: Path) -> None:
+    # Parallel hooks both read N and both wrote N+1 (67 rows against a recap of 55
+    # on 2026-06-12). The state file now takes a lock around read-modify-write.
+    from concurrent.futures import ThreadPoolExecutor
+
+    _isolate(monkeypatch, tmp_path)
+    pause_mod.pause(reason="x")
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(lambda _: pause_mod.record_allowed_while_paused("/a"), range(160)))
+    assert pause_mod.load_state().allowed_count == 160
+
+
+def test_resume_if_paused_flips_exactly_once(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    pause_mod.pause(reason="x")
+    first = pause_mod.resume_if_paused()
+    assert first is not None and first.paused is False
+    assert pause_mod.resume_if_paused() is None
+    assert pause_mod.record_allowed_while_paused("/a") is None
+
+
+def test_replacement_keeps_the_new_window_open_and_returns_previous_counts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    old = pause_mod.pause(reason="old")
+    pause_mod.record_allowed_while_paused("/a")
+    current, recap = pause_mod.replace_pause(duration_hours=1, reason="new")
+    assert recap is not None and recap.set_at == old.set_at
+    assert recap.allowed_by_log == {"/a": 1}
+    assert pause_mod.resume_if_paused(expired_only=True) is None
+    assert pause_mod.load_state() == current
+
+
+def test_state_json_without_split_still_loads() -> None:
+    raw = {"paused": True, "set_at": "t0", "expires_at": "t1", "reason": "r", "allowed_count": 3}
+    assert PauseState.from_json(raw).allowed_by_log == {}
+
+
+def test_expired_pause_recap_is_emitted_once(monkeypatch, tmp_path: Path) -> None:
+    # Two hooks noticing the same expired pause wrote two gate.resumed rows on
+    # 2026-06-12; only the process that flips the flag may emit the recap.
+    from notari.adapters.claude_code import _emit_resume_if_expired
+
+    _isolate(monkeypatch, tmp_path)
+    log_path = tmp_path / "audit.jsonl"
+    pause_mod.pause(reason="x", duration_hours=1)
+    pause_mod.record_allowed_while_paused(str(log_path))
+    state = pause_mod.load_state()
+    state.expires_at = (_now() - timedelta(minutes=1)).isoformat()
+    pause_mod.save_state(state)
+
+    _emit_resume_if_expired(log_path)
+    _emit_resume_if_expired(log_path)
+
+    lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    resumed = [e for e in lines if e.get("type") == "gate.resumed"]
+    assert len(resumed) == 1
+    assert resumed[0]["payload"]["trigger"] == "auto-expired"
+    assert resumed[0]["payload"]["allowed_while_paused"] == 1
+    assert resumed[0]["payload"]["allowed_by_log"] == {str(log_path): 1}
+    assert pause_mod.load_state().paused is False

@@ -2,6 +2,13 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - audit fixes
+
+- Check shell redirect targets before flagging a write to gate state.
+- Narrow scan matches for attached password flags and plural credential names.
+- Track paused calls by audit log and serialize updates and resume decisions.
+- Retire the obsolete repository workflow that checked PRs against the 0.5.0 task.
+
 ## [0.5.3] - passport output and setup
 
 - Validate imported credential finding metadata before rendering explanations and GitHub annotations.
