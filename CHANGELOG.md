@@ -2,6 +2,86 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - gate state write detection
+
+Three Codex reviews (2026-11-08) activated a pause against the released gate
+with commands a regex over the raw text cannot see as a write to `~/.notari/`:
+quoted fragments (`"$HOME"/".notari"/pause.json`, `~/"."notari/`), a backslash
+or a `$'\x72'` escape inside the name, a continuation inside the name, brace
+expansion (`~/.{notari,cache}/`, `~/.{a,...,notari}/`, nested and `{r..r}`
+forms), a directory destination with no trailing slash (`cp x "$HOME"/".notari"`,
+`install -t ~/.notari`), `sed -i` with its flags reordered or quoted behind
+`nice`, `env -i`, `xargs` or a subshell, `find -exec`, `sh -c` and `eval`
+nesting, and Python, Ruby, Node, Perl, PHP or awk one-liners that write the
+file. This release recognizes those shell word forms and checks them in
+both the classifier and the hook adapter.
+
+### Security
+
+- **Gate self-tamper by shell word.** `normalize_shell_word` removes quotes
+  (including `$'...'`), resolves escapes and continuations, and folds `$HOME`,
+  `${HOME}` and `${HOME:-x}` to `~`; `is_gate_path_word` tests the result,
+  expanded over its brace groups within a budget (64 results, 16 openers,
+  2,048 characters; a larger brace word is denied if it so much as names the
+  directory), for the gate directory itself or a file under it, or the host
+  agent's hook settings. Redirect targets go through it, and
+  `command_writes_gate_path` walks each shell segment (quoted separators stay
+  inside their word) after removing wrapper words and their options (`env`,
+  `command`, `builtin`, `exec`, `sudo`, `doas`, `nohup`, `nice`, `ionice`,
+  `time`, `xargs`, `timeout`, `caffeinate`, `stdbuf`, a glued `(`, `{` or `!`,
+  leading assignments) for: a program that writes every path it is given
+  (`tee`, `rm`, `mv`, `truncate`, `shred`, `unlink`, `dd of=`), a program that
+  writes only its destination (`cp`, `install`, `ln`, `rsync`, with `-t`,
+  `--target-directory` and the last positional honoured), `sed` with an
+  in-place flag in any position, `sh`/`bash`/`zsh`/`dash`/`ksh`/`fish -c`,
+  `eval` and `find -exec` followed four levels deep, and a Python, Ruby, Node,
+  Perl, PHP or awk one-liner whose payload names the gate directory and whose
+  code performs a write (a write-mode `open`, `.write`, `writeFile`,
+  `File.write`, `file_put_contents`, a delete, rename or copy, awk's `>`).
+  The adapter's `_writes_to_gate_state` uses the same parsed write targets for
+  the default and a relocated `NOTARI_HOME`, so `sed -n -i.bak -e ... <gate>`
+  is denied again however the flags are ordered. The two older regex rules for
+  this shape are retired; they matched `cp ~/.notari/config.toml /tmp/x` (a
+  read) the same as a write (`tests/test_gate_path_words.py`,
+  `tests/test_gate_path_words_round3.py`, `tests/test_gate_sed_in_place.py`).
+- **Reads stay reads.** `File.read`, `readFileSync`, a read-mode `open(...)`,
+  Perl's `open(F, "<", ...)`, `rsync <gate> /tmp/copy`, `cp <gate> /tmp/x`,
+  `sed -n`, `awk '{print}' <gate>` and a quoted mention of a verb
+  (`echo 'tee ~/.notari/x'`) classify below CRITICAL in both layers; each is
+  paired in the tests with the write that must still be denied.
+- **Bounded parsing.** The classifier caps brace expansion and walks command
+  prefixes by index. Regression tests exercise large argument lists, quote
+  fragments, nested substitutions, braces, and prefix scaling.
+
+### Fixed
+
+- The adapter counted every `sed` as a write; only `sed -i` counts, so
+  `sed -n '1p' ~/.notari/pause.json` is a read again.
+- An attached `-p` password is checked in its own command. Shell arrays and
+  variable invocations can use nearby tool context. A MySQL command or comment
+  no longer makes an unrelated ffmpeg flag look like a password.
+- File-copy destinations stay protected when a command includes redirects or
+  a trailing comment. This also covers direct interpreter writes to relocated
+  state and operations that link or remove a protected source.
+- `notari off`, `notari on` and the hook's expiry cleanup emit their audit
+  events AFTER the pause state lock is released. An intermediate candidate
+  emitted them under the lock to keep the log in transition order, and a
+  stalled audit writer then kept `notari on` from clearing the pause. State
+  now resumes before the recap is written. The command can still wait to
+  finish the append, and concurrent rows can arrive out of order. Pair each
+  window and its recap using `pause_set_at`.
+- The pause lock descriptor is opened inside the cleanup `try`, so a signal
+  between open and lock cannot leak it.
+- `CITATION.cff` still said 0.5.0; it says 0.5.5.
+
+### Still outside the text rules, by design
+
+- A relative write after `cd ~/.notari`, a symlink created elsewhere and
+  written through, a path assembled in a shell variable (`printf -v x ...;
+  printf x > "$x"`), and awk or PHP payloads on hosts without those tools are
+  not recognised by text; the adapter's resolved-path check catches the literal
+  forms and `docs/SECURITY-MODEL.md` names shell grammar as unbounded.
+
 ## [0.5.4] - audit fixes
 
 - Check shell redirect targets before flagging a write to gate state.

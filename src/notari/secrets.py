@@ -23,7 +23,7 @@ audit-logged / exported text without persisting the matched value.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -276,6 +276,8 @@ def scan(
     # (the `secret` group), not the whole line, so the reported location is the
     # secret itself.
     for label, cred_re in _INLINE_CRED_PATTERNS:
+        contexts = _pflag_contexts(text) if label == "mysql-pflag" else iter(())
+        context = None
         for m in cred_re.finditer(text):
             s, e = m.span("secret")
             if e <= s:
@@ -285,11 +287,11 @@ def scan(
             # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
             # shapes are specific enough to report unconditionally.
             value = text[s:e]
-            # Shape-of-the-line checks for the two noisiest rules (see the
-            # constants' comments): an attached `-p` password needs a tool that
-            # takes one on the same line, and a plural name is not a credential.
-            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(_line_text(text, s)):
-                continue
+            if label == "mysql-pflag":
+                if context is None or context[1] <= m.start():
+                    context = next((span for span in contexts if span[1] > m.start()), None)
+                if context is None or m.start() < context[0]:
+                    continue
             if label == "env-secret" and _is_plural_reference(text[m.start() : s], value):
                 continue
             # The length floor is low-confidence-only: a real DSN password can
@@ -456,9 +458,44 @@ _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
 # (`ffmpeg -pix_fmt yuv420p`, `-profile:v`). The six-month audit log
 # (2026-11-08) held 67 secret-in-write blocks, none a real credential, and every
 # `mysql-pflag` hit outside Notari's own tests was ffmpeg or a `-p` identifier.
-_ATTACHED_PFLAG_TOOL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)\b(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
+# A command or simple shell assignment can name the password-taking tool.
+_PFLAG_TOOL_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)(?:^|[;&|(`=])\s*(?:(?:sudo|doas|env|exec|command|nohup|nice|time|xargs|timeout)\s+"
+    r"(?:-\S+\s+)*)*(?:\S*/)?(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
 )
+_COMMENT_LINE_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^[ \t]*#.*$")
+_PFLAG_COMMAND_END_RE = re.compile(r"(?<!\\)\n|[;&|]")
+_PFLAG_ARRAY_RE = re.compile(r"^[ \t]*[A-Za-z_]\w*=\(")
+_PFLAG_VARIABLE_COMMAND_RE = re.compile(r'^\s*"?\$(?:\{\w+\}|\w+)(?=[" \t]|$)')
+
+
+def _pflag_contexts(text: str) -> Iterator[tuple[int, int]]:
+    """Find command spans once, keeping explicit flags with their own command.
+
+    Retain conservative coverage for array and variable invocations when the
+    text also names a password-taking tool.
+    """
+    has_tool = _PFLAG_TOOL_COMMAND_RE.search(_COMMENT_LINE_RE.sub("", text)) is not None
+    if not has_tool:
+        return
+    start = 0
+    in_array = False
+    for separator in _PFLAG_COMMAND_END_RE.finditer(text + "\n"):
+        end = separator.start()
+        command = text[start:end]
+        if not command.lstrip().startswith("#"):
+            in_array = in_array or bool(_PFLAG_ARRAY_RE.match(command))
+            if (
+                in_array
+                or _PFLAG_TOOL_COMMAND_RE.search(command)
+                or _PFLAG_VARIABLE_COMMAND_RE.match(command)
+            ):
+                yield start, end
+            if in_array and ")" in command:
+                in_array = False
+        start = separator.end()
+
+
 _PLURAL_CREDENTIAL_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)(?P<name>[\w-]*(?:password|passwd|secret|token|api[-_]?key|pwd)s)\s*=\s*$"
 )

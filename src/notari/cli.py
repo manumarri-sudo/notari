@@ -2468,6 +2468,9 @@ def off_cmd(
     except OSError as exc:
         console.print(str(exc), style="red", markup=False)
         raise typer.Exit(1) from exc
+    # Emitted after the state lock is released: the audit log takes its own
+    # blocking flock, and a stalled audit writer must not keep `notari on`
+    # from clearing the pause. Each event carries pause_set_at for ordering.
     if superseded is not None:
         _emit_gate_event(
             "gate.resumed",
@@ -2508,6 +2511,7 @@ def on_cmd() -> None:
     from notari import pause as _pause
 
     console = Console()
+
     try:
         state = _pause.resume_if_paused()
     except OSError as exc:

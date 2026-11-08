@@ -87,6 +87,47 @@ def test_relocated_notari_home_is_protected_from_a_bash_redirect(tmp_path: Path)
 @pytest.mark.parametrize(
     "command",
     [
+        "cp /tmp/input {gate} >/dev/null",
+        "cp /tmp/input {gate} 2> /dev/null",
+        "cp /tmp/input {gate} 2>&1",
+        "cp /tmp/input {gate} < /dev/null",
+        "cp /tmp/input {gate} # quiet copy",
+        "cp /tmp/input {gate}>/dev/null",
+        "rsync --remove-source-files {gate} /tmp/backup",
+        "ln {gate} /tmp/backup",
+        "cp -l {gate} /tmp/backup",
+        """python -c 'open("{gate}", "w").write("fixture")'""",
+        """ruby -e 'File.write("{gate}", "fixture")'""",
+        """node -e 'require("fs").writeFileSync("{gate}", "fixture")'""",
+    ],
+)
+def test_relocated_state_write_targets_survive_shell_syntax(tmp_path: Path, command: str) -> None:
+    home = tmp_path / "state"
+    home.mkdir()
+    gate = home / "pause.json"
+    assert _decide(home, "Bash", {"command": command.format(gate=gate)}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cp {gate} /tmp/backup 2>/dev/null",
+        "rsync {gate} /tmp/backup 2>/dev/null",
+        """python -c 'print(open("{gate}").read())'""",
+        """ruby -e 'puts File.read("{gate}")'""",
+        """node -e 'console.log(require("fs").readFileSync("{gate}"))'""",
+    ],
+)
+def test_relocated_state_reads_stay_allowed(tmp_path: Path, command: str) -> None:
+    home = tmp_path / "state"
+    home.mkdir()
+    gate = home / "pause.json"
+    assert _decide(home, "Bash", {"command": command.format(gate=gate)}) == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         'printf x >& "{path}"',
         'printf x 3<> "{path}" >&3',
         'printf x >\\\n "{path}"',
