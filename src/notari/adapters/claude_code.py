@@ -636,18 +636,27 @@ def decide(
 
 
 def _redacted_input(tool_input: Mapping[str, Any]) -> dict[str, Any]:
-    """Truncate string args so we never log secrets in full.
+    """Redact credentials before truncating strings, including nested arguments.
 
-    Args longer than 200 chars are shown with their length and a 200-char
-    head only. Non-string args pass through.
+    Omit containers beyond eight levels so malformed or cyclic input cannot
+    escape sanitization or exhaust the Python recursion limit.
     """
-    out: dict[str, Any] = {}
-    for k, v in tool_input.items():
-        if isinstance(v, str) and len(v) > 200:
-            out[k] = f"{v[:200]}…[truncated, {len(v)} chars]"
-        else:
-            out[k] = v
-    return out
+
+    def preview(value: Any, depth: int) -> Any:
+        if isinstance(value, str):
+            redacted = _secrets.redact(value)
+            if len(redacted) > 200:
+                return f"{redacted[:200]}…[truncated, {len(value)} chars]"
+            return redacted
+        if isinstance(value, (Mapping, list, tuple)):
+            if depth >= 8:
+                return "[omitted: nesting limit]"
+            if isinstance(value, Mapping):
+                return {preview(k, depth + 1): preview(v, depth + 1) for k, v in value.items()}
+            return [preview(v, depth + 1) for v in value]
+        return value
+
+    return {k: preview(v, 0) for k, v in tool_input.items()}
 
 
 # ---- multi-project session tracking ---------------------------------------
@@ -1022,6 +1031,28 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                     try_instead="",
                 )
 
+    # Escalate before consuming approvals so an initially allowed read can be
+    # released by the same exact-call approval flow as any other refusal.
+    if decision.permission == "allow" and session_id:
+        with contextlib.suppress(Exception):
+            from notari.taint import would_close_trifecta
+
+            current = _taint_state_for(session_id)
+            if would_close_trifecta(current, tool_name, tool_input):
+                why = (
+                    "would close the lethal trifecta this session "
+                    "(untrusted input + private data + exfil vector)"
+                )
+                decision = HookDecision(
+                    permission="deny",
+                    reason=f"trifecta close · {why} · approve to proceed",
+                    risk=Risk.CRITICAL,
+                    audit_event_type="verdict.blocked",
+                    what=decision.what,
+                    why=why,
+                    try_instead="",
+                )
+
     # One-shot approval check: if the user ran `notari approve <token>` for
     # this exact (tool_name, args) within the TTL, consume the approval
     # and let the call through. This is the "go ahead" path the user
@@ -1057,36 +1088,6 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                         from notari import session_approvals as _sa
 
                         _sa.remember(session_id, tool_name, tool_input)
-
-    # Trifecta enforcement: if THIS call would close the lethal trifecta
-    # (untrusted input + private data + exfil) for the first time, escalate
-    # an otherwise-allow decision to a deny so the user can decide. Skip
-    # if the user already approved this exact call out-of-band.
-    if decision.permission == "allow" and not approval_token_used and session_id:
-        with contextlib.suppress(Exception):
-            from notari.taint import TaintState as _TaintState
-            from notari.taint import would_close_trifecta
-
-            current = _taint_state_for(session_id) if session_id else _TaintState()
-            if would_close_trifecta(current, tool_name, tool_input):
-                why = (
-                    "would close the lethal trifecta this session "
-                    "(untrusted input + private data + exfil vector)"
-                )
-                # Hardcode CRITICAL: a trifecta-close attempt is the worst-
-                # case prompt-injection scenario by definition; the
-                # underlying call's classification (often LOW for Edit/Write)
-                # is irrelevant. Notify dispatcher fans on critical, so this
-                # ensures OOB notification fires on trifecta closures.
-                decision = HookDecision(
-                    permission="deny",
-                    reason=f"trifecta close · {why} · approve to proceed",
-                    risk=Risk.CRITICAL,
-                    audit_event_type="verdict.blocked",
-                    what=decision.what,
-                    why=why,
-                    try_instead="",
-                )
 
     if audit is not None:
         from notari import events as ev
@@ -1269,7 +1270,9 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
             # session.taint.update - emit only when a flag flips.
             taint_state = _taint_state_for(session_id)
             _, flipped = update_for_call(taint_state, tool_name, tool_input)
-            if flipped:
+            # A refused call did not expose its data. Persisting its flags would
+            # make an exact retry look already closed and skip the approval gate.
+            if flipped and decision.permission != "deny":
                 _save_taint_state(session_id, taint_state)
                 audit.emit(
                     event_type=ev.SESSION_TAINT_UPDATE,

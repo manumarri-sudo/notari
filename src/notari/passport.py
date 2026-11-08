@@ -15,12 +15,16 @@ verdict back to the tamper-evident chain rather than trusting the markdown alone
 from __future__ import annotations
 
 import json
+import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from secrets import token_hex
 from typing import Any
 
 from notari import attest, explain
 from notari import secrets as secrets_mod
+from notari.errors import NotariError
 from notari.verify import Verdict, VerifyResult
 
 SIGNATURE_KEY = "signature"
@@ -379,17 +383,47 @@ def write_passport(
     secret), the JSON passport is signed so a reviewer can verify the verdict
     with ``notari verify-passport`` without trusting the repo it came from.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "passport.json"
     md_path = out_dir / "passport.md"
     passport = build_passport(result, generated_at=generated_at)
     if sign_key_pem:
         passport = sign_passport(passport, sign_key_pem)
-    json_path.write_text(json.dumps(passport, indent=2) + "\n")
-    md_path.write_text(
-        render_markdown(result, generated_at=generated_at, signed=bool(sign_key_pem))
-    )
+    try:
+        if out_dir.is_symlink():
+            raise OSError("the passport output directory is a symlink")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        write_report_file(json_path, json.dumps(passport, indent=2) + "\n")
+        write_report_file(
+            md_path, render_markdown(result, generated_at=generated_at, signed=bool(sign_key_pem))
+        )
+    except OSError as exc:
+        raise NotariError(f"could not write passport: {exc}") from exc
     return json_path, md_path
+
+
+def write_report_file(path: Path, content: str) -> None:
+    """Replace the directory entry without writing through a checkout link."""
+    if path.parent.is_symlink():
+        raise OSError("the report output directory is a symlink")
+    parent_fd = None
+    target: str | Path = path
+    if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        target = path.name
+    name = ".notari-passport-" + token_hex(16)
+    temp: str | Path = name if parent_fd is not None else path.parent / name
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(content)
+            os.replace(temp, target, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=parent_fd)
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 def _short(sha: str | None, n: int = 12) -> str:

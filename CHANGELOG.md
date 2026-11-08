@@ -2,6 +2,18 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - scan and onboarding hardening
+
+- Publish the scan verdict under `notari/scan` and fail the job if a requested
+  commit status cannot be posted.
+- Make scan results independent of checkout exceptions and block when a
+  resource limit prevents a complete scan.
+- Write report files without following checkout symlinks, and redact
+  credential-shaped values from hook audit previews.
+- Warn when local changes have not been committed, correct the signed boundary
+  quickstart, and show how to undo a committed finding against its scanned base.
+- Update the cryptography dependency.
+
 ## [0.5.0] - the drop-in scan is the product
 
 Three and a half months after launch, Notari had no external adopter: zero stars,

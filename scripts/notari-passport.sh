@@ -461,15 +461,15 @@ if [[ -n "${GITHUB_TOKEN:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "$STATUS_SHA" 
   else
     DESC="$VERDICT: ${SAFE_REASONS:0:130}"
   fi
-  python3 -I - "$STATE" "$DESC" "$STATUS_SHA" <<'PY' || echo "::warning::could not publish Status Check"
+  if ! python3 -I - "$STATE" "$DESC" "$STATUS_SHA" "$STATUS_CONTEXT" <<'PY'
 import json, os, sys, urllib.request
-state, desc, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+state, desc, sha, context = sys.argv[1:]
 repo = os.environ["GITHUB_REPOSITORY"]
 token = os.environ["GITHUB_TOKEN"]
 body = json.dumps({
     "state": state,
     "description": desc,
-    "context": "notari/change-control",
+    "context": context,
 }).encode()
 req = urllib.request.Request(
     f"https://api.github.com/repos/{repo}/statuses/{sha}",
@@ -485,6 +485,10 @@ req = urllib.request.Request(
 urllib.request.urlopen(req, timeout=15).read()
 print("published Status Check:", state)
 PY
+  then
+    echo "::error::could not publish the Notari commit status"
+    exit 2
+  fi
 
   # Record the SHA + MAC we just posted so `notari verify-passport` can
   # cross-check that the status check on this commit was the one Notari wrote,

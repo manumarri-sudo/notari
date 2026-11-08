@@ -1,4 +1,6 @@
 # Notari scan, the drop-in workflow. Copy this into .github/workflows/notari-scan.yml.
+# The 0.5.0 pin below publishes the legacy status context. Confirm a corrected
+# release publishes notari/scan on a test PR before making that context required.
 #
 # What it does on every pull request, with no keys and no config:
 #   BLOCK        a leaked secret (26 vendor formats, matched in full against

@@ -218,12 +218,14 @@ def aggregate(
         "event_type_counts": dict(by_type),
     }
 
-    if chain_total == 0 and total > 0:
+    if chain_failures and 0 in chain_failures:
+        chain_status = f"broken: sealed history mismatch ({chain_total} retained entries)"
+    elif chain_failures:
+        chain_status = f"broken: {len(chain_failures)} of {chain_total} entries fail"
+    elif chain_total == 0 and total > 0:
         chain_status = "unknown (chain not verified)"
     elif chain_total == 0:
         chain_status = "empty"
-    elif chain_failures:
-        chain_status = f"broken: {len(chain_failures)} of {chain_total} entries fail"
     else:
         chain_status = f"intact ({chain_total} entries verified)"
 

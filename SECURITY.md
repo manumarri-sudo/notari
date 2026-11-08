@@ -149,6 +149,6 @@ Planned, not yet in place (do not assume present):
 
 | Version | Supported |
 |---|---|
-| 0.3.x | yes (current alpha line) |
+| 0.5.x | yes (current alpha line) |
 
 After 1.0, we will support the latest minor and the previous one with security fixes.

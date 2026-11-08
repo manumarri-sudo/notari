@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "notari"
-version = "0.5.0"
+version = "0.5.1"
 description = "Notari Change Control: a CI/CD pull-request gate that verifies AI-written diffs against the human-approved task, scopes the change, and issues a tamper-evident Change Passport."
 readme = "README.md"
 license = "MIT"
@@ -51,7 +51,7 @@ dependencies = [
     # key) is deliberately not the same secret as forging (private key) - the
     # property the symmetric HMAC chain cannot provide. A headline security
     # primitive belongs in the base install, not an optional extra.
-    "cryptography>=42",
+    "cryptography>=50.0.2",
     # Touch ID is a headline security control (gate-disable + approve), so the
     # binding ships in the BASE install on macOS rather than an opt-in extra -
     # the platform marker makes it a no-op on Linux/Windows. Keeping it optional

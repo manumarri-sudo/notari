@@ -57,6 +57,11 @@ def _reject_option_shaped(ref: str, what: str) -> None:
         raise verify_mod.VerifyError(msg)
 
 
+def has_uncommitted_changes(root: Path) -> bool:
+    """Detect staged, unstaged and untracked files for the local CLI warning."""
+    return bool(_git(root, "status", "--porcelain=v1", "--untracked-files=normal"))
+
+
 def resolve_base(root: Path, base: str | None, env: dict[str, str]) -> str:
     """Return the full SHA of the base ref: explicit `base`, else NOTARI_BASE_SHA,
     else the first fallback ref that exists in this repo."""
@@ -119,8 +124,11 @@ def scan(
     root = repo_root(root)
     env = dict(os.environ) if env is None else env
     base_sha = resolve_base(root, base, env)
-    mb = merge_base(root, base_sha, head)
+    _reject_option_shaped(head, "head")
     head_sha = _git(root, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}")
+    if not head_sha or not verify_mod._is_hex_sha(head_sha):
+        raise verify_mod.VerifyError(f"no head commit found for {head!r}")
+    mb = merge_base(root, base_sha, head_sha)
     if head_sha == mb:
         # Nothing between base and head: a push or workflow_dispatch run with no
         # base, `--base HEAD`, or swapped refs. A green check on a scan of
@@ -133,7 +141,7 @@ def scan(
     return verify_mod.verify(
         contract=scan_contract(mb),
         root=root,
-        head=head,
+        head=head_sha,
         audit=audit,
         session_id="notari-scan",
         perimeter=None,

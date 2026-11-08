@@ -1,30 +1,25 @@
 # Notari Quickstart
 
-Get from zero to a blocked bad PR in about ten minutes. Everything here is free
-and open source, runs locally, and needs no account.
+Start with the local scan to see which committed changes Notari flags. The signed
+boundary below is optional.
 
-## What Notari does in one sentence
+## 0. Try the scan
 
-Notari checks every AI-authored change against a **human-signed boundary** (the
-paths agents may and may never touch) and issues a **Change Passport**: a
-deterministic PASS / NEEDS_REVIEW / BLOCK verdict with the evidence behind it, so
-an autonomous coding agent cannot quietly edit your workflows, your migrations, or
-leak a secret without a human seeing it.
-
-## 0. The drop-in scan (about 1 minute, no keys)
-
-Most teams start and stop here. Copy
-[`docs/scan-workflow.yml`](scan-workflow.yml) to
-`.github/workflows/notari-scan.yml` and open a pull request. Every PR now gets a
-`notari/scan` status: **BLOCK** on a leaked secret or an edit to your workflows,
-action manifests, or approver keys; **NEEDS_REVIEW** on CI config, lockfiles, test files, agent
-instruction files, git config, submodule pointers, or symlinks; **PASS** otherwise, with renames and
-binaries listed. Make the check required in branch protection and a BLOCK cannot
-merge. Nothing below is needed for that. The same check runs locally on a branch:
+With [uv installed](https://docs.astral.sh/uv/getting-started/installation/),
+run this in a Git repository on a branch with a committed change:
 
 ```bash
-uvx notari scan --base main     # exit 0 on PASS / NEEDS_REVIEW, 1 on BLOCK
+uvx notari scan --base main --no-passport
 ```
+
+Replace `main` if your change targets a different branch. Staged, unstaged and
+untracked files are outside this comparison. PASS and NEEDS_REVIEW exit 0, BLOCK
+exits 1, and a scan error exits 2. Leave out `--no-passport` if you want JSON and
+Markdown evidence in the repository's `.notari/` directory.
+
+The [workflow template](scan-workflow.yml) runs the scan on GitHub. The 0.5.0
+Action posts the legacy `notari/change-control` context, so verify a corrected
+release posts `notari/scan` on a test PR before requiring that context.
 
 The rest of this guide is the signed boundary: a human states, under a signature
 the agent cannot forge, which paths the agent may touch, and CI verifies each PR
@@ -74,7 +69,8 @@ and muddies your first verdict, so land the boundary first (`begin` warns you
 if you forget):
 
 ```bash
-git add .notari .gitignore && git commit -m "notari: signed boundary"
+git add .notari .gitignore .github/workflows/notari-change-control.yml
+git commit -m "notari: signed boundary and workflow"
 
 notari begin "add rate limiting to the API" \
   --scope "src/api/**" \
@@ -102,14 +98,15 @@ the agent cannot forge.)
 ## 4. Watch a good change PASS
 
 ```bash
+mkdir -p src/api
 echo "rate_limit = 100" >> src/api/limits.py
 git add -A && git commit -m "in-scope change"
 notari verify
 ```
 
 You get a green **PASS**: "diff is within the approved boundary: in scope, no
-secrets, nothing forbidden," signed by your approver key. That is the everyday
-happy path; now break it.
+secrets, nothing forbidden," against the task you signed. The verdict itself is unsigned unless you supply a
+separate gate signing key.
 
 > **Local vs. CI, one honest distinction:** the `notari verify` you just ran is
 > *cooperative* mode, which is advisory because the trust root sits on this machine
@@ -124,7 +121,7 @@ happy path; now break it.
 ```bash
 # An agent edits a workflow it was never scoped to touch, in a NEW commit
 # on top of the base the contract recorded:
-echo "# tampered" >> .github/workflows/ci.yml
+echo "# tampered" >> .github/workflows/notari-change-control.yml
 git add -A && git commit -m "sneaky workflow edit"
 
 notari verify

@@ -1,16 +1,10 @@
-"""notari: the pause button between AI agents and the things you can't undo.
+"""Notari Change Control for AI-authored code changes.
 
-An MCP proxy server that:
-  - captures the session intent at start of a vibe-coding session,
-  - records every tool call with a signed line in an append-only audit log,
-  - blocks out-of-scope calls deterministically before the agent can even try,
-  - pauses high-risk actions for a human ACK,
-  - requires type-to-confirm on critical actions,
-  - propagates governance through multi-agent delegation chains.
-
-Place notari between your MCP client (Claude Code, Cursor, Cline) and your
-upstream MCP servers (filesystem, GitHub, Postgres, Slack). Once you're inside
-the gate, you can breathe.
+The CLI verifies Git changes against an approved contract and perimeter, then
+produces a Change Passport. Strict deployment requires externally trusted keys
+and an enforced CI check. Optional Claude Code and Cursor hooks classify tool
+calls and retain local audit evidence; these hooks are defense in depth, not
+an operating-system sandbox. See docs/SECURITY-MODEL.md for the bounded claims.
 
 License: MIT
 """

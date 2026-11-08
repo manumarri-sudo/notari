@@ -27,6 +27,8 @@ from notari.errors import NotariError
 
 API_ROOT = "https://api.github.com"
 APPROVED = "APPROVED"
+REVIEWS_PER_PAGE = 100
+MAX_REVIEW_PAGES = 100
 
 
 class GitHubReviewError(NotariError):
@@ -94,22 +96,34 @@ def evaluate_approval(
 def fetch_reviews(
     owner: str, repo: str, pr_number: int, token: str, *, api_root: str = API_ROOT
 ) -> list[dict[str, Any]]:
-    """GET the reviews for a PR via the GitHub REST API (stdlib only)."""
-    url = f"{api_root}/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("X-GitHub-Api-Version", "2022-11-28")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        msg = f"cannot fetch PR reviews: {e}"
-        raise GitHubReviewError(msg) from e
-    if not isinstance(data, list):
-        msg = f"unexpected reviews payload: {type(data).__name__}"
-        raise GitHubReviewError(msg)
-    return data
+    """Fetch complete oldest-first review history, or fail without authorizing.
+
+    Later pages can revoke an earlier approval. Build each page URL from the
+    configured API root instead of forwarding the token to a response's Link URL.
+    A full final page at the finite request limit leaves completeness unknown,
+    so it must fail closed rather than return a potentially stale approval.
+    """
+    endpoint = f"{api_root.rstrip('/')}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    reviews: list[dict[str, Any]] = []
+    for page in range(1, MAX_REVIEW_PAGES + 1):
+        req = urllib.request.Request(f"{endpoint}?per_page={REVIEWS_PER_PAGE}&page={page}")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+        except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            msg = f"cannot fetch PR reviews page {page}: {e}"
+            raise GitHubReviewError(msg) from e
+        if not isinstance(data, list) or any(not isinstance(review, dict) for review in data):
+            msg = f"unexpected reviews payload on page {page}: expected a list of review objects"
+            raise GitHubReviewError(msg)
+        reviews.extend(data)
+        if len(data) < REVIEWS_PER_PAGE:
+            return reviews
+    msg = f"PR review history exceeds {MAX_REVIEW_PAGES} pages; refusing incomplete history"
+    raise GitHubReviewError(msg)
 
 
 def check_pr_approval(
