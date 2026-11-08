@@ -49,11 +49,9 @@ both the classifier and the hook adapter.
   `sed -n`, `awk '{print}' <gate>` and a quoted mention of a verb
   (`echo 'tee ~/.notari/x'`) classify below CRITICAL in both layers; each is
   paired in the tests with the write that must still be denied.
-- **Bounded time.** Every loop is one pass over the input: 60,000 brace commas
-  classify in 0.04 s (11.8 s in the first candidate), 300,000 assignment
-  prefixes in about 1.1 s (6.5 s before; the released 0.5.4 takes 0.9 s on the
-  same input), and the suite holds five adversarial inputs under one second
-  plus a scaling check that doubles the input and expects linear growth.
+- **Bounded parsing.** The classifier caps brace expansion and walks command
+  prefixes by index. Regression tests exercise large argument lists, quote
+  fragments, nested substitutions, braces, and prefix scaling.
 
 ### Fixed
 

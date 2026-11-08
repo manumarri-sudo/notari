@@ -102,6 +102,7 @@ def test_reads_stay_below_critical_in_both_layers(cmd: str) -> None:
         ("nested substitutions", "echo " + "$(" * 5000),
         ("many words", "cp " + "a " * 100000 + "b"),
     ],
+    ids=["brace-commas", "open-braces", "quoted-fragments", "nested-substitutions", "many-words"],
 )
 def test_adversarial_inputs_classify_quickly(label: str, cmd: str) -> None:
     t0 = time.monotonic()

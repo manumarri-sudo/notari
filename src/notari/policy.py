@@ -986,11 +986,16 @@ def _ansi_c(body: str) -> str:
     return "".join(out)
 
 
+_WORD_NORMALIZATION_RE = re.compile(r"""['"\\$]""")
+
+
 def normalize_shell_word(word: str) -> str:
     """The characters bash would hand a program for `word`: quotes removed
     (including `$'...'`), backslash escapes resolved, backslash-newline
     continuations dropped. `$HOME` and `${HOME}` (with or without a default)
     become `~`; other expansions are left as written."""
+    if not _WORD_NORMALIZATION_RE.search(word):
+        return word
     out: list[str] = []
     quote: str | None = None
     i = 0
@@ -1146,12 +1151,17 @@ def is_gate_path_word(word: str) -> bool:
     return any(_GATE_PATH_WORD_RE.search(c) for c in gate_path_candidates(word))
 
 
+_SHELL_WORD_SYNTAX_RE = re.compile(r"""['"\\$<>&#]""")
+
+
 def shell_words(segment: str) -> list[str]:
     """Return argument words, excluding shell redirects and comments.
 
     Keep quotes, escapes and command substitutions for word normalization.
     Output destinations are checked separately by shell_output_targets.
     """
+    if not _SHELL_WORD_SYNTAX_RE.search(segment):
+        return segment.split()
     words: list[str] = []
     cur: list[str] = []
     quote: str | None = None
@@ -1231,6 +1241,7 @@ _EVERY_PATH_VERBS: Final[frozenset[str]] = frozenset(
     {"tee", "rm", "mv", "ln", "truncate", "shred", "unlink"}
 )
 _SED_IN_PLACE_RE = re.compile(r"^-[a-zA-Z]*i|^--in-place")
+_CP_LINK_OPTION_RE = re.compile(r"-[a-zA-Z]*l[a-zA-Z]*")
 _TARGET_DIR_OPTS: Final[frozenset[str]] = frozenset({"-t", "--target-directory"})
 _NESTED_SHELLS: Final[frozenset[str]] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
 _FIND_EXEC: Final[frozenset[str]] = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -1339,16 +1350,15 @@ def write_target_words(segment: str, *, depth: int = 0) -> list[str]:
         return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-")]
     if (verb == "rsync" and "--remove-source-files" in norm) or (
         verb == "cp"
-        and any(n == "--link" or re.fullmatch(r"-[a-zA-Z]*l[a-zA-Z]*", n) for n in norm)
+        and any(
+            n.startswith("-") and (n == "--link" or _CP_LINK_OPTION_RE.fullmatch(n)) for n in norm
+        )
     ):
         return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-")]
     if verb in _DESTINATION_VERBS:
         return _destination_words(args, norm)
     if _INTERPRETER_RE.fullmatch(verb):
-        code = _interpreter_write_code(verb, args)
-        if code is not None:
-            return [m[1] or m[2] for m in _INTERPRETER_LITERAL_RE.finditer(code)]
-        return []
+        return _interpreter_write_targets(verb, norm)
     if depth >= _MAX_NESTING:
         return []
     if verb in _NESTED_SHELLS:
@@ -1378,44 +1388,31 @@ def _nested_write_targets(script: str, depth: int) -> list[str]:
     out: list[str] = []
     for seg in shell_segments(joined, masked):
         out.extend(write_target_words(seg, depth=depth + 1))
-        if _segment_interpreter_writes_gate(seg):
-            out.append("~/.notari/")  # the literal payload named the gate
     return out
 
 
-def _interpreter_write_code(verb: str, args: list[str]) -> str | None:
+def _interpreter_write_targets(verb: str, args: list[str]) -> list[str]:
     is_awk = verb.endswith("awk")
-    if not is_awk and not any(normalize_shell_word(a) in _INTERPRETER_CODE_FLAGS for a in args):
-        return None
-    code = " ".join(normalize_shell_word(a) for a in args)
+    if not is_awk and not any(a in _INTERPRETER_CODE_FLAGS for a in args):
+        return []
+    code = " ".join(args)
     pattern = _AWK_WRITE_RE if is_awk else _INTERPRETER_WRITE_RE
-    return code if pattern.search(code) else None
-
-
-def _segment_interpreter_writes_gate(segment: str) -> bool:
-    """A Python, Ruby, Node, Perl, PHP or awk one-liner whose code names the
-    gate directory and performs a write."""
-    words = _command_words(shell_words(segment))
-    if not words:
-        return False
-    verb = normalize_shell_word(words[0]).rsplit("/", 1)[-1]
-    if not _INTERPRETER_RE.match(verb):
-        return False
-    code = _interpreter_write_code(verb, words[1:])
-    if code is None:
-        return False
+    if not pattern.search(code):
+        return []
+    targets = [m[1] or m[2] for m in _INTERPRETER_LITERAL_RE.finditer(code)]
+    # Also detect literal default paths split across adjacent quoted fragments.
     with_quotes = re.sub(r"\s+", "", code)
     bare = re.sub(r"[\"']+", "", with_quotes)
-    return bool(_GATE_PAYLOAD_RE.search(with_quotes) or _GATE_PAYLOAD_RE.search(bare))
+    if _GATE_PAYLOAD_RE.search(with_quotes) or _GATE_PAYLOAD_RE.search(bare):
+        targets.append("~/.notari/")
+    return targets
 
 
 def segment_writes_gate_path(segment: str) -> bool:
     """True when one shell segment writes, moves, deletes or links a gate path
     through a path-taking program, a `sed -i`, a nested shell, or an
     interpreter one-liner."""
-    return any(is_gate_path_word(w) for w in write_target_words(segment)) or (
-        _segment_interpreter_writes_gate(segment)
-    )
+    return any(is_gate_path_word(w) for w in write_target_words(segment))
 
 
 _CONTINUATION_RE = re.compile(r"\\\n[ \t]*")
