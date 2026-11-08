@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -92,13 +93,16 @@ def check_notari_version() -> CheckResult:
 
 def check_config(config_path: Path | None = None) -> tuple[CheckResult, NotariConfig | None]:
     p = config_path or default_config_path()
+    setup = "notari init-config"
+    if config_path is not None:
+        setup += f" --config {shlex.quote(str(p))}"
     if not p.exists():
         return (
             CheckResult(
                 "config",
                 WARN,
                 f"no config at {p}",
-                fix="Run `notari init` to write a starter config.",
+                fix=f"Run `{setup}` to write a starter config.",
             ),
             None,
         )
@@ -110,7 +114,7 @@ def check_config(config_path: Path | None = None) -> tuple[CheckResult, NotariCo
                 "config",
                 FAIL,
                 f"{p}: {e}",
-                fix="Fix the TOML errors above. Run `notari init --force` to reset.",
+                fix=f"Fix the TOML errors above, or run `{setup} --force` to replace the config.",
             ),
             None,
         )
@@ -163,7 +167,7 @@ def check_hmac_key() -> CheckResult:
             "hmac key",
             WARN,
             f"no key yet at {p}",
-            fix="Will be auto-generated on first notari start / claude-hook invocation.",
+            fix="Notari creates this key when it first needs to sign a local audit entry.",
         )
     mode = stat.S_IMODE(p.stat().st_mode)
     if mode & 0o077:

@@ -380,6 +380,18 @@ _INLINE_CRED_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ),
 )
 
+_PATTERN_LABELS: Final = {pattern.name: pattern.name for pattern in _PATTERNS} | {
+    label: label for label, _ in _INLINE_CRED_PATTERNS
+}
+
+
+def credential_pattern_label(name: object) -> str:
+    """Return a scanner-owned label for untrusted report metadata."""
+    if isinstance(name, str):
+        return _PATTERN_LABELS.get(name, "credential")
+    return "credential"
+
+
 # Inline shapes whose match depends on a loosely-structured VALUE (an assignment
 # right-hand side or a CLI flag argument) rather than a vendor-anchored prefix.
 # These are the false-positive-prone ones: redact() still applies them

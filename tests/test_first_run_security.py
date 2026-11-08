@@ -1,5 +1,7 @@
 """First-run output must not expose keys or overstate approval evidence."""
 
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -86,3 +88,24 @@ def test_doctor_honors_existing_truncation_seal(tmp_path: Path, retained: int) -
     seal_head(path, key)
     path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:retained]))
     assert doctor.check_audit_chain_intact(path).status == doctor.FAIL
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_doctor_config_hint_creates_or_repairs_the_requested_file(
+    tmp_path: Path, invalid: bool
+) -> None:
+    from notari.doctor import PASS, check_config
+
+    config_path = tmp_path / "local hooks.toml"
+    if invalid:
+        config_path.write_text("[invalid")
+    check, config = check_config(config_path)
+    assert config is None
+    command = re.search(r"`([^`]+)`", check.fix)
+    assert command is not None
+    args = shlex.split(command[1])
+    assert args[:2] == ["notari", "init-config"]
+    result = CliRunner().invoke(app, args[1:])
+    assert result.exit_code == 0, result.output
+    assert "notari doctor" in result.output
+    assert check_config(config_path)[0].status == PASS

@@ -233,7 +233,7 @@ def load_config(path: Path | None = None) -> NotariConfig:
 
 
 def render_starter_config() -> str:
-    """Return a starter TOML for `notari init`."""
+    """Return a starter TOML for `notari init-config`."""
     return """\
 # notari config - see https://github.com/manumarri-sudo/notari
 
@@ -250,12 +250,6 @@ scope = []
 # Defaults to $NOTARI_HOME/audit.log.jsonl (or ~/.notari/audit.log.jsonl).
 # Override per-project by setting `path` here or with NOTARI_LOG.
 # path = "~/.notari/audit.log.jsonl"
-
-# One [[upstream]] block per MCP server you want notari to proxy.
-# Tool calls advertised by these upstreams are protected by the gate.
-# [[upstream]]
-# name = "filesystem"
-# command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/safe"]
 
 # Per-tool risk overrides. Defaults handle the obvious dangerous actions
 # (rm, delete, drop table, force-push, deploy:production, stripe.*) as

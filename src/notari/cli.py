@@ -2593,8 +2593,7 @@ def init_config(
     p.write_text(render_starter_config())
     p.chmod(0o600)
     console.print(f"[green]wrote[/green] {p}")
-    console.print("edit it to declare your session intent, scope, and upstreams.")
-    console.print("then: [bold]notari start[/bold]")
+    console.print("Edit the settings for your local hooks, then run [bold]notari doctor[/bold].")
 
 
 # --------------------------------------------------------------------------
