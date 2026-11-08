@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
           path: _pr_checkout
           persist-credentials: false
-      - uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # release action, SHA-pinned
+      - uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # release action, SHA-pinned
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}
@@ -335,7 +335,7 @@ jobs:
           persist-credentials: false
       # Pin to the release commit SHA, not a mutable tag, `notari status`
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
-      - uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # 0.4.2 release action
+      - uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # 0.5.0 release action
         with:
           mode: "boundary"
           head: ${{ github.event.pull_request.head.sha }}

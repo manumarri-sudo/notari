@@ -57,7 +57,7 @@ jobs:
           persist-credentials: false
 
       - name: Notari scan
-        uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # release action, SHA-pinned; bump on release
+        uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # release action, SHA-pinned; bump on release
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}

@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Notari Change Control
-        uses: manumarri-sudo/notari@a084829cabacbbc7e85a5b8323580f514ad54771  # 0.4.2 release action, SHA-pinned; bump on release
+        uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # 0.5.0 release action, SHA-pinned; bump on release
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
