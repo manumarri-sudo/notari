@@ -58,7 +58,7 @@ The [signed quickstart](docs/QUICKSTART.md#install) walks through this setup.
 
 The optional Claude Code and Cursor hooks inspect supported tool requests
 before execution. They can ask for approval or block a request and record the
-decision. Use `notari doctor` to check your setup, `notari audit` to inspect
+decision. Use `notari doctor` to check your setup, `notari audit show` to inspect
 recorded decisions, and `notari audit verify` to check the local audit chain.
 The CLI sends no telemetry by default.
 

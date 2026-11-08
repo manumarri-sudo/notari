@@ -1384,7 +1384,7 @@ def _posture_badge(posture: Posture) -> str:
     from notari.readiness import Posture
 
     return {
-        Posture.ENFORCED: "[green]🟢 enforced boundary[/green]",
+        Posture.ENFORCED: "[green]🟢 configured for strict CI[/green]",
         Posture.COOPERATIVE: "[yellow]🟡 cooperative (trust root still on this machine)[/yellow]",
         Posture.UNCONFIGURED: "[red]🔴 unconfigured[/red]",
     }[posture]
@@ -1392,7 +1392,7 @@ def _posture_badge(posture: Posture) -> str:
 
 @app.command("status", rich_help_panel="Core")
 def status_cmd() -> None:
-    """One glance: is the gate a real boundary, or still cooperative? Says what's missing."""
+    """Check local configuration for strict CI and show what's missing."""
     from notari import contract as contract_mod
     from notari import readiness
 
@@ -1411,7 +1411,8 @@ def status_cmd() -> None:
         raise typer.Exit(code=1)
     if report.posture.value == "enforced":
         out.print(
-            "\n[green]This is an enforced boundary: the agent can't forge, skip, or erase it.[/green]"
+            "\n[green]Local configuration passed.[/green] "
+            "Verify that GitHub requires notari/change-control before merging."
         )
 
 
