@@ -74,7 +74,14 @@ from notari import secrets as _secrets
 from notari.audit import AuditLog
 from notari.config import default_audit_path, load_config
 from notari.errors import ConfigError
-from notari.policy import Risk, _mask_quoted, classify, classify_command, shell_output_targets
+from notari.policy import (
+    Risk,
+    _mask_quoted,
+    classify,
+    classify_command,
+    shell_output_targets,
+    shell_segments,
+)
 
 # Map Claude Code's built-in tool names to a default risk *when args do not
 # carry enough info to classify by content*. Bash uses classify_command on
@@ -366,7 +373,6 @@ _GATE_STATE_DIRS: Final[tuple[str, ...]] = (".notari",)
 
 
 _WRITE_VERB = re.compile(r"\b(?:tee|sed|cp|mv|dd|install|rm|ln|truncate|python\d*)\b")
-_COMMAND_SEPARATOR = re.compile(r"[;&|\n]")
 
 
 def _writes_to_gate_state(cmd: str) -> bool:
@@ -384,19 +390,18 @@ def _writes_to_gate_state(cmd: str) -> bool:
         home = str(Path.home())
         return _is_gate_config_path(token.replace("$HOME", home).replace("${HOME}", home))
 
-    masked = _mask_quoted(cmd)
-    for target in shell_output_targets(cmd, masked):
+    for target in shell_output_targets(cmd):
         with contextlib.suppress(ValueError):
             if any(protected(token) for token in shlex.split(target)):
                 return True
-
-    start = 0
-    for separator in _COMMAND_SEPARATOR.finditer(masked + "\n"):
-        end = separator.start()
-        if _WRITE_VERB.search(masked, start, end):
-            if any(protected(token) for token in re.split(r"[\s()<>\"']+", cmd[start:end])):
+    for segment in shell_segments(cmd, _mask_quoted(cmd)):
+        if not _WRITE_VERB.search(segment):
+            continue
+        with contextlib.suppress(ValueError):
+            if any(protected(token) for token in shlex.split(segment)):
                 return True
-        start = end + 1
+        if any(protected(token) for token in re.split(r"[\s()<>\"']+", segment)):
+            return True
     return False
 
 
@@ -1499,7 +1504,7 @@ def main() -> int:
     # escape hatch even with a broken classifier.
     from notari import pause as _pause
 
-    _emit_resume_if_expired(log_path)
+    _emit_resume_if_expired(default_audit_path())
     if _pause.is_paused()[0]:
         state = _pause.record_allowed_while_paused(log_path)
         if state is not None:

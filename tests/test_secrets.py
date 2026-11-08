@@ -496,6 +496,7 @@ def test_attached_pflag_needs_a_tool_that_takes_one() -> None:
     assert not [h for h in scan(ffmpeg) if h.pattern_name == "mysql-pflag"]
     assert any(h.pattern_name == "mysql-pflag" for h in scan("mysql -u root -phunter2Secret9 app"))
     assert any(h.pattern_name == "mysql-pflag" for h in scan("7z x -pSup3rSecret9 archive.7z"))
+    assert any(h.pattern_name == "mysql-pflag" for h in scan("mysql \\\n -phunter2Secret9"))
     # Redaction keeps erring toward removal; only the verdict scanner narrows.
     assert "hunter2Secret9" not in redact("mysql -u root -phunter2Secret9")
 
@@ -508,3 +509,4 @@ def test_plural_credential_names_are_counts_not_credentials() -> None:
     )
     assert not [h for h in scan(code) if h.pattern_name == "env-secret"]
     assert any(h.pattern_name == "env-secret" for h in scan('API_TOKEN = "abcdefghijklmnop1234"'))
+    assert any(h.pattern_name == "env-secret" for h in scan('API_TOKENS = "abcdefghijklmnop1234"'))

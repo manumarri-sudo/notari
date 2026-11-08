@@ -272,3 +272,17 @@ def test_expired_pause_recap_is_emitted_once(monkeypatch, tmp_path: Path) -> Non
     assert resumed[0]["payload"]["allowed_while_paused"] == 1
     assert resumed[0]["payload"]["allowed_by_log"] == {str(log_path): 1}
     assert pause_mod.load_state().paused is False
+
+
+def test_failed_expiry_update_writes_no_recap(monkeypatch, tmp_path: Path) -> None:
+    from notari.adapters.claude_code import _emit_resume_if_expired
+
+    _isolate(monkeypatch, tmp_path)
+    state = pause_mod.pause(reason="x")
+    state.expires_at = (_now() - timedelta(minutes=1)).isoformat()
+    pause_mod.save_state(state)
+    monkeypatch.setattr(pause_mod, "save_state", lambda _: False)
+    log = tmp_path / "audit.jsonl"
+    _emit_resume_if_expired(log)
+    assert not log.exists()
+    assert pause_mod.load_state().paused

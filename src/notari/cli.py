@@ -2462,7 +2462,11 @@ def off_cmd(
     # close the old bracket on the record first; otherwise the log shows two
     # gate.paused with one gate.resumed and the first window's calls vanish
     # from every recap (2026-07-12).
-    state, superseded = _pause.replace_pause(duration_hours=hours, reason=reason)
+    try:
+        state, superseded = _pause.replace_pause(duration_hours=hours, reason=reason)
+    except OSError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(1) from exc
     if superseded is not None:
         _emit_gate_event(
             "gate.resumed",
@@ -2503,7 +2507,11 @@ def on_cmd() -> None:
     from notari import pause as _pause
 
     console = Console()
-    state = _pause.resume_if_paused()
+    try:
+        state = _pause.resume_if_paused()
+    except OSError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(1) from exc
     if state is None:
         console.print("[dim]gate was already on. nothing to resume.[/dim]")
         return

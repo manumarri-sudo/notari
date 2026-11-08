@@ -137,6 +137,7 @@ def test_read_only_mention_after_redirect_is_not_critical(cmd: str) -> None:
         'printf x > "`echo ~/`.notari/pause.json"',
         'printf x > "`echo ~`/.claude/settings.json$(true)"',
         'printf x > "/home/a path/.notari/pause.json"',
+        "bash -c 'printf x > ~/.notari/pause.json'",
     ],
 )
 def test_redirect_or_verb_aimed_at_gate_state_stays_critical(cmd: str) -> None:

@@ -873,8 +873,7 @@ _USER_BASH_ALLOWLIST: tuple[re.Pattern[str], ...] | None = None
 
 _QUOTE_RE = re.compile(
     r"""
-    (?P<escaped>\\[\s\S])            # an escaped quote cannot open a region
-    | (?P<sq>'(?:\\.|[^'\\])*')        # single-quoted: literal except \'
+    (?P<sq>'(?:\\.|[^'\\])*')          # single-quoted: literal except \'
     | (?P<dq>"(?:\\.|[^"\\])*")        # double-quoted: backslash escapes
     | (?P<ansic>\$'(?:\\.|[^'\\])*')   # $'...'
     """,
@@ -907,7 +906,7 @@ def _mask_quoted(cmd: str) -> str:
 
     def _blank(m: re.Match[str]) -> str:
         s = m.group(0)
-        if m.lastgroup == "escaped" or len(s) <= 2:
+        if len(s) <= 2:
             return s
         inner = s[1:-1]
         if m.lastgroup == "dq":
@@ -935,11 +934,21 @@ _OUTPUT_WORD_RE = re.compile(
 _GATE_OUTPUT_PATH_RE = re.compile(
     r"\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|\.notari/[^\s\"';|&]+"
 )
+_SHELL_SEPARATOR_RE = re.compile(r"[;&|\n]")
 
 
-def shell_output_targets(command: str, masked: str) -> Iterator[str]:
-    """Yield output filenames, excluding fd duplication and quoted operators."""
-    for redirect in _OUTPUT_REDIRECT_RE.finditer(masked):
+def shell_segments(command: str, masked: str) -> Iterator[str]:
+    """Split shell segments at separators that survived quote masking."""
+    start = 0
+    for separator in _SHELL_SEPARATOR_RE.finditer(masked + "\n"):
+        end = separator.start()
+        yield command[start:end]
+        start = end + 1
+
+
+def shell_output_targets(command: str) -> Iterator[str]:
+    """Yield candidate output words, including writes in quoted scripts."""
+    for redirect in _OUTPUT_REDIRECT_RE.finditer(command):
         target = _OUTPUT_WORD_RE.match(command, redirect.end())
         if target:
             yield target[0].replace("\\\n", "")
@@ -1264,7 +1273,7 @@ def classify_command(command: str) -> CommandClassification:
     # before the user allowlist. This is the kill-test P0.1 fix: a user
     # allowlist must never be able to downgrade the never-downgradable class.
     masked = _mask_quoted(cmd)
-    if any(_GATE_OUTPUT_PATH_RE.search(target) for target in shell_output_targets(cmd, masked)):
+    if any(_GATE_OUTPUT_PATH_RE.search(target) for target in shell_output_targets(cmd)):
         return CommandClassification(
             Risk.CRITICAL,
             "write targeting the gate's own config/state (shell redirect)",

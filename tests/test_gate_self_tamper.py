@@ -91,6 +91,8 @@ def test_relocated_notari_home_is_protected_from_a_bash_redirect(tmp_path: Path)
         'printf x 3<> "{path}" >&3',
         'printf x >\\\n "{path}"',
         'printf x \\" > "{path}" "suffix"',
+        """bash -c 'printf x > "{path}"'""",
+        """'cp' /tmp/fixture "{path}" """,
     ],
 )
 def test_output_forms_protect_relocated_gate_state(tmp_path: Path, command: str) -> None:

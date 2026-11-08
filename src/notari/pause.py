@@ -36,6 +36,7 @@ import contextlib
 import json
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -62,29 +63,26 @@ def _state_path() -> Path:
 
 @contextlib.contextmanager
 def _state_lock() -> Iterator[None]:
-    """Serialize every read-modify-write of the state file across hook processes.
-
-    The lock prevents lost increments and duplicate expiry recaps. If the
-    lock file cannot be opened, the caller proceeds unlocked as before.
-    """
+    """Serialize updates without hanging a hook if the lock is unavailable."""
+    if not _HAS_FLOCK:
+        yield
+        return
     p = _state_path()
-    fd: int | None = None
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(f"{p}.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(f"{p}.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        if _HAS_FLOCK:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-    except OSError:
-        pass
-    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("could not acquire the Notari pause lock") from exc
+                time.sleep(0.01)
         yield
     finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                if _HAS_FLOCK:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(fd)
+        os.close(fd)
 
 
 def _now() -> datetime:
@@ -166,7 +164,7 @@ def _int_map(raw: Any) -> dict[str, int]:
         return {}
     out: dict[str, int] = {}
     for k, v in raw.items():
-        with contextlib.suppress(TypeError, ValueError):
+        with contextlib.suppress(TypeError, ValueError, OverflowError):
             out[str(k)] = int(v)
     return out
 
@@ -187,11 +185,11 @@ def load_state() -> PauseState:
         if not isinstance(raw, dict):
             return PauseState()
         return PauseState.from_json(raw)
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, OverflowError):
         return PauseState()
 
 
-def save_state(state: PauseState) -> None:
+def save_state(state: PauseState) -> bool:
     """Persist state. Best effort; errors swallowed (runs on the gate path)."""
     p = _state_path()
     temp = None
@@ -202,10 +200,12 @@ def save_state(state: PauseState) -> None:
             os.fchmod(stream.fileno(), 0o600)
             json.dump(state.to_json(), stream, indent=2, sort_keys=True)
         os.replace(temp, p)
+        return True
     except OSError:
         if temp is not None:
             with contextlib.suppress(OSError):
                 temp.unlink()
+        return False
 
 
 def is_paused(
@@ -254,7 +254,8 @@ def replace_pause(*, duration_hours: float, reason: str) -> tuple[PauseState, Pa
     )
     with _state_lock():
         previous = load_state()
-        save_state(state)
+        if not save_state(state):
+            raise OSError("could not save the new Notari pause")
     return state, previous if previous.paused else None
 
 
@@ -263,7 +264,8 @@ def resume() -> PauseState:
     with _state_lock():
         state = load_state()
         state.paused = False
-        save_state(state)
+        if not save_state(state):
+            raise OSError("could not clear the Notari pause")
     return state
 
 
@@ -278,7 +280,8 @@ def resume_if_paused(*, expired_only: bool = False) -> PauseState | None:
         if not state.paused or (expired_only and is_paused(state)[0]):
             return None
         state.paused = False
-        save_state(state)
+        if not save_state(state):
+            raise OSError("could not clear the Notari pause")
     return state
 
 
@@ -299,7 +302,6 @@ def record_allowed_while_paused(
             if log_path is not None:
                 key = str(log_path)
                 state.allowed_by_log[key] = state.allowed_by_log.get(key, 0) + 1
-            save_state(state)
-            return state
+            return state if save_state(state) else None
     except Exception:
         return None
