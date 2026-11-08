@@ -1927,7 +1927,9 @@ def classify_sensitive_surface(path: str) -> str | None:
     return None
 
 
-def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluation:
+def evaluate_diff(
+    diff_text: str, allowed_paths: Sequence[str], *, scan_metadata: bool = False
+) -> DiffEvaluation:
     """Deterministically evaluate a unified diff against a contract scope.
 
     Returns the raw evidence - out-of-scope paths, secret hits on added lines,
@@ -1982,8 +1984,9 @@ def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluatio
             if sp and not path_in_scope(sp, allowed) and sp not in out_of_scope:
                 out_of_scope.append(sp)
 
-        # (sensitive-surface classification is done above over all_files)
-
+    # A scan has no trusted boundary metadata. Its secrets check covers this
+    # directory as well as the rest of the candidate.
+    for f in all_files if scan_metadata else files:
         for lineno, text in f.added_lines:
             for hit in _secrets.scan(text):
                 secret_findings.append(

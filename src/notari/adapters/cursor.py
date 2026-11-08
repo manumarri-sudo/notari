@@ -237,31 +237,9 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                     try_instead="",
                 )
 
-    # One-shot approval check (same flow as Claude Code).
-    approval_token_used = ""
-    if decision.permission != "allow":
-        with contextlib.suppress(Exception):
-            from notari.approvals import ApprovalStore
-
-            store = ApprovalStore.load()
-            consumed = store.consume(tool_name, dict(tool_input))
-            if consumed is not None:
-                approval_token_used = consumed.token
-                decision = HookDecision(
-                    permission="allow",
-                    reason=f"approved one-shot via notari approve {consumed.token[:8]}",
-                    risk=decision.risk,
-                    audit_event_type="verdict.allowed",
-                    what=decision.what,
-                    why=f"user-approved (token {consumed.token[:8]})",
-                    try_instead="",
-                )
-
-    # Trifecta enforcement: an otherwise-allow call that would close the
-    # lethal trifecta (untrusted input + private data + exfil vector)
-    # gets escalated to DENY. Skip if the user already approved this
-    # exact call out-of-band. Mirrors `claude_code.py` lines 511-537.
-    if decision.permission == "allow" and not approval_token_used and session_id:
+    # Escalate before consuming approvals so an initially allowed read can be
+    # released by the same exact-call approval flow as any other refusal.
+    if decision.permission == "allow" and session_id:
         with contextlib.suppress(Exception):
             from notari.adapters.claude_code import _taint_state_for
             from notari.taint import would_close_trifecta
@@ -279,6 +257,26 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
                     audit_event_type="verdict.blocked",
                     what=decision.what,
                     why=why,
+                    try_instead="",
+                )
+
+    # One-shot approval check (same flow as Claude Code).
+    approval_token_used = ""
+    if decision.permission != "allow":
+        with contextlib.suppress(Exception):
+            from notari.approvals import ApprovalStore
+
+            store = ApprovalStore.load()
+            consumed = store.consume(tool_name, dict(tool_input))
+            if consumed is not None:
+                approval_token_used = consumed.token
+                decision = HookDecision(
+                    permission="allow",
+                    reason=f"approved one-shot via notari approve {consumed.token[:8]}",
+                    risk=decision.risk,
+                    audit_event_type="verdict.allowed",
+                    what=decision.what,
+                    why=f"user-approved (token {consumed.token[:8]})",
                     try_instead="",
                 )
 
@@ -383,7 +381,9 @@ def run_hook(stdin_text: str, audit: AuditLog | None = None) -> dict[str, Any]:
 
                 taint_state = _taint_state_for(session_id)
                 _, flipped = update_for_call(taint_state, tool_name, tool_input)
-                if flipped:
+                # A refusal must not mark the exposure as completed, otherwise an
+                # exact retry skips the already-closed trifecta check.
+                if flipped and decision.permission != "deny":
                     _save_taint_state(session_id, taint_state)
                     audit.emit(
                         event_type=ev.SESSION_TAINT_UPDATE,

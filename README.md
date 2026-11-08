@@ -23,7 +23,26 @@
 > [the security model](https://github.com/manumarri-sudo/notari/blob/main/docs/SECURITY-MODEL.md)
 > as the source of truth over any one-line claim.
 
-## Start here: one workflow file, no keys
+## Try it locally
+
+If you have [uv](https://docs.astral.sh/uv/getting-started/installation/), run this
+from a Git branch with a committed change. Replace `main` with the branch your
+change targets.
+
+```bash
+uvx notari scan --base main --no-passport
+```
+
+The scan compares commits, so staged and unstaged changes are outside its scope.
+PASS means the configured checks found nothing to flag. NEEDS_REVIEW names a
+change worth inspecting. BLOCK exits with code 1. Drop `--no-passport` to save
+the evidence under `.notari/` in your checkout.
+
+## Add it to a GitHub repo
+
+> The 0.5.0 Action pin below posts to the legacy `notari/change-control` status
+> context. Use the CLI to try the scan today. Before making `notari/scan` a
+> required check, use a corrected release and confirm that context on a test PR.
 
 ```yaml
 # .github/workflows/notari-scan.yml
@@ -50,25 +69,16 @@ jobs:
           checkout-path: _pr_checkout
 ```
 
-That is the whole install. The next pull request gets a `notari/scan` status
-check, a job summary with the evidence, and a failed job on BLOCK; make the check
-required in branch protection and a BLOCK cannot merge. The full template with
-the reasoning behind each line is [`docs/scan-workflow.yml`](docs/scan-workflow.yml).
-
-Want it locally, before the PR? `uvx notari scan --base main` runs the same
-check on your branch and exits 1 on BLOCK. Nothing to install first; from a
-clean machine the CLI resolves and runs in about a second and a half.
+On a corrected Action release, the next pull request gets a `notari/scan` status
+and a summary of what was flagged. Once you have confirmed the status on a test
+PR, make it required in branch protection so a BLOCK prevents merging. See
+[`docs/scan-workflow.yml`](docs/scan-workflow.yml) for the full template.
 
 ## Then, if you want a signed boundary
 
-The scan tells you what an agent touched. The boundary lets a human say, in
-advance and under a signature the agent cannot forge, what it *may* touch:
-
-```bash
-uvx notari init                                            # keys, signed perimeter, hardened workflow
-notari begin "add rate limiting" --scope "src/api/**"    # sign what the agent may touch
-notari verify --strict                                    # in CI: PASS, NEEDS_REVIEW, or BLOCK
-```
+The scan tells you what an agent touched. A signed boundary lets you approve in
+advance which paths it may touch. Follow the [signed quickstart](docs/QUICKSTART.md#install)
+to commit the setup files, sign a scoped task, and verify a test change.
 
 `notari init` generates an approver keypair and a gate keypair, signs a
 secure-by-default perimeter, writes the hardened workflow with `mode: boundary`,

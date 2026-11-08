@@ -9,10 +9,10 @@ is at the worst-case prompt-injection risk: the attacker can read your secrets
 AND make you act on them AND send the result somewhere. Two of the three is
 recoverable; all three is the lethal trifecta.
 
-This module is observation-only (1-week scope). It tracks the three flags
-on a session and emits `session.taint.update` audit events whenever a flag
-flips. Enforcement (escalate to type-to-confirm when the third flag would
-close) is the 1-month scope.
+This module tracks the three flags for a session. The local adapters use its
+pure preview check to require approval before a call closes the combination,
+and persist exposure state only for calls that were not denied. This heuristic
+does not observe network bytes or provide operating-system isolation.
 
 Heuristic: the classification of a tool call is mechanical, not LLM-driven.
 Falsy tool names get classified as nothing.

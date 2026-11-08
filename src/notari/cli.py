@@ -365,7 +365,7 @@ def scan_cmd(
     """Scan a pull request for secrets, gate tamper, and sensitive surfaces. No
     contract, no keys.
 
-    The drop-in check: the diff from merge-base(base, head) to head is scanned
+    The drop-in check scans committed changes from merge-base(base, head) to head
     for secrets on added lines (vendor formats BLOCK, loose shapes review), edits
     to the gate's own surfaces (workflows, action manifests, approver keys: BLOCK),
     and sensitive surfaces (CI, lockfiles, git config: review), with renames,
@@ -379,16 +379,21 @@ def scan_cmd(
 
     try:
         root = repo_root()
+        if not as_json and head == "HEAD" and scan_mod.has_uncommitted_changes(root):
+            console.print(
+                "[yellow]Uncommitted changes are not scanned.[/yellow] "
+                "Commit the changes you want checked, then rerun."
+            )
         with AuditLog(path=default_audit_path(), hmac_key=_hmac_key()) as audit:
             result = scan_mod.scan(root=root, base=base, head=head, audit=audit)
+        if write_passport:
+            out_dir = passport_dir or (root / ".notari")
+            json_path, md_path = passport_mod.write_passport(result, out_dir=out_dir)
+            if not as_json:
+                console.print(f"[dim]passport: {md_path} · {json_path}[/dim]")
     except NotariError as e:
         console.print(f"[red]scan failed:[/red] {e}")
         raise typer.Exit(code=2) from e
-
-    if write_passport:
-        out_dir = passport_dir or (root / ".notari")
-        json_path, md_path = passport_mod.write_passport(result, out_dir=out_dir)
-        console.print(f"[dim]passport: {md_path} · {json_path}[/dim]")
 
     out = Console()
     if as_json:
@@ -497,9 +502,13 @@ def verify_cmd(
 
     if write_passport:
         out_dir = passport_dir or (root / ".notari")
-        json_path, md_path = passport_mod.write_passport(
-            result, out_dir=out_dir, sign_key_pem=gate_pem
-        )
+        try:
+            json_path, md_path = passport_mod.write_passport(
+                result, out_dir=out_dir, sign_key_pem=gate_pem
+            )
+        except NotariError as e:
+            console.print(f"[red]verify failed:[/red] {e}")
+            raise typer.Exit(code=2) from e
         signed = " [dim](signed)[/dim]" if gate_pem else ""
         console.print(f"[dim]passport: {md_path} · {json_path}[/dim]{signed}")
 
@@ -534,7 +543,9 @@ def verify_cmd(
 
             _html_dir = passport_dir or (root / ".notari")
             _html_path = _html_dir / "explain.html"
-            _html_path.write_text(render_html(passport_mod.build_passport(result)))
+            passport_mod.write_report_file(
+                _html_path, render_html(passport_mod.build_passport(result))
+            )
             webbrowser.open(_html_path.resolve().as_uri())
             console.print(f"[dim]fix-it page: {_html_path} (opened in browser)[/dim]")
     except Exception:
@@ -1170,7 +1181,7 @@ jobs:
           head: ${{{{ github.event.pull_request.head.sha }}}}
           head-sha: ${{{{ github.event.pull_request.head.sha }}}}
           checkout-path: _pr_checkout
-          passport-dir: _pr_checkout/.notari
+          passport-dir: .notari
           gate-key: ${{{{ secrets.NOTARI_GATE_KEY }}}}
           gate-pubkeys: ${{{{ vars.NOTARI_GATE_PUBKEYS }}}}
           approver-pubkeys: ${{{{ secrets.NOTARI_APPROVER_PUBKEYS }}}}
@@ -1220,13 +1231,28 @@ def init_cmd(
 
     # Private keys must never be committed. gitignore the keys dir up front.
     gitignore = root / ".gitignore"
-    ignore_line = ".notari/keys/"
+    ignore_line = "/.notari/keys/"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    if ignore_line not in existing:
+    active_lines = [
+        line.strip()
+        for line in existing.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    # Append after any prior negation; a comment mentioning the path is not a rule.
+    if not active_lines or active_lines[-1] != ignore_line:
         gitignore.write_text(
             existing
             + ("" if existing.endswith("\n") or not existing else "\n")
             + f"{ignore_line}\n"
+        )
+
+    # A deeper .notari/.gitignore can override the root rule. Protect leaf keys
+    # at their own directory as well, appending after any existing negations.
+    keys_ignore = keys_dir / ".gitignore"
+    key_rules = keys_ignore.read_text() if keys_ignore.exists() else ""
+    if not key_rules.rstrip().endswith("\n*") and key_rules.strip() != "*":
+        keys_ignore.write_text(
+            key_rules + ("" if not key_rules or key_rules.endswith("\n") else "\n") + "*\n"
         )
 
     approver_priv, approver_pub = attest.generate_keypair()
@@ -2902,10 +2928,16 @@ def audit_export(
         raise typer.Exit(code=1)
 
     # Verify the chain so the export reports tamper-evidence status honestly.
-    chain_failures: list[int] = []
+    chain_failures: list[int] | None = None
     chain_total = 0
     try:
-        chain_total, chain_failures = verify_chain(p, _hmac_key())
+        head = read_head(p)
+        chain_total, chain_failures = verify_chain(
+            p,
+            _hmac_key(),
+            expected_count=head.get("count") if head else None,
+            expected_last_mac=head.get("mac") if head else None,
+        )
     except Exception:
         pass
 
@@ -4369,20 +4401,29 @@ def approve_token(
         # denied before reaching this CLI, so only a human at a real terminal
         # gets here. This is what makes approval work on the common ad-hoc-signed
         # install where Touch ID can never draw a sheet.
-        if not confirmed and _human_tty_challenge(console, f"approve {ap.tool_name}"):
+        if (
+            not confirmed
+            and not require_biometric
+            and _human_tty_challenge(console, f"approve {ap.tool_name}")
+        ):
             confirmed = True
-            biometric_event = ev.APPROVE_BIOMETRIC_OK
+            biometric_event = ev.APPROVE_BIOMETRIC_SKIPPED
             biometric_reason = "tty_challenge"
 
         # Tier 3: no biometric dialog AND no human at a controlling tty -> REFUSE.
         if not confirmed:
             store.revoke(token)
-            console.print(
-                "[red]No Touch ID dialog and no interactive terminal - approval "
-                "REFUSED.[/red]\n"
-                "  Approve from a Terminal in your own login session, or pass\n"
-                "  --no-biometric to opt into typed-token-only approval.",
-            )
+            if require_biometric:
+                console.print(
+                    "[red]Touch ID confirmation is required but unavailable; approval REFUSED.[/red]"
+                )
+            else:
+                console.print(
+                    "[red]No Touch ID dialog and no interactive terminal - approval "
+                    "REFUSED.[/red]\n"
+                    "  Approve from a Terminal in your own login session, or pass\n"
+                    "  --no-biometric to opt into typed-token-only approval.",
+                )
             _emit_approve_audit(ev.APPROVE_BIOMETRIC_DENY, token, ap.tool_name, "not_available")
             raise typer.Exit(code=2)
     else:

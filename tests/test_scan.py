@@ -9,6 +9,8 @@ scan never reads `.notari/contract.json`.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -82,6 +84,24 @@ class TestVerdicts:
         result = scan_mod.scan(root=pr, base="main", env={})
         assert result.verdict is Verdict.BLOCK
         assert result.secret_findings
+
+    def test_candidate_cannot_waive_its_secret(self, pr: Path) -> None:
+        _commit(pr, "src/app.py", f'KEY = "{_VENDOR}"\n')
+        _commit(pr, ".notari/exceptions.json", '[{"type":"secret"}]')
+        result = scan_mod.scan(root=pr, base="main", env={})
+        assert result.verdict is Verdict.BLOCK
+        assert result.secret_findings and not result.exceptions_applied
+
+    def test_secret_in_metadata_is_still_scanned(self, pr: Path) -> None:
+        _commit(pr, ".notari/fixture.txt", f'KEY = "{_VENDOR}"\n')
+        result = scan_mod.scan(root=pr, base="main", env={})
+        assert result.verdict is Verdict.BLOCK
+        assert any(f.path == ".notari/fixture.txt" for f in result.secret_findings)
+
+    def test_incomplete_scan_blocks(self, pr: Path) -> None:
+        result = scan_mod.scan(root=pr, base="main", env={"NOTARI_MAX_DIFF_BYTES": "100"})
+        assert result.verdict is Verdict.BLOCK
+        assert result.scan_dispositions
 
     def test_loose_secret_shape_reviews(self, pr: Path) -> None:
         _commit(pr, "src/app.py", f'DB_PASSWORD = "{_OPAQUE}"\n')
@@ -190,6 +210,51 @@ class TestBaseResolution:
 
 
 class TestCli:
+    def test_committed_workflow_remediation_clears_the_block(self, pr: Path) -> None:
+        rel = ".github/workflows/new.yml"
+        _commit(pr, rel, "name: extra workflow\n")
+        blocked = scan_mod.scan(root=pr, base="main", env={})
+        assert blocked.verdict is Verdict.BLOCK
+        fixes = passport_mod.build_passport(blocked)["remediation"]
+        suggestion = next(item["self_fix"] for item in fixes if item["where"] == rel)
+        command = suggestion.split("`")[1]
+        _git(pr, *shlex.split(command)[1:])
+        _git(pr, "commit", "-qm", "restore the workflow from the checked base")
+        assert scan_mod.scan(root=pr, base="main", env={}).verdict is Verdict.PASS
+
+    @pytest.mark.parametrize("stage", [False, True])
+    def test_warns_uncommitted_workflow_is_outside_scan(self, pr: Path, monkeypatch, stage) -> None:
+        monkeypatch.chdir(pr)
+        change = ".github/workflows/new.yml"
+        (pr / change).write_text("name: workflow\n")
+        if stage:
+            _git(pr, "add", change)
+        result = CliRunner().invoke(app, ["scan", "--base", "main", "--no-passport"])
+        assert result.exit_code == 0
+        assert "Uncommitted changes are not scanned" in result.output
+
+    @pytest.mark.skipif(os.name == "nt", reason="uses POSIX symlinks")
+    @pytest.mark.parametrize("directory_link", [False, True])
+    def test_passport_does_not_write_through_checkout_links(
+        self, pr: Path, monkeypatch, directory_link: bool
+    ) -> None:
+        monkeypatch.chdir(pr)
+        outside = pr.parent / "passport.json"
+        outside.write_text("leave alone\n")
+        output = pr / ".notari"
+        if directory_link:
+            output.symlink_to(pr.parent, target_is_directory=True)
+        else:
+            output.mkdir()
+            (output / outside.name).symlink_to(outside)
+        _git(pr, "add", ".notari")
+        _git(pr, "commit", "-qm", "checkout includes a symlink")
+        result = CliRunner().invoke(app, ["scan", "--base", "main"])
+        assert outside.read_text() == "leave alone\n"
+        assert result.exit_code == (2 if directory_link else 0), result.output
+        if not directory_link:
+            assert not (output / outside.name).is_symlink()
+
     def test_pass_exits_zero_and_writes_passport(self, pr: Path, monkeypatch) -> None:
         monkeypatch.chdir(pr)
         out = pr / "out"

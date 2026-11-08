@@ -735,7 +735,15 @@ def redact(text: str, *, extra_patterns: Iterable[SecretPattern] = ()) -> str:
     spans: list[tuple[int, int, str]] = []
     for pat in (*_PATTERNS, *extra_patterns):
         for m in pat.regex.finditer(text):
-            spans.append((m.start(), m.end(), f"[REDACTED:{pat.name}]"))
+            end = m.end()
+            if pat.name == "Private Key (PEM block)":
+                # Detection needs only the header, but redacting that header alone
+                # leaves a reconstructible key body. A missing footer makes the
+                # remaining input private too, including a truncated PEM preview.
+                footer = m.group().replace("BEGIN", "END", 1)
+                footer_at = text.find(footer, end)
+                end = len(text) if footer_at < 0 else footer_at + len(footer)
+            spans.append((m.start(), end, f"[REDACTED:{pat.name}]"))
     for label, cred_re in _INLINE_CRED_PATTERNS:
         for m in cred_re.finditer(text):
             s, e = m.span("secret")
@@ -743,13 +751,21 @@ def redact(text: str, *, extra_patterns: Iterable[SecretPattern] = ()) -> str:
                 spans.append((s, e, f"[REDACTED:{label}]"))
     if not spans:
         return text
-    # Apply left-to-right but drop spans overlapping an earlier-kept one,
-    # then splice right-to-left so offsets stay valid.
+    # Merge overlapping spans instead of dropping a longer later match: an
+    # assignment can consume the start of a PEM header but not its key body.
+    # Keep the PEM marker when either match identifies a complete key block.
+    # Splice right-to-left so offsets stay valid.
     spans.sort(key=lambda t: (t[0], -t[1]))
     kept: list[tuple[int, int, str]] = []
     last_end = -1
     for s, e, r in spans:
-        if s >= last_end:
+        if s < last_end:
+            previous_start, previous_end, previous_marker = kept[-1]
+            if r == "[REDACTED:Private Key (PEM block)]":
+                previous_marker = r
+            last_end = max(previous_end, e)
+            kept[-1] = (previous_start, last_end, previous_marker)
+        else:
             kept.append((s, e, r))
             last_end = e
     out = text

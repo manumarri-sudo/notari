@@ -88,6 +88,47 @@ _WIRES_NOTARI_RE = re.compile(
 )
 
 
+def _has_pr_target_trigger(text: str) -> bool:
+    """Recognize common top-level YAML event forms, failing closed on others.
+
+    Scope block keys to the event indentation, excluding nested inputs, comments,
+    and run-script strings. Complex aliases/flow mappings require manual review.
+    """
+    lines = text.splitlines()
+    headers = [
+        (i, match.group(1).split("#", 1)[0].strip())
+        for i, line in enumerate(lines)
+        if (match := re.match(r"""^(?:on|'on'|"on"):\s*(.*)$""", line))
+    ]
+    if len(headers) != 1:
+        return False
+    start, value = headers[0]
+    event = r"""(?:pull_request_target|'pull_request_target'|"pull_request_target")"""
+    if value:
+        if re.fullmatch(event, value):
+            return True
+        if not (value.startswith("[") and value.endswith("]")):
+            return False
+        names = [item.strip() for item in value[1:-1].split(",")]
+        valid = r"""(?:[a-z_]+|'[a-z_]+'|"[a-z_]+")"""
+        return all(re.fullmatch(valid, name) for name in names) and any(
+            re.fullmatch(event, name) for name in names
+        )
+    block: list[str] = []
+    for line in lines[start + 1 :]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            break
+        block.append(line)
+    indent = min((len(line) - len(line.lstrip()) for line in block), default=0)
+    return any(
+        re.match(rf"^ {{{indent}}}{event}\s*:", line)
+        or re.fullmatch(rf" {{{indent}}}-\s+{event}\s*(?:#.*)?", line)
+        for line in block
+    )
+
+
 def _workflow_issue(text: str) -> str | None:
     """Return a one-line issue for a SINGLE workflow's text, or None if it is a
     safe Notari gate (pinned to a SHA, uses pull_request_target)."""
@@ -103,10 +144,10 @@ def _workflow_issue(text: str) -> str | None:
     if not re.search(r"uses:\s*[\w.-]+/notari@", text):
         return "Notari referenced but not pinned to org/notari@<40-hex-release-sha>"
     issues: list[str] = []
-    has_prt = re.search(r"pull_request_target:", text)
-    has_pr_only = re.search(r"pull_request:", text) and not has_prt
-    if has_pr_only:
-        issues.append("uses pull_request (not pull_request_target), the PR controls the workflow")
+    if not _has_pr_target_trigger(text):
+        issues.append(
+            "requires a top-level on: pull_request_target trigger for a base-controlled gate"
+        )
     if not re.search(r"uses:\s*[\w.-]+/notari@[0-9a-f]{40}", text):
         issues.append("Notari action is not SHA-pinned (use a 40-hex commit SHA, not a tag)")
     return "workflow has issues: " + "; ".join(issues) if issues else None

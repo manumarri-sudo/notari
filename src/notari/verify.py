@@ -343,9 +343,13 @@ def git_name_status(
     lim = limits or ScanLimits()
     base = base_commit or _EMPTY_TREE
     args = ["git", "diff", "--name-status", "-z", "--find-renames", base, head]
-    text, truncated = _git_capture(
+    raw, truncated = _git_capture_bytes(
         args, root, timeout=lim.git_timeout, max_bytes=lim.max_diff_bytes
     )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VerifyError("the changed-path inventory is not valid UTF-8") from exc
     return policy.parse_name_status(text), truncated
 
 
@@ -662,6 +666,8 @@ def verify(
     # until its provenance is checked (below), and a crafted base_commit like
     # "--output=/path" could be interpreted as a git option. Resolve to a full
     # hex SHA first; reject anything that doesn't look like one.
+    scan_mode = contract.task_source == "scan"
+    fail_closed_on_incomplete = strict or scan_mode
     base = contract.base_commit
     if base is not None:
         base = base.strip()
@@ -688,8 +694,12 @@ def verify(
     # expensive git operations. A forged contract should not force git work
     # (security review round 6, M-1).
     _env = env if env is not None else dict(os.environ)
-    contract_prov = provenance_mod.verify_artifact(
-        contract.to_dict(), root / ".notari" / "contract.sig", root, _env, strict=strict
+    contract_prov = (
+        ProvenanceResult(provenance_mod.ProvenanceStatus.UNSIGNED, None, "scan mode", 0)
+        if scan_mode
+        else provenance_mod.verify_artifact(
+            contract.to_dict(), root / ".notari" / "contract.sig", root, _env, strict=strict
+        )
     )
     if strict and not contract_prov.status.is_trustworthy:
         return _block_result(
@@ -836,7 +846,7 @@ def verify(
     # INVARIANT: the secret scan inside evaluate_diff runs over this --text diff,
     # not the authoritative inventory. Dropping --text would silently regress secret
     # detection on files marked `-diff` in .gitattributes (test_gitattributes_secret).
-    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths)
+    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths, scan_metadata=scan_mode)
 
     # Authoritative changed-path inventory (NUL-delimited, both rename endpoints,
     # binary + mode-only included). This is the source of truth for every path
@@ -886,7 +896,16 @@ def verify(
     symlink_changes: list[dict[str, str]] = []
     try:
         raw_text, raw_truncated = _git_capture(
-            ["git", "diff", "--raw", "--no-abbrev", "-z", base or _EMPTY_TREE, candidate_sha],
+            [
+                "git",
+                "diff",
+                "--raw",
+                "--no-abbrev",
+                "--no-renames",
+                "-z",
+                base or _EMPTY_TREE,
+                candidate_sha,
+            ],
             root,
             timeout=limits.git_timeout,
             max_bytes=limits.max_diff_bytes,
@@ -913,7 +932,7 @@ def verify(
             if len(cols) < 5:
                 continue
             oldmode, newmode, oldsha, newsha, status = cols[:5]
-            if not path or path.startswith(".notari/"):
+            if not path or (not scan_mode and path.startswith(".notari/")):
                 continue
             # Symlink addition/modification: newmode 120000. Record the target
             # (the blob content) so a reviewer sees where the link points.
@@ -984,7 +1003,7 @@ def verify(
         if cp.status == "D":
             continue
         dest = cp.path
-        if dest.startswith(".notari/"):
+        if not scan_mode and dest.startswith(".notari/"):
             continue
         text, blob_truncated = _read_candidate_blob(root, candidate_sha, dest, limits=limits)
         if blob_truncated:
@@ -1052,10 +1071,9 @@ def verify(
 
     blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
-    # Strict mode does NOT honor branch-authored exceptions (security review
-    # P0-2): an unsigned .notari/exceptions.json could waive whole classes of
-    # findings with an empty path. Cooperative mode still applies them.
-    exceptions = [] if strict else load_exceptions(root)
+    # Only cooperative boundary verification honors local exceptions. A PR
+    # must never be able to waive its own findings in the drop-in scan.
+    exceptions = [] if strict or scan_mode else load_exceptions(root)
 
     applied: list[dict[str, Any]] = []
 
@@ -1228,7 +1246,7 @@ def verify(
     # `--scope '**'` is a legitimate conscious opt-out that still verifies. The
     # detector uses the enforcement matcher, so this now also fires on `**/**`
     # and the other universal spellings a literal check missed.
-    if contract.task_source == "scan":
+    if scan_mode:
         reasons.append(
             "scan mode: no contract or boundary; checked secrets, gate tamper and "
             "sensitive surfaces only"
@@ -1334,7 +1352,7 @@ def verify(
         for d in scan_dispositions:
             reasons.append(
                 f"incomplete scan coverage, {d}"
-                + ("" if strict else " (not enforced; cooperative mode)")
+                + ("" if fail_closed_on_incomplete else " (not enforced; cooperative mode)")
             )
 
     surface_hits = {k: v for k, v in unwaived_surfaces.items() if v}
@@ -1392,14 +1410,14 @@ def verify(
         reasons.append(f"warning: perimeter provenance unverified ({provenance.detail})")
     if strict_no_perimeter:
         reasons.append("strict mode requires a signed perimeter, but none is configured")
-    if not contract_prov.status.is_trustworthy and contract.task_source != "scan":
+    if not contract_prov.status.is_trustworthy and not scan_mode:
         # A scan has no contract to have provenance; the "scan mode" reason
         # above already says there is no boundary.
         reasons.append(f"warning: contract provenance unverified ({contract_prov.detail})")
 
-    # Strict fails closed on incomplete scan coverage; cooperative degrades it to
+    # Strict and scan modes block incomplete coverage; cooperative degrades it to
     # NEEDS_REVIEW (handled in the elif below), never a silent PASS.
-    scan_blocks = bool(strict and scan_incomplete)
+    scan_blocks = fail_closed_on_incomplete and scan_incomplete
     block = bool(
         secrets_block
         or unwaived_scope
@@ -1422,7 +1440,7 @@ def verify(
         verdict = Verdict.PASS
         reasons.append(
             "no secrets, no gate tamper, no sensitive surface touched"
-            if contract.task_source == "scan"
+            if scan_mode
             else "diff is within the approved boundary: in scope, no secrets, nothing forbidden"
         )
         if provenance is not None and provenance.status.is_trustworthy:

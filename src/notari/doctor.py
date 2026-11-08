@@ -341,7 +341,12 @@ def check_audit_chain_intact(audit_path: Path | None = None) -> CheckResult:
     Conservative on missing files: a missing log is fine (no entries yet).
     """
     p = audit_path or default_audit_path()
-    if not p.exists() or p.stat().st_size == 0:
+    from notari.audit import read_head, verify_chain
+
+    head = read_head(p)
+    if not p.exists() and head and head.get("count", 0):
+        return CheckResult("audit chain", FAIL, "sealed audit log is missing")
+    if not p.exists() or (p.stat().st_size == 0 and not head):
         return CheckResult("audit chain", PASS, f"{p} is empty")
 
     from notari.paths import default_path
@@ -356,9 +361,12 @@ def check_audit_chain_intact(audit_path: Path | None = None) -> CheckResult:
         )
     try:
         key = key_path.read_bytes()
-        from notari.audit import verify_chain  # local import
-
-        total, failures = verify_chain(p, key)
+        total, failures = verify_chain(
+            p,
+            key,
+            expected_count=head.get("count") if head else None,
+            expected_last_mac=head.get("mac") if head else None,
+        )
     except (OSError, ValueError) as e:
         return CheckResult(
             "audit chain",

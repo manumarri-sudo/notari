@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from notari import readiness
+import pytest
+
+from notari import attest, perimeter, provenance, readiness
 from notari.cli import _CONSUMER_WORKFLOW
 from notari.readiness import Level
 
@@ -100,3 +102,69 @@ def test_readiness_flags_missing_persist_credentials_as_hardening(tmp_path: Path
     hardening = {c.name: c for c in readiness._workflow_hardening(tmp_path)}
     assert not hardening["checkout credentials"].ok
     assert hardening["checkout credentials"].level is Level.HARDENING
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "",
+        "on:\n  push:\n",
+        "on:\n  workflow_dispatch:\n",
+        "on: push\n",
+        "on: [push, workflow_dispatch]\n",
+        "# on:\n#   pull_request_target:\non: push\n",
+        "on: push # pull_request_target:\n",
+        'name: "pull_request_target:"\non: push\n',
+        "on:\n  workflow_dispatch:\n    inputs:\n      pull_request_target:\n        type: string\n",
+        "on:\n  push:\nenv:\n  pull_request_target: ignored\n",
+        "on:\n  workflow_dispatch:\n    inputs:\n      description:\n        default: |\n          pull_request_target:\n",
+        "on: push\non: pull_request_target\n",
+        "events: &events [pull_request_target]\non: *events\n",
+        "on: {pull_request_target: {}}\n",
+    ],
+)
+def test_readiness_requires_an_actual_pr_target_trigger(tmp_path: Path, trigger: str) -> None:
+    _write_wf(
+        tmp_path,
+        trigger
+        + "jobs:\n  cc:\n    steps:\n      - uses: manumarri-sudo/notari@"
+        + "a" * 40
+        + "\n",
+    )
+    check = readiness._workflow_pinning(tmp_path)
+    assert not check.ok, "a workflow without the required PR event was accepted"
+    assert "pull_request_target" in check.detail
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "on: pull_request_target\n",
+        '"on": pull_request_target\n',
+        "on: [push, pull_request_target]\n",
+        "on: ['pull_request_target', workflow_dispatch]\n",
+        "on:\n  - push\n  - pull_request_target\n",
+        "on:\n  pull_request_target: # base-controlled workflow\n    branches: [main]\n",
+        "'on':\n    push:\n    pull_request_target:\n        branches: [main]\n",
+    ],
+)
+def test_readiness_accepts_supported_yaml_event_forms(tmp_path: Path, trigger: str) -> None:
+    _write_wf(
+        tmp_path,
+        trigger
+        + "jobs:\n  cc:\n    steps:\n      - uses: manumarri-sudo/notari@"
+        + "a" * 40
+        + "\n",
+    )
+    assert readiness._workflow_pinning(tmp_path).ok
+
+
+def test_push_only_workflow_cannot_report_enforced_posture(tmp_path: Path) -> None:
+    private_pem, public_pem = attest.generate_keypair()
+    boundary = perimeter.default_perimeter()
+    boundary.write(tmp_path)
+    provenance.sign_artifact(boundary.to_dict(), private_pem, perimeter.signature_path(tmp_path))
+    _write_wf(tmp_path, _CONSUMER_WORKFLOW.replace("  pull_request_target:", "  push:"))
+    report = readiness.assess(tmp_path, env={provenance.APPROVER_ENV: public_pem})
+    assert report.posture is readiness.Posture.COOPERATIVE
+    assert any(check.name == "gate workflow" for check in report.blockers)

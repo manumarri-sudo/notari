@@ -12,14 +12,19 @@ surface); tests enforce this.
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Any
 
 
-def _undo(path: str) -> str:
-    """A safe `git checkout` for a path: `--` ends option parsing (so a path
-    beginning with `-` isn't read as a flag) and shlex.quote handles spaces
-    and shell metacharacters."""
+def _undo(path: str, base: str = "") -> str:
+    """Use the measured base when the finding came from committed changes."""
+    if re.fullmatch(r"[0-9a-f]{40}", base):
+        return (
+            "save any local edits to this path first, then run "
+            f"`git --literal-pathspecs restore --source={base} --staged --worktree "
+            f"-- {shlex.quote(path)}` and commit the result"
+        )
     return f"git checkout -- {shlex.quote(path)}"
 
 
@@ -83,6 +88,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
     """
     ev = passport.get("evidence", {})
     task = passport.get("contract", {}).get("task", "")
+    base = str(passport.get("base_commit") or "")
     out: list[dict[str, str]] = []
 
     tamper = list(ev.get("gate_tamper_hits", []))
@@ -150,7 +156,9 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                     "This change edits Notari's own safety settings, that is "
                     "always blocked, no matter the task."
                 ),
-                "self_fix": (f"Undo it: {_undo(p)}, these files must not change in a normal task."),
+                "self_fix": (
+                    f"Undo it: {_undo(p, base)}, these files must not change in a normal task."
+                ),
                 "cc_prompt": (
                     f"Revert {p}; I should not modify Notari's own configuration, "
                     "keys, or workflow files."
@@ -167,7 +175,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                     "This edits a protected area a human marked off-limits for automatic changes."
                 ),
                 "self_fix": (
-                    f"Undo it: {_undo(p)}, or ask the project owner to approve this edit."
+                    f"Undo it: {_undo(p, base)}, or ask the project owner to approve this edit."
                 ),
                 "cc_prompt": (
                     f"Undo my changes to {p}; it's a protected area I wasn't allowed to touch."
@@ -183,7 +191,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                 "kind": "out_of_scope",
                 "where": p,
                 "plain": (f'This file has nothing to do with the approved task "{task}".'),
-                "self_fix": f"Undo it: {_undo(p)}",
+                "self_fix": f"Undo it: {_undo(p, base)}",
                 "cc_prompt": (
                     f"Undo my changes to {p}, it was outside the task "
                     f"'{task}'. Keep only changes that belong to that task."
@@ -203,7 +211,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                     "off-limits, so a human has to confirm this one."
                 ),
                 "self_fix": (
-                    f"If the link isn't needed, undo it: {_undo(c['path'])} "
+                    f"If the link isn't needed, undo it: {_undo(c['path'], base)} "
                     "- otherwise confirm the target is intended."
                 ),
                 "cc_prompt": (
@@ -224,7 +232,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                 ),
                 "self_fix": (
                     "Confirm the new version is intended, or undo the pointer "
-                    f"change: {_undo(c['path'])}"
+                    f"change: {_undo(c['path'], base)}"
                 ),
                 "cc_prompt": (
                     f"Explain what changed in the submodule at {c['path']} and "
@@ -246,7 +254,7 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
                     ),
                     "self_fix": (
                         "If the edit is part of the task, ask a reviewer to look; "
-                        f"if it isn't, undo it: {_undo(p)}"
+                        f"if it isn't, undo it: {_undo(p, base)}"
                     ),
                     "cc_prompt": (
                         f"Explain why the task required changing {p} so a "
