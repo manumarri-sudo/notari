@@ -161,6 +161,11 @@ agent exactly what to revert, split, or ask approval for, without dumping the fu
 passport into context. (`--format html` writes a click-to-copy page for a
 non-technical reviewer.)
 
+Explain shows a credential finding's file and line when it can match the file
+against the local Git diff and the filename is safe to display. If you open a
+passport without the corresponding commits, the finding still appears with
+general guidance.
+
 ## 7. Brief the next agent before it starts
 
 ```bash

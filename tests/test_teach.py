@@ -19,7 +19,7 @@ SECRET_VALUE = "AKIA" + "X" * 16  # a value that must never leak into outputs
 
 def _passport(verdict: str = "BLOCK", **evidence) -> dict:
     ev = {
-        "changed_files": [],
+        "changed_files": [finding["path"] for finding in evidence.get("secret_findings", [])],
         "out_of_scope": [],
         "forbidden_hits": [],
         "gate_tamper_hits": [],

@@ -2,7 +2,7 @@
 
   notari begin          write .notari/contract.json from the approved task
   notari verify         compare the diff to the contract, emit a verdict
-  notari init           write a starter ~/.notari/config.toml
+  notari init-config    write a starter ~/.notari/config.toml
   notari tail           live-stream the audit log in a separate terminal
   notari audit verify   walk the HMAC chain on an existing log file
   notari audit show     pretty-print the log
@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from notari import telemetry as tel
@@ -972,8 +974,8 @@ def explain_cmd(
         raise typer.Exit(code=2)
 
     try:
-        passport = explain_mod.redact_passport(json.loads(found.read_text()))
-    except (OSError, json.JSONDecodeError) as e:
+        passport = explain_mod.load_passport(found)
+    except (OSError, ValueError) as e:
         out.print(f"[red]cannot read passport at {found}[/red]: {e}")
         raise typer.Exit(code=2) from e
 
@@ -1017,7 +1019,7 @@ def _repo_root_or_cwd() -> Path:
 def _emit_fix_prompt(passport_file: Path | None) -> None:
     """Shared by `notari fix-prompt` and `notari explain --fix-prompt`."""
     from notari import teach as teach_mod
-    from notari.explain import redact_passport
+    from notari.explain import load_passport
 
     candidates = (
         [passport_file]
@@ -1030,8 +1032,8 @@ def _emit_fix_prompt(passport_file: Path | None) -> None:
         out.print("[red]no passport found[/red], run `notari verify` first, or pass --passport.")
         raise typer.Exit(code=2)
     try:
-        passport = redact_passport(json.loads(found.read_text()))
-    except (OSError, json.JSONDecodeError) as e:
+        passport = load_passport(found)
+    except (OSError, ValueError) as e:
         out.print(f"[red]cannot read passport at {found}[/red]: {e}")
         raise typer.Exit(code=2) from e
     print(teach_mod.fix_prompt(passport))
@@ -2593,8 +2595,12 @@ def init_config(
     p.write_text(render_starter_config())
     p.chmod(0o600)
     console.print(f"[green]wrote[/green] {p}")
-    console.print("edit it to declare your session intent, scope, and upstreams.")
-    console.print("then: [bold]notari start[/bold]")
+    check = "notari doctor"
+    if config_path is not None:
+        check += f" --config {shlex.quote(str(p))}"
+    console.print(
+        f"Edit the settings for your local hooks, then run `{check}`.", markup=False, soft_wrap=True
+    )
 
 
 # --------------------------------------------------------------------------
@@ -3717,9 +3723,9 @@ def doctor(
     out.print()
     name_width = max(len(r.name) for r in report.results) + 2
     for r in report.results:
-        out.print(f"  {r.status}  [bold]{r.name:<{name_width}}[/bold] {r.detail}")
+        out.print(f"  {r.status}  [bold]{r.name:<{name_width}}[/bold] {escape(r.detail)}")
         if r.fix and r.status != "[green]PASS[/green]":
-            out.print(f"        [dim]→ {r.fix}[/dim]")
+            out.print(f"        → {r.fix}", style="dim", markup=False, soft_wrap=True)
     out.print()
     if report.has_failures:
         out.print("[red]some checks failed.[/red]  fix the FAILs above and re-run.")

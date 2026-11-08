@@ -27,7 +27,7 @@ JARGON = ("perimeter", "provenance", "MAC", "surface")
 
 def _passport(verdict: str = "BLOCK", **evidence) -> dict:
     ev = {
-        "changed_files": [],
+        "changed_files": [finding["path"] for finding in evidence.get("secret_findings", [])],
         "out_of_scope": [],
         "forbidden_hits": [],
         "gate_tamper_hits": [],

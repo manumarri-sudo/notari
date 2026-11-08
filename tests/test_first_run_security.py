@@ -1,5 +1,7 @@
 """First-run output must not expose keys or overstate approval evidence."""
 
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -86,3 +88,26 @@ def test_doctor_honors_existing_truncation_seal(tmp_path: Path, retained: int) -
     seal_head(path, key)
     path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:retained]))
     assert doctor.check_audit_chain_intact(path).status == doctor.FAIL
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_doctor_config_hint_creates_or_repairs_the_requested_file(
+    tmp_path: Path, invalid: bool
+) -> None:
+    from notari.doctor import PASS, check_config
+
+    config_path = tmp_path / ("long-" * 8 + "local hooks[red].toml")
+    if invalid:
+        config_path.write_text("[invalid")
+    runner = CliRunner()
+    check = runner.invoke(app, ["doctor", "--config", str(config_path)], env={"COLUMNS": "80"})
+    command = re.search(r"`(notari init-config[^\n`]+)`", check.output)
+    assert command is not None
+    args = shlex.split(command[1])
+    assert args[:2] == ["notari", "init-config"]
+    result = runner.invoke(app, args[1:], env={"COLUMNS": "80"})
+    assert result.exit_code == 0, result.output
+    followup = re.search(r"`(notari doctor[^\n`]+)`", result.output)
+    assert followup is not None
+    assert shlex.split(followup[1]) == ["notari", "doctor", "--config", str(config_path)]
+    assert check_config(config_path)[0].status == PASS

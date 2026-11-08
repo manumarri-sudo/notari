@@ -12,11 +12,13 @@ surface); tests enforce this.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
-from notari.secrets import redact
+from notari.secrets import credential_pattern_label, is_credential_path, redact
 
 
 def redact_passport(value: Any) -> Any:
@@ -28,6 +30,38 @@ def redact_passport(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact_passport(item) for key, item in value.items()}
     return value
+
+
+def load_passport(path: Path) -> dict[str, Any]:
+    """Prepare an imported passport without trusting it for credential locations."""
+    passport = json.loads(path.read_text())
+    if not isinstance(passport, dict):
+        raise ValueError("expected a passport object")
+    evidence = passport.get("evidence", {})
+    if not isinstance(evidence, dict):
+        raise ValueError("expected a passport evidence object")
+    if evidence.get("secret_findings"):
+        evidence["changed_files"] = _git_changed_paths(passport)
+    return cast("dict[str, Any]", redact_passport(passport))
+
+
+def _git_changed_paths(passport: dict[str, Any]) -> list[str]:
+    from notari.contract import repo_root
+    from notari.verify import VerifyError, git_name_status
+
+    base = passport.get("base_commit")
+    head = passport.get("head_commit")
+    if not isinstance(base, str) or not isinstance(head, str):
+        return []
+    if any(not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) for sha in (base, head)):
+        return []
+    try:
+        inventory, truncated = git_name_status(base, repo_root(), head=head)
+    except (VerifyError, OSError):
+        return []
+    if truncated:
+        return []
+    return [path for record in inventory for path in record.endpoints]
 
 
 def _undo(path: str, base: str = "") -> str:
@@ -55,6 +89,15 @@ _KIND_LABEL = {
     "submodule": "submodule move",
     "sensitive": "sensitive surface",
     "scan_incomplete": "unscannable change",
+}
+
+_SURFACE_LABELS = {
+    "tests",
+    "ci",
+    "lockfiles",
+    "gitconfig",
+    "agent_instructions",
+    "notari_learning_state",
 }
 
 
@@ -108,31 +151,52 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
     forbidden = [p for p in ev.get("forbidden_hits", []) if p not in tamper]
     covered = set(tamper) | set(forbidden)
 
-    for s in ev.get("secret_findings", []):
+    # Resolve locations from the changed-file inventory, rather than echoing a
+    # string supplied in a credential finding. Native passports include both.
+    findings = ev.get("secret_findings") or []
+    changed_paths = (
+        {
+            path: path
+            for path in ev.get("changed_files", [])
+            if isinstance(path, str) and not is_credential_path(path)
+        }
+        if findings
+        else {}
+    )
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        raw_path = finding.get("path")
+        path = changed_paths.get(raw_path, "") if isinstance(raw_path, str) else ""
+        raw_line = finding.get("line")
+        line = int(raw_line) if type(raw_line) is int and 0 < raw_line <= 2**31 - 1 else 0
+        where = f"{path}:{line}" if path and line else path
+        location = f"{path} line {line}" if path and line else path or "the affected code"
+        pattern = credential_pattern_label(finding.get("pattern"))
         # A matched vendor key FORMAT is a statement of fact. A keyword-plus-value
         # match is a suspicion, and describing it with the same certainty ("anyone
         # who sees the file can steal it") is an overclaim that also teaches people
         # to ignore the real ones. Older passports have no `confidence` field, so
         # absence is treated as high to avoid silently softening existing evidence.
-        low = s.get("confidence") == "low"
+        low = finding.get("confidence") == "low"
         if low:
             out.append(
                 {
                     "kind": "possible_secret",
-                    "where": f"{s['path']}:{s['line']}",
+                    "where": where,
                     "plain": (
-                        f"This looks like it might be a password or key ({s['pattern']}) "
+                        f"This looks like it might be a password or key ({pattern}) "
                         "written directly in the code. It does not match a known vendor "
                         "key format, so it needs a human to confirm."
                     ),
                     "self_fix": (
-                        f"Check line {s['line']} of {s['path']}. If it is a real "
+                        f"Check {location}. If it is a real "
                         "credential, delete it and load the value from an environment "
                         "variable instead. If it is not, no change is needed."
                     ),
                     "cc_prompt": (
-                        f"In {s['path']} line {s['line']} something matched the "
-                        f"{s['pattern']} shape. Decide whether it is a real credential; "
+                        f"In {location} something matched the "
+                        f"{pattern} shape. Decide whether it is a real credential; "
                         "if it is, remove it and read it from an environment variable "
                         "instead, and make sure the real value is never committed."
                     ),
@@ -142,18 +206,18 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
         out.append(
             {
                 "kind": "secret",
-                "where": f"{s['path']}:{s['line']}",
+                "where": where,
                 "plain": (
-                    f"A password or key ({s['pattern']}) is written directly in the "
+                    f"A password or key ({pattern}) is written directly in the "
                     "code, anyone who sees the file can steal it."
                 ),
                 "self_fix": (
-                    f"Delete line {s['line']} of {s['path']} and load the value from "
+                    f"Remove the credential from {location} and load the value from "
                     "an environment variable instead."
                 ),
                 "cc_prompt": (
-                    f"In {s['path']} line {s['line']} there is a hardcoded "
-                    f"{s['pattern']}. Remove it and read it from an environment "
+                    f"In {location} there is a hardcoded "
+                    f"{pattern}. Remove it and read it from an environment "
                     "variable instead, and make sure the real value is never "
                     "committed anywhere."
                 ),
@@ -255,13 +319,14 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
         )
 
     for name, paths in ev.get("sensitive_surfaces", {}).items():
+        label = name if name in _SURFACE_LABELS else "other"
         for p in paths:
             out.append(
                 {
                     "kind": "sensitive",
                     "where": p,
                     "plain": (
-                        f"This touches a sensitive area ({name}) that always gets "
+                        f"This touches a sensitive area ({label}) that always gets "
                         "a human look before merging, it may be fine, it just "
                         "can't be auto-approved."
                     ),

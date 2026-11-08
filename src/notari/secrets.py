@@ -380,6 +380,31 @@ _INLINE_CRED_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ),
 )
 
+_PATTERN_LABELS: Final = {pattern.name: pattern.name for pattern in _PATTERNS} | {
+    label: label for label, _ in _INLINE_CRED_PATTERNS
+}
+_FILENAME_PATTERNS: Final = tuple(
+    re.compile(pattern.regex.pattern.replace(r"\b", ""), pattern.regex.flags)
+    for pattern in _PATTERNS
+)
+
+
+def credential_pattern_label(name: object) -> str:
+    """Return a scanner-owned label for untrusted report metadata."""
+    if isinstance(name, str):
+        return _PATTERN_LABELS.get(name, "credential")
+    return "credential"
+
+
+def is_credential_path(path: str) -> bool:
+    """Identify paths that should not become public credential annotations."""
+    return (
+        "[REDACTED:" in path
+        or any(pattern.search(path) for pattern in _FILENAME_PATTERNS)
+        or redact(path) != path
+    )
+
+
 # Inline shapes whose match depends on a loosely-structured VALUE (an assignment
 # right-hand side or a CLI flag argument) rather than a vendor-anchored prefix.
 # These are the false-positive-prone ones: redact() still applies them

@@ -2,6 +2,11 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - passport output and setup
+
+- Validate imported credential finding metadata before rendering explanations and GitHub annotations.
+- Point `notari doctor` at the command that creates or repairs the local hook config.
+
 ## [0.5.2] - launch hardening
 
 - Fetch the PR commit as Git data in the scan template and leave the trusted base checked out.
