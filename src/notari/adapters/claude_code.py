@@ -60,6 +60,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,7 +74,14 @@ from notari import secrets as _secrets
 from notari.audit import AuditLog
 from notari.config import default_audit_path, load_config
 from notari.errors import ConfigError
-from notari.policy import Risk, classify, classify_command
+from notari.policy import (
+    Risk,
+    _mask_quoted,
+    classify,
+    classify_command,
+    shell_output_targets,
+    shell_segments,
+)
 
 # Map Claude Code's built-in tool names to a default risk *when args do not
 # carry enough info to classify by content*. Bash uses classify_command on
@@ -364,51 +372,35 @@ _GATE_CONFIG_SUFFIXES: Final[tuple[str, ...]] = (
 _GATE_STATE_DIRS: Final[tuple[str, ...]] = (".notari",)
 
 
-_WRITE_VERBS: Final[tuple[str, ...]] = (
-    ">",
-    ">>",
-    "tee",
-    "sed",
-    "cp",
-    "mv",
-    "dd",
-    "install",
-    "rm",
-    "ln",
-    "truncate",
-    "python",
-    "python3",
-)
+_WRITE_VERB = re.compile(r"\b(?:tee|sed|cp|mv|dd|install|rm|ln|truncate|python\d*)\b")
 
 
 def _writes_to_gate_state(cmd: str) -> bool:
     """True when a shell command looks like it WRITES to a resolved gate path.
 
-    Deliberately coarse. It only fires when the command contains a write-ish verb or
-    redirect AND some token resolves to the gate's own config or state, so reading
-    those files stays allowed. The point is to catch a relocated NOTARI_HOME, which a
-    text-matching classifier cannot see, not to re-implement shell parsing.
+    Only an output redirect's target or a path in a mutating command segment
+    can trigger this check. Resolution also covers a relocated NOTARI_HOME.
     """
     if not cmd:
         return False
-    # Strip redirects that do not write to a FILE before looking for a write verb.
-    # `2>&1` duplicates a descriptor and `2>/dev/null` discards, and counting either
-    # as a write meant an ordinary READ of a gate file was denied whenever it carried
-    # a stderr redirect. Caught by this gate blocking a `git check-ignore ... 2>&1`.
-    probe = re.sub(r"\d*>&\d+", " ", cmd)
-    probe = re.sub(r"\d*>+\s*/dev/(null|stderr|stdout)", " ", probe)
-    if not any(verb in probe for verb in _WRITE_VERBS):
-        return False
-    for token in re.split(r"[\s;|&()<>\"']+", cmd):
-        candidate = token.strip()
-        if len(candidate) < 2 or "/" not in candidate:
+
+    def protected(token: str) -> bool:
+        if "/" not in token:
+            return False
+        home = str(Path.home())
+        return _is_gate_config_path(token.replace("$HOME", home).replace("${HOME}", home))
+
+    for target in shell_output_targets(cmd):
+        with contextlib.suppress(ValueError):
+            if any(protected(token) for token in shlex.split(target)):
+                return True
+    for segment in shell_segments(cmd, _mask_quoted(cmd)):
+        if not _WRITE_VERB.search(segment):
             continue
-        # Expand the two shell forms a path is usually written in; anything more
-        # exotic is the text classifier's job.
-        candidate = candidate.replace("$HOME", str(Path.home())).replace(
-            "${HOME}", str(Path.home())
-        )
-        if _is_gate_config_path(candidate):
+        with contextlib.suppress(ValueError):
+            if any(protected(token) for token in shlex.split(segment)):
+                return True
+        if any(protected(token) for token in re.split(r"[\s()<>\"']+", segment)):
             return True
     return False
 
@@ -1401,9 +1393,12 @@ def _emit_resume_if_expired(log_path: Path) -> None:
         active, _ = _pause.is_paused(state)
         if active:
             return
-        # Flag still set on disk but window expired → close the bracket.
-        recap = state.allowed_count
-        _pause.resume()
+        # Flag still set on disk but window expired → close the bracket. Only
+        # the process that actually flips the flag emits, so concurrent hooks
+        # cannot write the recap twice (2026-06-12 had a doubled gate.resumed).
+        closed = _pause.resume_if_paused(expired_only=True)
+        if closed is None:
+            return
         with contextlib.suppress(Exception):
             with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
                 audit.emit(
@@ -1413,14 +1408,18 @@ def _emit_resume_if_expired(log_path: Path) -> None:
                     risk="low",
                     payload={
                         "trigger": "auto-expired",
-                        "reason": state.reason,
-                        "allowed_while_paused": recap,
+                        "reason": closed.reason,
+                        "allowed_while_paused": closed.allowed_count,
+                        "allowed_by_log": closed.allowed_by_log,
+                        "pause_set_at": closed.set_at,
                     },
                     force_fsync=True,
                 )
 
 
-def _handle_paused(stdin_text: str, log_path: Path, reason: str) -> dict[str, Any]:
+def _handle_paused(
+    stdin_text: str, log_path: Path, reason: str, *, pause_set_at: str = ""
+) -> dict[str, Any]:
     """Let a tool call through while the gate is paused, but log it.
 
     Every call allowed during a pause window is written to the audit log as
@@ -1429,8 +1428,6 @@ def _handle_paused(stdin_text: str, log_path: Path, reason: str) -> dict[str, An
     The classifier is NOT consulted - this path stays alive even when the
     classifier is broken, which is the whole point of pause-as-recovery-hatch.
     """
-    from notari import pause as _pause
-
     event: dict[str, Any] = {}
     with contextlib.suppress(json.JSONDecodeError, TypeError):
         parsed = json.loads(stdin_text or "{}")
@@ -1443,7 +1440,6 @@ def _handle_paused(stdin_text: str, log_path: Path, reason: str) -> dict[str, An
     session_id = str(event.get("session_id", "claude-code"))
     cwd = str(event.get("cwd", "") or "")
 
-    _pause.record_allowed_while_paused()
     with contextlib.suppress(Exception):
         with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
             audit.emit(
@@ -1459,6 +1455,7 @@ def _handle_paused(stdin_text: str, log_path: Path, reason: str) -> dict[str, An
                     "permission": "allow",
                     "gate_paused": True,
                     "pause_reason": reason,
+                    "pause_set_at": pause_set_at,
                     "cwd": cwd,
                 },
             )
@@ -1507,13 +1504,16 @@ def main() -> int:
     # escape hatch even with a broken classifier.
     from notari import pause as _pause
 
-    _emit_resume_if_expired(log_path)
-    paused, pause_reason = _pause.is_paused()
-    if paused:
-        response = _handle_paused(stdin_text, log_path, pause_reason)
-        sys.stdout.write(json.dumps(response))
-        sys.stdout.flush()
-        return 0
+    _emit_resume_if_expired(default_audit_path())
+    if _pause.is_paused()[0]:
+        state = _pause.record_allowed_while_paused(log_path)
+        if state is not None:
+            response = _handle_paused(
+                stdin_text, log_path, state.reason or "no reason given", pause_set_at=state.set_at
+            )
+            sys.stdout.write(json.dumps(response))
+            sys.stdout.flush()
+            return 0
 
     # Step 3: self-test (gated path only).
     ok, reason = self_test()

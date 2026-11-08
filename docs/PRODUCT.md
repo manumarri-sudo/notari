@@ -23,8 +23,8 @@ Everything below exists in this repository and is covered by tests.
 | Deterministic verdict (PASS / NEEDS_REVIEW / BLOCK) | `notari verify` |
 | Change Passport (JSON + Markdown evidence) | `notari verify`, passport artifact |
 | Gate-signed passports + independent re-verification | `notari verify-passport` |
-| Honest posture (🔴/🟡/🟢, exact next steps) | `notari status` |
-| Environment / key / workflow / chain diagnostics | `notari doctor` |
+| Local checks for strict CI configuration | `notari status` |
+| Local installation, hook, key and audit chain diagnostics | `notari doctor` |
 | Secure GitHub Action + `pull_request_target` template | `action.yml`, `notari init` |
 | Tamper-evident local audit log (hash-chained) | `notari audit …` |
 | Secret scanning on added lines (incl. UTF-16, `-diff`) | inside `notari verify` |

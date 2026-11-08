@@ -34,10 +34,22 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import dataclass
+import os
+import tempfile
+import time
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl  # POSIX only
+
+    _HAS_FLOCK = True
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+    _HAS_FLOCK = False
 
 DEFAULT_PAUSE_HOURS: float = 1.0
 MAX_PAUSE_HOURS: float = 24.0
@@ -47,6 +59,30 @@ def _state_path() -> Path:
     from notari.paths import default_path
 
     return default_path("pause.json", env_override="NOTARI_PAUSE_FILE")
+
+
+@contextlib.contextmanager
+def _state_lock() -> Iterator[None]:
+    """Serialize updates without hanging a hook if the lock is unavailable."""
+    if not _HAS_FLOCK:
+        yield
+        return
+    p = _state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(f"{p}.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("could not acquire the Notari pause lock") from exc
+                time.sleep(0.01)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _now() -> datetime:
@@ -79,6 +115,7 @@ class PauseState:
     `reason`        Operator-supplied reason (free text), for the audit trail.
     `allowed_count` Cumulative count of tool calls allowed while this pause
                     window was active. Reset on each `pause()`.
+    `allowed_by_log` Counts by destination audit log, including project logs.
     """
 
     paused: bool = False
@@ -86,6 +123,7 @@ class PauseState:
     expires_at: str = ""
     reason: str = ""
     allowed_count: int = 0
+    allowed_by_log: dict[str, int] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -94,6 +132,7 @@ class PauseState:
             "expires_at": self.expires_at,
             "reason": self.reason,
             "allowed_count": self.allowed_count,
+            "allowed_by_log": dict(self.allowed_by_log),
         }
 
     @classmethod
@@ -104,6 +143,7 @@ class PauseState:
             expires_at=str(raw.get("expires_at", "") or ""),
             reason=str(raw.get("reason", "") or ""),
             allowed_count=int(raw.get("allowed_count", 0) or 0),
+            allowed_by_log=_int_map(raw.get("allowed_by_log")),
         )
 
     def remaining(self, *, now: datetime | None = None) -> timedelta | None:
@@ -116,6 +156,17 @@ class PauseState:
             expires = expires.replace(tzinfo=UTC).astimezone()
         delta = expires - n
         return delta if delta.total_seconds() > 0 else None
+
+
+def _int_map(raw: Any) -> dict[str, int]:
+    """Tolerant parse of the per-log split; anything malformed reads as empty."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        with contextlib.suppress(TypeError, ValueError, OverflowError):
+            out[str(k)] = int(v)
+    return out
 
 
 def load_state() -> PauseState:
@@ -134,20 +185,27 @@ def load_state() -> PauseState:
         if not isinstance(raw, dict):
             return PauseState()
         return PauseState.from_json(raw)
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, OverflowError):
         return PauseState()
 
 
-def save_state(state: PauseState) -> None:
+def save_state(state: PauseState) -> bool:
     """Persist state. Best effort; errors swallowed (runs on the gate path)."""
     p = _state_path()
+    temp = None
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(state.to_json(), indent=2, sort_keys=True))
-        with contextlib.suppress(OSError):
-            p.chmod(0o600)
+        with tempfile.NamedTemporaryFile(mode="w", dir=p.parent, delete=False) as stream:
+            temp = Path(stream.name)
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(state.to_json(), stream, indent=2, sort_keys=True)
+        os.replace(temp, p)
+        return True
     except OSError:
-        pass
+        if temp is not None:
+            with contextlib.suppress(OSError):
+                temp.unlink()
+        return False
 
 
 def is_paused(
@@ -177,6 +235,11 @@ def pause(
     """Flip the gate off. Auto-expires after `duration_hours` (clamped to
     (0, MAX_PAUSE_HOURS]). Resets the allowed-while-paused counter so it
     measures only this window."""
+    return replace_pause(duration_hours=duration_hours, reason=reason)[0]
+
+
+def replace_pause(*, duration_hours: float, reason: str) -> tuple[PauseState, PauseState | None]:
+    """Start a new window and return any old window that needs a recap."""
     hours = duration_hours
     if hours <= 0:
         hours = DEFAULT_PAUSE_HOURS
@@ -189,27 +252,56 @@ def pause(
         reason=reason.strip(),
         allowed_count=0,
     )
-    save_state(state)
-    return state
+    with _state_lock():
+        previous = load_state()
+        if not save_state(state):
+            raise OSError("could not save the new Notari pause")
+    return state, previous if previous.paused else None
 
 
 def resume() -> PauseState:
     """Flip the gate back on. Preserves allowed_count for the resume recap."""
-    state = load_state()
-    state.paused = False
-    save_state(state)
+    with _state_lock():
+        state = load_state()
+        state.paused = False
+        if not save_state(state):
+            raise OSError("could not clear the Notari pause")
     return state
 
 
-def record_allowed_while_paused() -> None:
+def resume_if_paused(*, expired_only: bool = False) -> PauseState | None:
+    """Flip the gate back on only if the flag is still set; None if it was not.
+
+    Exactly one caller wins when several hook processes notice an expired
+    pause at the same time, so the gate.resumed bracket is emitted once.
+    """
+    with _state_lock():
+        state = load_state()
+        if not state.paused or (expired_only and is_paused(state)[0]):
+            return None
+        state.paused = False
+        if not save_state(state):
+            raise OSError("could not clear the Notari pause")
+    return state
+
+
+def record_allowed_while_paused(
+    log_path: str | os.PathLike[str] | None = None,
+) -> PauseState | None:
     """Best-effort counter increment for a call let through while paused.
 
-    Called from the gate path; swallows every exception so a persist
-    failure can never affect (or break) the let-through decision.
+    `log_path` is the destination for the call's audit row. Return the
+    active window only when the call was admitted to it.
     """
     try:
-        state = load_state()
-        state.allowed_count += 1
-        save_state(state)
+        with _state_lock():
+            state = load_state()
+            if not is_paused(state)[0]:
+                return None
+            state.allowed_count += 1
+            if log_path is not None:
+                key = str(log_path)
+                state.allowed_by_log[key] = state.allowed_by_log.get(key, 0) + 1
+            return state if save_state(state) else None
     except Exception:
-        pass
+        return None

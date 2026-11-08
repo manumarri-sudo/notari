@@ -94,3 +94,51 @@ def test_bash_write_to_pause_json_is_critical(cmd: str) -> None:
 def test_benign_python_c_is_not_critical() -> None:
     # The library-disable pattern must not fire on an ordinary one-liner.
     assert classify_command('python -c "print(1 + 1)"').risk is not Risk.CRITICAL
+
+
+# ---------------------------------------------------------------------------
+# 0.5.1: a redirect is self-tamper only when the gate path is its TARGET.
+# `ls -d ~/x 2>/dev/null; ls -la ~/.notari/` was denied on 2026-11-08 because the
+# stray `>` armed the quoted-path rule for a later read-only mention.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ls -d ~/x 2>/dev/null; echo ---; ls -la ~/.notari/ 2>/dev/null",
+        "cat ~/.notari/config.toml 2>&1 | head -5",
+        "echo hi > /tmp/out && cat ~/.notari/config.toml",
+        "head -c 1500 ~/.notari/audit.log.jsonl 2>/dev/null | head -3",
+        'test -f "$HOME/.notari/pause.json" 2>/dev/null && cat "$HOME/.notari/pause.json"',
+    ],
+)
+def test_read_only_mention_after_redirect_is_not_critical(cmd: str) -> None:
+    from notari.adapters.claude_code import classify_event
+
+    assert classify_command(cmd).risk is not Risk.CRITICAL
+    assert classify_event("Bash", {"command": cmd})[0] is not Risk.CRITICAL
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo x >~/.notari/approvals.json",
+        'cat /tmp/x >> "$HOME/.notari/overnight.json"',
+        "true && echo '{}' > ~/.notari/pause.json",
+        "ls; cp /tmp/x ~/.notari/pause.json",
+        "echo 1 > /tmp/a; tee ~/.notari/pause.json < /tmp/a",
+        # Hostile variants of the redirect target: quotes split around the
+        # expansion, a command substitution with a space inside, noclobber.
+        'echo x > "$HOME"/.notari/pause.json',
+        "echo x > $(echo ~)/.notari/pause.json",
+        "echo x >| ~/.notari/pause.json",
+        "echo x >${HOME}/.notari/approvals.json",
+        'printf x > "`echo ~/`.notari/pause.json"',
+        'printf x > "`echo ~`/.claude/settings.json$(true)"',
+        'printf x > "/home/a path/.notari/pause.json"',
+        "bash -c 'printf x > ~/.notari/pause.json'",
+    ],
+)
+def test_redirect_or_verb_aimed_at_gate_state_stays_critical(cmd: str) -> None:
+    assert classify_command(cmd).risk is Risk.CRITICAL

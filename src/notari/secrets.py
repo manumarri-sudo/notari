@@ -285,6 +285,13 @@ def scan(
             # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
             # shapes are specific enough to report unconditionally.
             value = text[s:e]
+            # Shape-of-the-line checks for the two noisiest rules (see the
+            # constants' comments): an attached `-p` password needs a tool that
+            # takes one on the same line, and a plural name is not a credential.
+            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(_line_text(text, s)):
+                continue
+            if label == "env-secret" and _is_plural_reference(text[m.start() : s], value):
+                continue
             # The length floor is low-confidence-only: a real DSN password can
             # legitimately be short (a brief password in a redis:// DSN), so floor only the
             # shapes whose match is loosely structured.
@@ -442,6 +449,48 @@ _MIN_INLINE_SECRET_LEN: Final[int] = 10
 # precision, those two rules contributing 3 of the 48. `mysql-pflag` already
 # carries its own >= 6 plus non-lowercase requirement in the regex.
 _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
+
+# `-p<value>` with the password ATTACHED to the flag is a convention of a few
+# tools: the MySQL family and the 7-Zip / RAR archivers. On a line that names
+# none of them, `-p` plus a long token is some other program's long flag
+# (`ffmpeg -pix_fmt yuv420p`, `-profile:v`). The six-month audit log
+# (2026-11-08) held 67 secret-in-write blocks, none a real credential, and every
+# `mysql-pflag` hit outside Notari's own tests was ffmpeg or a `-p` identifier.
+_ATTACHED_PFLAG_TOOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)\b(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
+)
+_PLURAL_CREDENTIAL_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?P<name>[\w-]*(?:password|passwd|secret|token|api[-_]?key|pwd)s)\s*=\s*$"
+)
+_TOKEN_COUNT_NAMES = {"tokens", "max_tokens", "input_tokens", "output_tokens", "total_tokens"}
+_EMPTY_CALL_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\(\)[),]*")
+_TOKEN_METRICS_RE = re.compile(r"""\{['"](?:input|output|total)_tokens['"]:""")
+
+
+def _is_plural_reference(assignment: str, value: str) -> bool:
+    """Skip token accounting and code references while retaining literal hits."""
+    match = _PLURAL_CREDENTIAL_NAME_RE.fullmatch(assignment)
+    if match is None:
+        return False
+    name = match["name"]
+    return (
+        value.rstrip("),") == name
+        or bool(_EMPTY_CALL_RE.fullmatch(value))
+        or (
+            name.lower() in _TOKEN_COUNT_NAMES
+            and (value.isdecimal() or bool(_TOKEN_METRICS_RE.match(value)))
+        )
+    )
+
+
+def _line_text(text: str, offset: int) -> str:
+    """The shell line containing offset, including backslash continuations."""
+    start = text.rfind("\n", 0, offset) + 1
+    while start >= 2 and text[start - 2] == "\\":
+        start = text.rfind("\n", 0, start - 2) + 1
+    end = text.find("\n", offset)
+    return text[start:] if end < 0 else text[start:end]
+
 
 # Lowercased values that are stand-ins, not secrets. Kept small and literal;
 # fuzzier stand-ins are caught by the substring list below.

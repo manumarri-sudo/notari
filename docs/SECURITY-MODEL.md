@@ -469,9 +469,9 @@ until these land:
   `NOTARI_ALLOW_PULL_REQUEST_TRIGGER=true`. The secure setup uses
   `pull_request_target`, which runs the workflow from the base branch, immune
   to PR modifications. A secure workflow template is shipped at
-  `docs/secure-workflow.yml`. The opt-out exists only for the dogfood repo
-  (which uses `install-from-source` and intentionally runs from the PR branch).
-  **Residual risk:** `pull_request_target` + `actions/checkout@v4` with
+  `docs/secure-workflow.yml`. CI exercises the Action and signed boundary
+  with dedicated test fixtures.
+  **Residual risk:** `pull_request_target` + `actions/checkout` with
   `ref: PR-head` checks out untrusted code, but Notari does not execute it, it
   only reads the git tree for `git diff`. The remaining escalation paths are:
   1. A GitHub App as the status check source (strongest, eliminates even the

@@ -84,6 +84,23 @@ def test_relocated_notari_home_is_protected_from_a_bash_redirect(tmp_path: Path)
     assert _decide(home, "Bash", {"command": f"tee {home}/approvals.json"}) == "deny"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'printf x >& "{path}"',
+        'printf x 3<> "{path}" >&3',
+        'printf x >\\\n "{path}"',
+        'printf x \\" > "{path}" "suffix"',
+        """bash -c 'printf x > "{path}"'""",
+        """'cp' /tmp/fixture "{path}" """,
+    ],
+)
+def test_output_forms_protect_relocated_gate_state(tmp_path: Path, command: str) -> None:
+    home = tmp_path / "gate state"
+    home.mkdir()
+    assert _decide(home, "Bash", {"command": command.format(path=home / "pause.json")}) == "deny"
+
+
 def test_reads_and_ordinary_writes_are_unaffected(tmp_path: Path) -> None:
     """The fix must not turn the gate into a nuisance: reading its own state is fine,
     and writing anywhere else is fine."""
@@ -91,6 +108,8 @@ def test_reads_and_ordinary_writes_are_unaffected(tmp_path: Path) -> None:
     home.mkdir()
     assert _decide(home, "Bash", {"command": f"cat {home}/approvals.json"}) == "allow"
     assert _decide(home, "Bash", {"command": f"echo hi > {tmp_path}/ordinary.txt"}) == "allow"
+    command = f"echo hi > {tmp_path}/ordinary.txt && cat {home}/approvals.json"
+    assert _decide(home, "Bash", {"command": command}) == "allow"
     assert _decide(home, "Bash", {"command": "git status"}) == "allow"
 
 

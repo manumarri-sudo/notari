@@ -190,8 +190,9 @@ a boundary, the agent runs as you and can read it. `notari status` reports:
 - 🔴 **unconfigured**: no signed perimeter yet
 - 🟡 **cooperative**: honest review automation, but the trust root is still
   reachable by the agent (a local/committed key)
-- 🟢 **enforced**: the approver trust root is off-box (a CI secret or hardware
-  key), the gate runs pinned trusted code, and a required status check gates merge
+- 🟢 **configured for strict CI**: the local checks found a trusted perimeter,
+  an approver key in the environment, and a pinned workflow. Confirm the
+  secrets and required status check in GitHub.
 
 To reach 🟢 you move three things off the machine (Notari prints the commands):
 
@@ -208,8 +209,9 @@ gh secret set NOTARI_APPROVER_PUBKEYS < .notari/keys/approver.pub
 notari doctor
 ```
 
-Checks Python, the installed Notari version, keys, the workflow, dependencies, the
-Action wiring, and the audit chain, and tells you what to fix.
+Checks the local Python and Notari installation, config, Claude Code hook, audit
+key and audit chain. Use `notari status` to check the workflow configuration and
+GitHub to confirm which checks are required to merge.
 
 ---
 
