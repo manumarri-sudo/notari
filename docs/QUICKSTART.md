@@ -5,7 +5,7 @@ boundary below is optional.
 
 ## 0. Try the scan
 
-With [uv installed](https://docs.astral.sh/uv/getting-started/installation/),
+On macOS or Linux, with [uv installed](https://docs.astral.sh/uv/getting-started/installation/),
 run this in a Git repository on a branch with a committed change:
 
 ```bash
@@ -17,8 +17,21 @@ untracked files are outside this comparison. PASS and NEEDS_REVIEW exit 0, BLOCK
 exits 1, and a scan error exits 2. Leave out `--no-passport` if you want JSON and
 Markdown evidence in the repository's `.notari/` directory.
 
-The [workflow template](scan-workflow.yml) runs the scan on GitHub. Confirm
-that a test PR gets the `notari/scan` status before making that check required.
+## GitHub Actions
+
+1. Copy [the scan workflow](scan-workflow.yml) into
+   `.github/workflows/notari-scan.yml` on the default branch. Adjust its branch
+   filter if pull requests target a branch other than `main`.
+2. Open a test PR and verify that GitHub posts `notari/scan` on the head commit.
+   Then make that status required in a ruleset or branch protection.
+3. Try a disposable PR that edits a workflow. Expect a BLOCK and confirm
+   GitHub refuses the merge while the status is required.
+
+GitHub can restrict the `pull_request_target` event on public repositories.
+If policy blocks the event, review your [Actions event policy](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target#default-policy-for-pull_request_target)
+and scope any allowance to this workflow. It checks out the trusted base and
+fetches the PR commit as Git data. Keep steps that build or execute candidate
+code in a separate workflow.
 
 The rest of this guide is the signed boundary: a human states, under a signature
 the agent cannot forge, which paths the agent may touch, and CI verifies each PR

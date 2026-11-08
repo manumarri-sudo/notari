@@ -16,6 +16,19 @@ import re
 import shlex
 from typing import Any
 
+from notari.secrets import redact
+
+
+def redact_passport(value: Any) -> Any:
+    """Treat imported passport text as untrusted before rendering it."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [redact_passport(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_passport(item) for key, item in value.items()}
+    return value
+
 
 def _undo(path: str, base: str = "") -> str:
     """Use the measured base when the finding came from committed changes."""

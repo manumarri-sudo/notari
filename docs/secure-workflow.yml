@@ -29,12 +29,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head (data-only, isolated subdirectory)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           path: _pr_checkout
           persist-credentials: false
+          # The signed boundary reads this checkout as data. Keep builds in a separate workflow.
+          allow-unsafe-pr-checkout: true
 
       - name: Notari Change Control
         uses: manumarri-sudo/notari@a33e4c30133b9175774af2a62abcd6474296da85  # 0.5.1 release action, SHA-pinned; bump on release
