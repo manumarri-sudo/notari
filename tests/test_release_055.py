@@ -56,6 +56,16 @@ def test_mixed_file_with_a_mysql_mention_does_not_flag_ffmpeg(text: str) -> None
     assert not [h for h in scan(text) if h.pattern_name == "mysql-pflag"]
 
 
+@pytest.mark.parametrize("separator", ["\n", " && ", "; "])
+def test_attached_password_stays_with_its_command(separator: str) -> None:
+    credential = "R8vN4xQ7mT2k"
+    text = (
+        f"mysql -p{credential} app{separator}ffmpeg -i in.mov -profile:v high -preset slow out.mp4"
+    )
+    hits = [h for h in scan(text) if h.pattern_name == "mysql-pflag"]
+    assert [text[h.matched_at : h.matched_at + h.length] for h in hits] == [credential]
+
+
 def test_pflag_context_is_computed_once_per_scan() -> None:
     # 10,000 candidate flags with no tool anywhere: the first candidate took
     # 13 s on the first candidate because the whole text was searched per hit.

@@ -903,6 +903,7 @@ _OUTPUT_WORD_RE = re.compile(
     r"""(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\\n])*"|'[^'\n]*'|\$\([^\n)]*\)|"""
     r"""`[^`\n]*`|\$(?!\()|[^\s|;&<>()"'\\$`])+"""
 )
+_SHELL_IO_RE = re.compile(r"(?:&>>?|<<<|<<-?|<>|[<>][>&|]?)[ \t]*")
 _GATE_OUTPUT_PATH_RE = re.compile(
     r"\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|\.notari/[^\s\"';|&]+"
 )
@@ -1146,9 +1147,11 @@ def is_gate_path_word(word: str) -> bool:
 
 
 def shell_words(segment: str) -> list[str]:
-    """Split one shell segment into words at unquoted whitespace, keeping the
-    quotes and escapes inside each word for normalize_shell_word to resolve.
-    `$(...)` spans stay inside their word."""
+    """Return argument words, excluding shell redirects and comments.
+
+    Keep quotes, escapes and command substitutions for word normalization.
+    Output destinations are checked separately by shell_output_targets.
+    """
     words: list[str] = []
     cur: list[str] = []
     quote: str | None = None
@@ -1178,6 +1181,15 @@ def shell_words(segment: str) -> list[str]:
         elif ch == ")" and depth:
             depth -= 1
             cur.append(ch)
+        elif not depth and ch in "<>&" and (io := _SHELL_IO_RE.match(segment, i)):
+            if cur and not all(c in "0123456789" for c in cur):
+                words.append("".join(cur))
+            cur = []
+            target = _OUTPUT_WORD_RE.match(segment, io.end())
+            i = target.end() if target else io.end()
+            continue
+        elif ch == "#" and not depth and not cur:
+            break
         elif ch.isspace() and not depth:
             if cur:
                 words.append("".join(cur))
@@ -1213,10 +1225,10 @@ _SHELL_ASSIGN_WORD_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Programs whose arguments name files they write, move, delete or link. For
 # the first set only the DESTINATION counts (`rsync ~/.notari/config.toml
 # /tmp/copy` is a read of the gate); for the second, every path argument does.
-_DESTINATION_VERBS: Final[frozenset[str]] = frozenset({"cp", "install", "ln", "rsync"})
+_DESTINATION_VERBS: Final[frozenset[str]] = frozenset({"cp", "install", "rsync"})
 # `mv` is in the second set: moving the gate file away destroys gate state.
 _EVERY_PATH_VERBS: Final[frozenset[str]] = frozenset(
-    {"tee", "rm", "mv", "truncate", "shred", "unlink"}
+    {"tee", "rm", "mv", "ln", "truncate", "shred", "unlink"}
 )
 _SED_IN_PLACE_RE = re.compile(r"^-[a-zA-Z]*i|^--in-place")
 _TARGET_DIR_OPTS: Final[frozenset[str]] = frozenset({"-t", "--target-directory"})
@@ -1243,6 +1255,7 @@ _INTERPRETER_WRITE_RE = re.compile(
 )
 _AWK_WRITE_RE = re.compile(r"(?<![<>=!])>(?!=)|\bsystem\s*\(")
 _GATE_PAYLOAD_RE = re.compile(r"\.notari(?:/|$|[\"',)])|\.claude/settings|\.cursor/hooks")
+_INTERPRETER_LITERAL_RE = re.compile(r"""(?:"([^"\r\n]+)"|'([^'\r\n]+)')""")
 _MAX_NESTING: Final[int] = 4
 
 
@@ -1324,8 +1337,18 @@ def write_target_words(segment: str, *, depth: int = 0) -> list[str]:
         if not any(_SED_IN_PLACE_RE.match(n) for n in norm):
             return []
         return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-")]
+    if (verb == "rsync" and "--remove-source-files" in norm) or (
+        verb == "cp"
+        and any(n == "--link" or re.fullmatch(r"-[a-zA-Z]*l[a-zA-Z]*", n) for n in norm)
+    ):
+        return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-")]
     if verb in _DESTINATION_VERBS:
         return _destination_words(args, norm)
+    if _INTERPRETER_RE.fullmatch(verb):
+        code = _interpreter_write_code(verb, args)
+        if code is not None:
+            return [m[1] or m[2] for m in _INTERPRETER_LITERAL_RE.finditer(code)]
+        return []
     if depth >= _MAX_NESTING:
         return []
     if verb in _NESTED_SHELLS:
@@ -1360,6 +1383,15 @@ def _nested_write_targets(script: str, depth: int) -> list[str]:
     return out
 
 
+def _interpreter_write_code(verb: str, args: list[str]) -> str | None:
+    is_awk = verb.endswith("awk")
+    if not is_awk and not any(normalize_shell_word(a) in _INTERPRETER_CODE_FLAGS for a in args):
+        return None
+    code = " ".join(normalize_shell_word(a) for a in args)
+    pattern = _AWK_WRITE_RE if is_awk else _INTERPRETER_WRITE_RE
+    return code if pattern.search(code) else None
+
+
 def _segment_interpreter_writes_gate(segment: str) -> bool:
     """A Python, Ruby, Node, Perl, PHP or awk one-liner whose code names the
     gate directory and performs a write."""
@@ -1369,19 +1401,12 @@ def _segment_interpreter_writes_gate(segment: str) -> bool:
     verb = normalize_shell_word(words[0]).rsplit("/", 1)[-1]
     if not _INTERPRETER_RE.match(verb):
         return False
-    args = words[1:]
-    is_awk = verb.endswith("awk")
-    if not is_awk and not any(a in _INTERPRETER_CODE_FLAGS for a in args):
+    code = _interpreter_write_code(verb, words[1:])
+    if code is None:
         return False
-    normalized = [normalize_shell_word(a) for a in args]
-    with_quotes = re.sub(r"\s+", "", "".join(normalized))
+    with_quotes = re.sub(r"\s+", "", code)
     bare = re.sub(r"[\"']+", "", with_quotes)
-    if not (_GATE_PAYLOAD_RE.search(with_quotes) or _GATE_PAYLOAD_RE.search(bare)):
-        return False
-    code = " ".join(normalized)
-    if is_awk:
-        return bool(_AWK_WRITE_RE.search(code))
-    return bool(_INTERPRETER_WRITE_RE.search(code))
+    return bool(_GATE_PAYLOAD_RE.search(with_quotes) or _GATE_PAYLOAD_RE.search(bare))
 
 
 def segment_writes_gate_path(segment: str) -> bool:

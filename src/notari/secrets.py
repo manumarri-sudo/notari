@@ -23,7 +23,7 @@ audit-logged / exported text without persisting the matched value.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -275,8 +275,9 @@ def scan(
     # red-team 2026-07-22, finding 5). The match points at the credential VALUE
     # (the `secret` group), not the whole line, so the reported location is the
     # secret itself.
-    pflag_tool_present: bool | None = None
     for label, cred_re in _INLINE_CRED_PATTERNS:
+        contexts = _pflag_contexts(text) if label == "mysql-pflag" else iter(())
+        context = None
         for m in cred_re.finditer(text):
             s, e = m.span("secret")
             if e <= s:
@@ -286,19 +287,10 @@ def scan(
             # ordinary code (F5 regression, 2026-07-23). Vendor-anchored inline
             # shapes are specific enough to report unconditionally.
             value = text[s:e]
-            # Shape-of-the-line checks for the two noisiest rules (see the
-            # constants' comments): an attached `-p` password needs a tool that
-            # takes one on the same line, and a plural name is not a credential.
-            # The tool may sit on another line (`args=(... -pSECRET ...)` then
-            # `mysql "${args[@]}"`, or `dbcmd=mysql` then `$dbcmd -pSECRET`), so the
-            # context is the tool named as a COMMAND or an assignment value anywhere
-            # in the text, computed once per scan, with comment lines ignored so
-            # `# mysql migration below` does not turn an ffmpeg `-pix_fmt` into a
-            # credential (Codex reviews of 0.5.1 and 0.5.5).
             if label == "mysql-pflag":
-                if pflag_tool_present is None:
-                    pflag_tool_present = _names_attached_pflag_tool(text)
-                if not pflag_tool_present:
+                if context is None or context[1] <= m.start():
+                    context = next((span for span in contexts if span[1] > m.start()), None)
+                if context is None or m.start() < context[0]:
                     continue
             if label == "env-secret" and _is_plural_reference(text[m.start() : s], value):
                 continue
@@ -466,23 +458,42 @@ _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
 # (`ffmpeg -pix_fmt yuv420p`, `-profile:v`). The six-month audit log
 # (2026-11-08) held 67 secret-in-write blocks, none a real credential, and every
 # `mysql-pflag` hit outside Notari's own tests was ffmpeg or a `-p` identifier.
-_ATTACHED_PFLAG_TOOL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)\b(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
-)
-# The tool in COMMAND position (line start, after a separator, after `$(`, or
-# after `sudo`/`env`-style prefixes) or as an assignment value (`dbcmd=mysql`),
-# so a mention in prose does not count. Comment lines are dropped first.
+# A command or simple shell assignment can name the password-taking tool.
 _PFLAG_TOOL_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:^|[;&|(`=])\s*(?:(?:sudo|doas|env|exec|command|nohup|nice|time|xargs|timeout)\s+"
     r"(?:-\S+\s+)*)*(?:\S*/)?(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
 )
 _COMMENT_LINE_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^[ \t]*#.*$")
+_PFLAG_COMMAND_END_RE = re.compile(r"(?<!\\)\n|[;&|]")
+_PFLAG_ARRAY_RE = re.compile(r"^[ \t]*[A-Za-z_]\w*=\(")
+_PFLAG_VARIABLE_COMMAND_RE = re.compile(r'^\s*"?\$(?:\{\w+\}|\w+)(?=[" \t]|$)')
 
 
-def _names_attached_pflag_tool(text: str) -> bool:
-    """Whether `text` runs or assigns a tool that takes an attached `-p` password.
-    One pass per scan; the cost does not grow with the number of candidates."""
-    return _PFLAG_TOOL_COMMAND_RE.search(_COMMENT_LINE_RE.sub("", text)) is not None
+def _pflag_contexts(text: str) -> Iterator[tuple[int, int]]:
+    """Find command spans once, keeping explicit flags with their own command.
+
+    Retain conservative coverage for array and variable invocations when the
+    text also names a password-taking tool.
+    """
+    has_tool = _PFLAG_TOOL_COMMAND_RE.search(_COMMENT_LINE_RE.sub("", text)) is not None
+    if not has_tool:
+        return
+    start = 0
+    in_array = False
+    for separator in _PFLAG_COMMAND_END_RE.finditer(text + "\n"):
+        end = separator.start()
+        command = text[start:end]
+        if not command.lstrip().startswith("#"):
+            in_array = in_array or bool(_PFLAG_ARRAY_RE.match(command))
+            if (
+                in_array
+                or _PFLAG_TOOL_COMMAND_RE.search(command)
+                or _PFLAG_VARIABLE_COMMAND_RE.match(command)
+            ):
+                yield start, end
+            if in_array and ")" in command:
+                in_array = False
+        start = separator.end()
 
 
 _PLURAL_CREDENTIAL_NAME_RE: Final[re.Pattern[str]] = re.compile(

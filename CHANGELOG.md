@@ -2,7 +2,7 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.5] - the gate reads shell words the way bash does
+## [0.5.5] - gate state write detection
 
 Three Codex reviews (2026-11-08) activated a pause against the released gate
 with commands a regex over the raw text cannot see as a write to `~/.notari/`:
@@ -13,7 +13,7 @@ forms), a directory destination with no trailing slash (`cp x "$HOME"/".notari"`
 `install -t ~/.notari`), `sed -i` with its flags reordered or quoted behind
 `nice`, `env -i`, `xargs` or a subshell, `find -exec`, `sh -c` and `eval`
 nesting, and Python, Ruby, Node, Perl, PHP or awk one-liners that write the
-file. This release reads each shell word the way bash does and checks that, in
+file. This release recognizes those shell word forms and checks them in
 both the classifier and the hook adapter.
 
 ### Security
@@ -59,19 +59,19 @@ both the classifier and the hook adapter.
 
 - The adapter counted every `sed` as a write; only `sed -i` counts, so
   `sed -n '1p' ~/.notari/pause.json` is a read again.
-- The `mysql-pflag` scanner context is the tool named in command position or
-  as an assignment value anywhere in the text, with comment lines ignored and
-  the test computed once per scan: a password supplied through an argument
-  array or a `$dbcmd` variable is found again, a `# mysql migration below`
-  comment above an ffmpeg `-pix_fmt` does not create a hit, and 10,000
-  candidate flags scan in 0.03 s instead of 13 s.
+- An attached `-p` password is checked in its own command. Shell arrays and
+  variable invocations can use nearby tool context. A MySQL command or comment
+  no longer makes an unrelated ffmpeg flag look like a password.
+- File-copy destinations stay protected when a command includes redirects or
+  a trailing comment. This also covers direct interpreter writes to relocated
+  state and operations that link or remove a protected source.
 - `notari off`, `notari on` and the hook's expiry cleanup emit their audit
   events AFTER the pause state lock is released. An intermediate candidate
   emitted them under the lock to keep the log in transition order, and a
-  stalled audit writer then kept `notari on` from clearing the pause; resume
-  never waits on audit I/O now, every transition event carries `pause_set_at`
-  so a reader orders events by the window they belong to, and a test holds the
-  audit lock while `notari on` restores gating.
+  stalled audit writer then kept `notari on` from clearing the pause. State
+  now resumes before the recap is written. The command can still wait to
+  finish the append, and concurrent rows can arrive out of order. Pair each
+  window and its recap using `pause_set_at`.
 - The pause lock descriptor is opened inside the cleanup `try`, so a signal
   between open and lock cannot leak it.
 - `CITATION.cff` still said 0.5.0; it says 0.5.5.

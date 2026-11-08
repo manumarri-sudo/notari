@@ -255,16 +255,16 @@ def replace_pause(*, duration_hours: float, reason: str) -> tuple[PauseState, Pa
     if hours <= 0:
         hours = DEFAULT_PAUSE_HOURS
     hours = min(hours, MAX_PAUSE_HOURS)
-    now = _now()
-    state = PauseState(
-        paused=True,
-        set_at=now.isoformat(),
-        expires_at=(now + timedelta(hours=hours)).isoformat(),
-        reason=reason.strip(),
-        allowed_count=0,
-    )
     with _state_lock():
         previous = load_state()
+        now = _now()
+        state = PauseState(
+            paused=True,
+            set_at=now.isoformat(),
+            expires_at=(now + timedelta(hours=hours)).isoformat(),
+            reason=reason.strip(),
+            allowed_count=0,
+        )
         if not save_state(state):
             raise OSError("could not save the new Notari pause")
     return state, previous if previous.paused else None
