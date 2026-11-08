@@ -44,7 +44,7 @@ Follow the [GitHub setup in the quickstart](docs/QUICKSTART.md#github-actions)
 to verify the status and set it as required. Repositories with GitHub Actions
 event restrictions may need a workflow-specific policy.
 
-## Use a signed boundary
+## Signed change control
 
 Run `notari init` to generate keys, sign an initial perimeter, and write a
 workflow. Use `notari guard` to set the standing boundaries, `notari begin`
@@ -60,6 +60,7 @@ The optional Claude Code and Cursor hooks inspect supported tool requests
 before execution. They can ask for approval or block a request and record the
 decision. Use `notari doctor` to check your setup, `notari audit` to inspect
 recorded decisions, and `notari audit verify` to check the local audit chain.
+The CLI sends no telemetry by default.
 
 The [security model](docs/SECURITY-MODEL.md) describes the rule coverage, key
 placement and local-hook limits. A scan PASS describes the checks applied to

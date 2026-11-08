@@ -36,7 +36,9 @@ jobs:
         run: uv run --locked --extra dev pytest tests/
       - name: Audit lockfile with optional and development dependencies
         run: |
-          uv export --locked --all-extras --no-emit-project --no-hashes -o "$RUNNER_TEMP/notari-lock.txt"
+          uv export --locked --all-extras --no-emit-project --no-hashes > "$RUNNER_TEMP/notari-lock-markers.txt"
+          # Audit pinned versions for every platform. Installation tests keep the markers.
+          sed 's/;.*$//' "$RUNNER_TEMP/notari-lock-markers.txt" | sort -u > "$RUNNER_TEMP/notari-lock.txt"
           uv run --locked --extra dev pip-audit --strict --no-deps --disable-pip -r "$RUNNER_TEMP/notari-lock.txt"
       - name: Audit a clean install
         run: |
