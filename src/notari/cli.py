@@ -1151,7 +1151,7 @@ def check_approval_cmd(
 # every release (part of the release process); it is the SINGLE source of truth
 # shared with docs/secure-workflow.yml.
 _NOTARI_ACTION_PIN = (
-    "manumarri-sudo/notari@18e4ba31370f14df25f83ff926212b0ec1c15770"  # 0.5.4 release action
+    "manumarri-sudo/notari@01c0774db86518274a37646d5a0471f228607063"  # 0.5.5 release action
 )
 
 _CONSUMER_WORKFLOW = f"""\

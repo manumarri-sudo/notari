@@ -40,7 +40,7 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$PR_HEAD_SHA"
 
       - name: Scan the fetched commit
-        uses: manumarri-sudo/notari@18e4ba31370f14df25f83ff926212b0ec1c15770  # 0.5.4 release action
+        uses: manumarri-sudo/notari@01c0774db86518274a37646d5a0471f228607063  # 0.5.5 release action
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}
