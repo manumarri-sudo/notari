@@ -288,7 +288,11 @@ def scan(
             # Shape-of-the-line checks for the two noisiest rules (see the
             # constants' comments): an attached `-p` password needs a tool that
             # takes one on the same line, and a plural name is not a credential.
-            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(_line_text(text, s)):
+            # The tool may sit on another line (`args=(... -pSECRET ...)` then
+            # `mysql "${args[@]}"`, or `dbcmd=mysql` then `$dbcmd -pSECRET`), so the
+            # whole text is the context, not the line; a file that names none of
+            # these tools anywhere is still exempt (Codex review of 0.5.1, finding 6).
+            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(text):
                 continue
             if label == "env-secret" and _is_plural_reference(text[m.start() : s], value):
                 continue

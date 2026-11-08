@@ -2463,32 +2463,37 @@ def off_cmd(
     # close the old bracket on the record first; otherwise the log shows two
     # gate.paused with one gate.resumed and the first window's calls vanish
     # from every recap (2026-07-12).
+    def _on_record(new: _pause.PauseState, superseded: _pause.PauseState | None) -> None:
+        # Runs under the state lock so the events land in transition order.
+        if superseded is not None:
+            _emit_gate_event(
+                "gate.resumed",
+                {
+                    "trigger": "superseded",
+                    "reason": superseded.reason,
+                    "allowed_while_paused": superseded.allowed_count,
+                    "allowed_by_log": superseded.allowed_by_log,
+                    "pause_set_at": superseded.set_at,
+                },
+            )
+        _emit_gate_event(
+            "gate.paused",
+            {
+                "reason": reason or "(none given)",
+                "expires_at": new.expires_at,
+                "duration_hours": round(hours, 4),
+                "set_via": "notari off",
+                "pause_set_at": new.set_at,
+            },
+        )
+
     try:
-        state, superseded = _pause.replace_pause(duration_hours=hours, reason=reason)
+        state, _superseded = _pause.replace_pause(
+            duration_hours=hours, reason=reason, after_save=_on_record
+        )
     except OSError as exc:
         console.print(str(exc), style="red", markup=False)
         raise typer.Exit(1) from exc
-    if superseded is not None:
-        _emit_gate_event(
-            "gate.resumed",
-            {
-                "trigger": "superseded",
-                "reason": superseded.reason,
-                "allowed_while_paused": superseded.allowed_count,
-                "allowed_by_log": superseded.allowed_by_log,
-                "pause_set_at": superseded.set_at,
-            },
-        )
-    _emit_gate_event(
-        "gate.paused",
-        {
-            "reason": reason or "(none given)",
-            "expires_at": state.expires_at,
-            "duration_hours": round(hours, 4),
-            "set_via": "notari off",
-            "pause_set_at": state.set_at,
-        },
-    )
     console.print(
         "[bold yellow]notari gate OFF[/bold yellow] - all tool calls will be allowed and logged."
     )
@@ -2508,24 +2513,28 @@ def on_cmd() -> None:
     from notari import pause as _pause
 
     console = Console()
+
+    def _on_record(closed: _pause.PauseState) -> None:
+        # Runs under the state lock so the event lands in transition order.
+        _emit_gate_event(
+            "gate.resumed",
+            {
+                "trigger": "manual",
+                "reason": closed.reason,
+                "allowed_while_paused": closed.allowed_count,
+                "allowed_by_log": closed.allowed_by_log,
+                "pause_set_at": closed.set_at,
+            },
+        )
+
     try:
-        state = _pause.resume_if_paused()
+        state = _pause.resume_if_paused(after_save=_on_record)
     except OSError as exc:
         console.print(str(exc), style="red", markup=False)
         raise typer.Exit(1) from exc
     if state is None:
         console.print("[dim]gate was already on. nothing to resume.[/dim]")
         return
-    _emit_gate_event(
-        "gate.resumed",
-        {
-            "trigger": "manual",
-            "reason": state.reason,
-            "allowed_while_paused": state.allowed_count,
-            "allowed_by_log": state.allowed_by_log,
-            "pause_set_at": state.set_at,
-        },
-    )
     console.print("[bold green]notari gate ON[/bold green] - full gating restored.")
     if state.allowed_count:
         console.print(

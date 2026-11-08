@@ -79,6 +79,8 @@ from notari.policy import (
     _mask_quoted,
     classify,
     classify_command,
+    command_writes_gate_path,
+    is_gate_path_word,
     shell_output_targets,
     shell_segments,
 )
@@ -372,7 +374,13 @@ _GATE_CONFIG_SUFFIXES: Final[tuple[str, ...]] = (
 _GATE_STATE_DIRS: Final[tuple[str, ...]] = (".notari",)
 
 
-_WRITE_VERB = re.compile(r"\b(?:tee|sed|cp|mv|dd|install|rm|ln|truncate|python\d*)\b")
+# `sed` counts only in place: `sed -n '1p' ~/.notari/pause.json` is a read
+# (Codex review of 0.5.1, finding 7). Interpreters count because a one-liner
+# can write the file.
+_WRITE_VERB = re.compile(
+    r"\b(?:tee|sed\s+(?:-[a-zA-Z]*i|--in-place)|cp|mv|dd|install|rm|ln|truncate|shred|"
+    r"python\d*|ruby|node|perl)\b"
+)
 
 
 def _writes_to_gate_state(cmd: str) -> bool:
@@ -387,8 +395,13 @@ def _writes_to_gate_state(cmd: str) -> bool:
     def protected(token: str) -> bool:
         if "/" not in token:
             return False
+        if is_gate_path_word(token):
+            return True
         home = str(Path.home())
         return _is_gate_config_path(token.replace("$HOME", home).replace("${HOME}", home))
+
+    if command_writes_gate_path(cmd):
+        return True
 
     for target in shell_output_targets(cmd):
         with contextlib.suppress(ValueError):
@@ -1393,28 +1406,30 @@ def _emit_resume_if_expired(log_path: Path) -> None:
         active, _ = _pause.is_paused(state)
         if active:
             return
+
         # Flag still set on disk but window expired → close the bracket. Only
         # the process that actually flips the flag emits, so concurrent hooks
         # cannot write the recap twice (2026-06-12 had a doubled gate.resumed).
-        closed = _pause.resume_if_paused(expired_only=True)
-        if closed is None:
-            return
-        with contextlib.suppress(Exception):
-            with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
-                audit.emit(
-                    event_type="gate.resumed",
-                    session_id="notari-cli",
-                    agent_id="notari.pause",
-                    risk="low",
-                    payload={
-                        "trigger": "auto-expired",
-                        "reason": closed.reason,
-                        "allowed_while_paused": closed.allowed_count,
-                        "allowed_by_log": closed.allowed_by_log,
-                        "pause_set_at": closed.set_at,
-                    },
-                    force_fsync=True,
-                )
+        def _emit(closed: _pause.PauseState) -> None:
+            # Runs under the state lock so the recap lands in transition order.
+            with contextlib.suppress(Exception):
+                with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
+                    audit.emit(
+                        event_type="gate.resumed",
+                        session_id="notari-cli",
+                        agent_id="notari.pause",
+                        risk="low",
+                        payload={
+                            "trigger": "auto-expired",
+                            "reason": closed.reason,
+                            "allowed_while_paused": closed.allowed_count,
+                            "allowed_by_log": closed.allowed_by_log,
+                            "pause_set_at": closed.set_at,
+                        },
+                        force_fsync=True,
+                    )
+
+        _pause.resume_if_paused(expired_only=True, after_save=_emit)
 
 
 def _handle_paused(

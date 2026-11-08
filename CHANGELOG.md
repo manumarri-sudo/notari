@@ -2,6 +2,57 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - the gate reads shell words the way bash does
+
+Two Codex reviews of the 0.5.1 hardening branch (2026-11-08) activated a pause
+against the released gate with commands a regex over the raw text cannot see as
+a write to `~/.notari/`: quoted fragments (`"$HOME"/".notari"/pause.json`,
+`~/"."notari/`), a backslash inside the name (`~/.nota\ri/`), a continuation
+inside the name, brace expansion (`~/.{notari,cache}/`), a directory destination
+with no trailing slash (`cp x "$HOME"/".notari"`, `install -t ~/.notari`), and
+Ruby or Node one-liners that write the file. This release reads each shell word
+the way bash does and checks that, in both the classifier and the hook adapter.
+
+### Security
+
+- **Gate self-tamper by shell word.** `normalize_shell_word` removes quotes,
+  resolves escapes and continuations and folds `$HOME` to `~`;
+  `is_gate_path_word` tests the result (expanded over one brace group) for the
+  gate directory itself or a file under it, or the host agent's hook settings.
+  `shell_output_targets` feeds redirect targets through it, and the new
+  `command_writes_gate_path` walks each shell segment (quoted separators stay
+  inside their word) for a path-taking program (`tee`, `cp`, `mv`, `dd`,
+  `install`, `rm`, `ln`, `truncate`, `shred`, `rsync`), a `sed -i`, or a
+  Python, Ruby, Node, Perl or PHP one-liner whose payload names the gate
+  directory and calls a write. The adapter's `_writes_to_gate_state` consults
+  the same helpers. Every shape above is CRITICAL in both layers
+  (`tests/test_gate_path_words.py`).
+- **Bounded time.** The 0.5.1 branch's attempt at the same fix was a regex with
+  overlapping quote alternatives that took over 11 s on twenty adjacent quoted
+  fragments, past the hook's 10 s budget. The word scanner is one linear pass;
+  the test suite holds four adversarial inputs under half a second.
+
+### Fixed
+
+- `sed -n '1p' ~/.notari/pause.json` and similar reads are no longer escalated
+  by the adapter, which counted every `sed` as a write; only `sed -i` counts.
+- The `mysql-pflag` scanner context is the whole text, not the line, so a
+  password supplied through an argument array or a `$dbcmd` variable is found
+  again; a file that names no password-taking tool anywhere is still exempt.
+- `notari off`, `notari on` and the hook's expiry cleanup emit their audit
+  events inside the pause state lock (`after_save`), so the log keeps the same
+  order as the transitions; a slow `off` could previously append its
+  `gate.paused` after a faster `on` had appended `gate.resumed`.
+- The pause lock descriptor is opened inside the cleanup `try`, so a signal
+  between open and lock cannot leak it.
+
+### Still outside the regex and word rules, by design
+
+- A relative write after `cd ~/.notari`, a symlink created elsewhere and written
+  through, and a pathlib join assembled from variables are not recognised by
+  text; the adapter's resolved-path check catches the literal forms and
+  `docs/SECURITY-MODEL.md` names shell grammar as unbounded.
+
 ## [0.5.4] - audit fixes
 
 - Check shell redirect targets before flagging a write to gate state.

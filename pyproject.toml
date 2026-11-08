@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "notari"
-version = "0.5.4"
+version = "0.5.5"
 description = "Scan Git changes for credential patterns and sensitive paths, with optional signed change boundaries."
 readme = "README.md"
 license = "MIT"

@@ -37,7 +37,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -69,8 +69,11 @@ def _state_lock() -> Iterator[None]:
         return
     p = _state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(f"{p}.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = -1
     try:
+        # Opened inside the try so a signal between open and the lock loop cannot
+        # leak the descriptor (Codex review of 0.5.1, finding 11).
+        fd = os.open(f"{p}.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         deadline = time.monotonic() + 2
         while True:
             try:
@@ -82,7 +85,8 @@ def _state_lock() -> Iterator[None]:
                 time.sleep(0.01)
         yield
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
 
 
 def _now() -> datetime:
@@ -238,8 +242,20 @@ def pause(
     return replace_pause(duration_hours=duration_hours, reason=reason)[0]
 
 
-def replace_pause(*, duration_hours: float, reason: str) -> tuple[PauseState, PauseState | None]:
-    """Start a new window and return any old window that needs a recap."""
+# A callback run INSIDE the state lock, right after the state file is written.
+# Audit events emitted here keep the log in the same order as the transitions:
+# emitting after the lock was released let a slow `off` append its gate.paused
+# after a faster `on` had appended gate.resumed, so the log read resumed-then-
+# paused while the gate was on (Codex review of 0.5.1, finding 8).
+AfterReplace = Callable[[PauseState, PauseState | None], None]
+AfterResume = Callable[[PauseState], None]
+
+
+def replace_pause(
+    *, duration_hours: float, reason: str, after_save: AfterReplace | None = None
+) -> tuple[PauseState, PauseState | None]:
+    """Start a new window and return any old window that needs a recap.
+    `after_save(new, superseded)` runs under the lock once the write landed."""
     hours = duration_hours
     if hours <= 0:
         hours = DEFAULT_PAUSE_HOURS
@@ -256,7 +272,10 @@ def replace_pause(*, duration_hours: float, reason: str) -> tuple[PauseState, Pa
         previous = load_state()
         if not save_state(state):
             raise OSError("could not save the new Notari pause")
-    return state, previous if previous.paused else None
+        superseded = previous if previous.paused else None
+        if after_save is not None:
+            after_save(state, superseded)
+    return state, superseded
 
 
 def resume() -> PauseState:
@@ -269,11 +288,14 @@ def resume() -> PauseState:
     return state
 
 
-def resume_if_paused(*, expired_only: bool = False) -> PauseState | None:
+def resume_if_paused(
+    *, expired_only: bool = False, after_save: AfterResume | None = None
+) -> PauseState | None:
     """Flip the gate back on only if the flag is still set; None if it was not.
 
     Exactly one caller wins when several hook processes notice an expired
     pause at the same time, so the gate.resumed bracket is emitted once.
+    `after_save(closed)` runs under the lock once the write landed.
     """
     with _state_lock():
         state = load_state()
@@ -282,6 +304,8 @@ def resume_if_paused(*, expired_only: bool = False) -> PauseState | None:
         state.paused = False
         if not save_state(state):
             raise OSError("could not clear the Notari pause")
+        if after_save is not None:
+            after_save(state)
     return state
 
 
