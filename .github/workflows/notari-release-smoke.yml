@@ -62,3 +62,5 @@ jobs:
           base-sha: ${{ github.event.pull_request.base.sha }}
           checkout-path: _pr_checkout
           # block-on-review: "true"   # fail the job on NEEDS_REVIEW as well
+
+# Harmless edit to exercise the scan verdict
