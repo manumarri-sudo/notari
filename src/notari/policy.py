@@ -367,21 +367,11 @@ CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
         "base64-decoded payload piped to interpreter",
         "Decode to a file first so you can inspect the script before running it",
     ),
-    # Gate self-tamper: a write/delete/in-place-edit targeting Notari's own
-    # config or the host agent's hook settings is an attempt to disable the
-    # gate from inside (the second-review critique's "attacker writes to
-    # settings.json to alter hook routing"). Mutating verb + a gate-config
-    # path. (Within the app-layer model: a write that does NOT go through a
-    # gated tool still bypasses this - see docs/SECURITY-MODEL.md.)
-    (
-        # Keep mutating verbs and their targets within the same shell segment.
-        r"(?:\btee\b|\bsed\s+-i|\btruncate\b|\brm\b|\bmv\b|\bcp\b|\bdd\b|\bln\b)"
-        r"[^|;&\n]*(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
-        r"\.notari/(?:config\.toml|key|overrides\.toml|pause\.json))",
-        "write/delete targeting the gate's own config (settings.json / config.toml)",
-        "Editing the gate's config to disable it is a privilege-escalation shape. "
-        "Change policy deliberately via `notari` commands, not by rewriting the files",
-    ),
+    # Gate self-tamper by a path-taking program (tee, cp, mv, sed -i, ...) is
+    # decided by the shell-word parser in classify_command (command_writes_
+    # gate_path), which reads sources and destinations the way bash does. The
+    # regex that lived here matched a read (`cp ~/.notari/config.toml /tmp/x`)
+    # the same as a write and could not see a quote-split path; 0.5.5.
     # Gate self-tamper via environment variable: setting/exporting a var whose
     # purpose is to disable the host agent's hooks or Notari itself routes around
     # the gate without touching a config file. (Tier-2 audit 2026-06-12.)
@@ -653,26 +643,8 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
         "Disabling the gate is a human-only action; run `notari off` in your own "
         "terminal. The pause/overnight library API is not an agent escape hatch.",
     ),
-    # Gate self-disable via a write to the on-disk state, with the path commonly
-    # QUOTED (`> \"$HOME/.notari/pause.json\"`), which masking would blank - so
-    # scan raw. Mirrors the masked self-tamper rule but survives quoting; pause.json
-    # is the gate-off switch and was previously reachable through a bare Bash
-    # redirect. (audit: 2nd-review gap #2.)
-    (
-        # `.notari/<anything>` rather than a list of filenames. Enumerating them
-        # shipped a full bypass: pause.json was covered but approvals.json and
-        # overnight.json were not, and writing a forged record into approvals.json
-        # flipped a CRITICAL deny to allow with no human in the loop. Any file under
-        # the gate's own state directory is self-tamper, including ones added later.
-        # Redirect targets are checked separately before the raw patterns.
-        r"(?:\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\bdd\b|\binstall\b|\brm\b|\bln\b)"
-        r"[^|;&\n]*"
-        r"(?:\.claude/settings(?:\.local)?\.json|\.cursor/hooks\.json|"
-        r"\.notari/[^\s\"';|&]+)",
-        "write/delete targeting the gate's own config/state (quoted-path form)",
-        "Rewriting the gate's state files to disable it is a self-tamper shape. "
-        "Change policy via `notari` commands, not by rewriting the files.",
-    ),
+    # The quoted-path self-tamper rule moved to the shell-word parser as well
+    # (command_writes_gate_path, run before these raw patterns); 0.5.5.
     (
         r"(?:^|[;&|]\s*)ruby\s+-e\b.*?"
         r"(?:FileUtils\.rm_rf|FileUtils\.remove_dir|File\.delete|Dir\.delete)",
@@ -957,21 +929,67 @@ def shell_output_targets(command: str) -> Iterator[str]:
 # ---------------------------------------------------------------------------
 # Gate self-tamper by shell WORD, not by regex over the whole line (0.5.5).
 #
-# Bash joins `"$HOME"/".notari"/pause.json`, `~/"."notari/`, `~/.nota\ri/` and
-# `~/.no\<newline>tari/` into the same protected path, and expands
-# `~/.{notari,cache}/` to it; a regex over the raw text sees none of those as
-# `.notari/`. The Codex reviews of 0.5.1 (2026-11-08) activated a pause with
-# each shape against the released gate. These helpers read a word the way the
-# shell does, in one linear pass with no overlapping alternatives, so there is
-# no backtracking to time out the hook (the 0.5.1 branch's regex took over 11 s
-# on twenty adjacent quoted fragments; this path is bounded by the word length).
+# Bash joins `"$HOME"/".notari"/pause.json`, `~/"."notari/`, `~/.nota\ri/`,
+# `~/.nota$'\x72'i/` and `~/.no\<newline>tari/` into the same protected path,
+# and expands `~/.{notari,cache}/` to it; a regex over the raw text sees none
+# of those as `.notari/`. Three Codex reviews (2026-11-08) activated a pause
+# with each shape against the released gate. These helpers read a word the way
+# the shell does, in one linear pass with no overlapping alternatives, so there
+# is no backtracking to time out the hook. Every loop below is bounded by the
+# input length; brace expansion has an explicit result budget and falls back to
+# a conservative substring test when a word exceeds it.
 # ---------------------------------------------------------------------------
+
+_ANSI_C_ESCAPES: Final[dict[str, str]] = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "e": "\x1b",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+}
+_HEX_RE = re.compile(r"[0-9a-fA-F]{1,2}")
+_OCT_RE = re.compile(r"[0-7]{1,3}")
+
+
+def _ansi_c(body: str) -> str:
+    """Decode the body of a `$'...'` word the way bash does (common escapes)."""
+    out: list[str] = []
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt == "x":
+            m = _HEX_RE.match(body, i + 2)
+            if m:
+                out.append(chr(int(m.group(0), 16)))
+                i = m.end()
+                continue
+        m = _OCT_RE.match(body, i + 1)
+        if m:
+            out.append(chr(int(m.group(0), 8)))
+            i = m.end()
+            continue
+        out.append(_ANSI_C_ESCAPES.get(nxt, nxt))
+        i += 2
+    return "".join(out)
 
 
 def normalize_shell_word(word: str) -> str:
-    """The characters bash would hand a program for `word`: quotes removed,
-    backslash escapes resolved, backslash-newline continuations dropped.
-    `$HOME` and `${HOME}` become `~`; other expansions are left as written."""
+    """The characters bash would hand a program for `word`: quotes removed
+    (including `$'...'`), backslash escapes resolved, backslash-newline
+    continuations dropped. `$HOME` and `${HOME}` (with or without a default)
+    become `~`; other expansions are left as written."""
     out: list[str] = []
     quote: str | None = None
     i = 0
@@ -992,6 +1010,12 @@ def normalize_shell_word(word: str) -> str:
                 i += 1
             else:
                 out.append(ch)
+        elif ch == "$" and word.startswith("$'", i):
+            j = i + 2
+            while j < n and not (word[j] == "'" and word[j - 1] != "\\"):
+                j += 1
+            out.append(_ansi_c(word[i + 2 : j]))
+            i = j
         elif ch in "'\"":
             quote = ch
         elif ch == "\\" and i + 1 < n:
@@ -1004,32 +1028,120 @@ def normalize_shell_word(word: str) -> str:
     return _HOME_REF_RE.sub("~", "".join(out))
 
 
-_HOME_REF_RE = re.compile(r"\$\{HOME\}|\$HOME\b")
-# One brace group with alternatives: `.{notari,cache}`. Nested groups are rare
-# in a path and are not expanded; the outer alternatives are capped.
-_BRACE_GROUP_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
-_MAX_BRACE_ALTERNATIVES: Final[int] = 16
+_HOME_REF_RE = re.compile(r"\$\{HOME(?::?[-=?+][^}]*)?\}|\$HOME\b")
 # A path whose components name the gate's own state directory or the host
 # agent's hook settings. The directory itself counts (`cp x ~/.notari`,
 # `install -t ~/.notari`), not only files under it.
 _GATE_PATH_WORD_RE = re.compile(
     r"\.claude/settings(?:\.local)?\.json$|\.cursor/hooks\.json$|(?:^|/)\.notari(?:/|$)"
 )
+# Brace expansion budget. A word with more results than this, more opening
+# braces than this, or longer than this many characters is not expanded; the
+# conservative fallback treats it as the gate path when it merely contains
+# the directory's name, so an adversarial brace word is denied, never slow.
+_MAX_BRACE_RESULTS: Final[int] = 64
+_MAX_BRACE_OPENERS: Final[int] = 16
+_MAX_BRACE_WORD_LEN: Final[int] = 2048
+_MAX_SEQUENCE_LEN: Final[int] = 32
+_SEQUENCE_RE = re.compile(r"^(-?\d+)\.\.(-?\d+)$|^([A-Za-z])\.\.([A-Za-z])$")
+
+
+def _sequence(m: re.Match[str]) -> list[str]:
+    if m.group(1) is not None:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        step = 1 if hi >= lo else -1
+        if abs(hi - lo) + 1 > _MAX_SEQUENCE_LEN:
+            return []
+        return [str(v) for v in range(lo, hi + step, step)]
+    lo_c, hi_c = ord(m.group(3)), ord(m.group(4))
+    step = 1 if hi_c >= lo_c else -1
+    if abs(hi_c - lo_c) + 1 > _MAX_SEQUENCE_LEN:
+        return []
+    return [chr(v) for v in range(lo_c, hi_c + step, step)]
+
+
+def _first_brace_group(text: str) -> tuple[int, int, list[str]] | None:
+    """(start, end, alternatives) of the first expandable `{...}` in `text`,
+    scanning each candidate opener once; None when there is none."""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        alts: list[str] = []
+        last = start + 1
+        closed = False
+        for j in range(start, len(text)):
+            ch = text[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    alts.append(text[last:j])
+                    closed = True
+                    if len(alts) > 1:
+                        return start, j + 1, alts
+                    seq = _SEQUENCE_RE.match(text[start + 1 : j])
+                    if seq:
+                        expanded = _sequence(seq)
+                        if expanded:
+                            return start, j + 1, expanded
+                    break
+            elif ch == "," and depth == 1:
+                alts.append(text[last:j])
+                last = j + 1
+        if not closed:
+            return None
+        start = text.find("{", start + 1)
+    return None
+
+
+def _expand_braces(text: str) -> list[str] | None:
+    """Every word `text` expands to, or None when the budget is exceeded."""
+    pending = [text]
+    done: list[str] = []
+    while pending:
+        current = pending.pop()
+        group = _first_brace_group(current)
+        if group is None:
+            done.append(current)
+            continue
+        gstart, gend, alts = group
+        for alt in alts:
+            pending.append(current[:gstart] + alt + current[gend:])
+        if len(pending) + len(done) > _MAX_BRACE_RESULTS:
+            return None
+    return done
 
 
 def gate_path_candidates(word: str) -> Iterator[str]:
-    """The normalized word, expanded over one brace group if it has one."""
+    """The normalized word, expanded over its brace groups within budget."""
     text = normalize_shell_word(word)
-    group = _BRACE_GROUP_RE.search(text)
-    if group is None:
+    if "{" not in text:
         yield text
         return
-    for alt in group.group(1).split(",")[:_MAX_BRACE_ALTERNATIVES]:
-        yield text[: group.start()] + alt + text[group.end() :]
+    if len(text) > _MAX_BRACE_WORD_LEN or text.count("{") > _MAX_BRACE_OPENERS:
+        yield text
+        return
+    expanded = _expand_braces(text)
+    if expanded is None:
+        yield text
+        return
+    yield from expanded
 
 
 def is_gate_path_word(word: str) -> bool:
     """True when the shell word names the gate's own config or state."""
+    text = normalize_shell_word(word)
+    if "{" in text:
+        over_budget = (
+            len(text) > _MAX_BRACE_WORD_LEN
+            or text.count("{") > _MAX_BRACE_OPENERS
+            or _expand_braces(text) is None
+        )
+        if over_budget:
+            # Conservative: a brace word too large to expand is denied if it so
+            # much as contains the directory's name.
+            return "notari" in text.lower() or bool(_GATE_PATH_WORD_RE.search(text))
     return any(_GATE_PATH_WORD_RE.search(c) for c in gate_path_candidates(word))
 
 
@@ -1078,57 +1190,207 @@ def shell_words(segment: str) -> list[str]:
     return words
 
 
-# Words that only wrap the real command.
-_COMMAND_PREFIXES: Final[frozenset[str]] = frozenset(
-    {"env", "command", "builtin", "exec", "sudo", "doas", "nohup", "nice", "time", "ionice"}
-)
+# Words that only wrap the real command, and the options of theirs that take a
+# separate argument (`nice -n 1 cp ...`, `xargs -I {} cp ...`, `sudo -u bob ...`).
+_COMMAND_PREFIXES: Final[dict[str, frozenset[str]]] = {
+    "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir"}),
+    "command": frozenset(),
+    "builtin": frozenset(),
+    "exec": frozenset({"-a"}),
+    "sudo": frozenset({"-u", "-g", "-C", "-p", "-h", "-r", "-t", "-U"}),
+    "doas": frozenset({"-u", "-C"}),
+    "nohup": frozenset(),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "-P", "-u"}),
+    "time": frozenset({"-f", "-o"}),
+    "xargs": frozenset({"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a"}),
+    "timeout": frozenset({"-s", "-k", "--signal", "--kill-after"}),
+    "caffeinate": frozenset({"-t", "-w"}),
+    "stdbuf": frozenset({"-i", "-o", "-e"}),
+    "chrt": frozenset(),
+}
 _SHELL_ASSIGN_WORD_RE = re.compile(r"^[A-Za-z_]\w*=")
-# Programs whose arguments name a file they write, move, delete or link.
-_PATH_WRITING_VERBS: Final[frozenset[str]] = frozenset(
-    {"tee", "cp", "mv", "dd", "install", "rm", "ln", "truncate", "shred", "rsync", "unlink"}
+# Programs whose arguments name files they write, move, delete or link. For
+# the first set only the DESTINATION counts (`rsync ~/.notari/config.toml
+# /tmp/copy` is a read of the gate); for the second, every path argument does.
+_DESTINATION_VERBS: Final[frozenset[str]] = frozenset({"cp", "install", "ln", "rsync"})
+# `mv` is in the second set: moving the gate file away destroys gate state.
+_EVERY_PATH_VERBS: Final[frozenset[str]] = frozenset(
+    {"tee", "rm", "mv", "truncate", "shred", "unlink"}
 )
 _SED_IN_PLACE_RE = re.compile(r"^-[a-zA-Z]*i|^--in-place")
-# Interpreter one-liners that write a file. The payload is checked with every
-# quote and space removed, so `"/Users/x/." "notari/pause.json"` and
-# `File.expand_path("~/.notari/pause.json")` both read as the gate directory.
-_INTERPRETER_RE = re.compile(r"^(?:python\d*(?:\.\d+)?|ruby|node|nodejs|perl|php)$")
-_INTERPRETER_WRITE_RE = re.compile(
-    r"\.write\b|write_text|write_bytes|\bopen\s*\(|File\.|IO\.|FileUtils|\bfs\b|writeFile|"
-    r"appendFile|\bunlink\b|\bremove\b|rmtree|\btruncate\b|\brename\b|\breplace\b|"
-    r"copyfile|\bcopy\b|\bmove\b|\bsymlink\b|\blink\b"
+_TARGET_DIR_OPTS: Final[frozenset[str]] = frozenset({"-t", "--target-directory"})
+_NESTED_SHELLS: Final[frozenset[str]] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
+_FIND_EXEC: Final[frozenset[str]] = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# Interpreter one-liners that write a file. The payload is checked with
+# whitespace removed (quotes kept, so `joinpath(".notari", ...)` reads as the
+# directory) and again with quotes removed too (so `"/Users/x/." "notari/..."`
+# reads as the path). The write evidence is the OPERATION: a write-mode open, a
+# write call, a delete, a rename, a copy; `File.read`, `readFileSync`, a
+# read-mode `open(...)` and Perl's `open(F, "<", ...)` are not evidence.
+_INTERPRETER_RE = re.compile(r"^(?:python\d*(?:\.\d+)?|ruby|node|nodejs|perl|php|g?awk|mawk)$")
+_INTERPRETER_CODE_FLAGS: Final[frozenset[str]] = frozenset(
+    {"-c", "-e", "-E", "-r", "-p", "-pe", "-ne", "--eval", "--print", "-x"}
 )
-_GATE_PAYLOAD_RE = re.compile(r"\.notari(?:/|$|[\"'])|\.claude/settings|\.cursor/hooks")
+_INTERPRETER_WRITE_RE = re.compile(
+    r"\.write(?:_text|_bytes|lines)?\s*\(|\bwriteFile(?:Sync)?\b|\bappendFile|createWriteStream|"
+    r"file_put_contents|File\.(?:write|delete|rename|unlink|truncate|symlink|link)\b|"
+    r"File\.open\s*\([^()]*[\"'][rb]*[wax+]|IO\.write|FileUtils|"
+    r"\b(?:os|shutil|fs|fsp|Path)\.(?:remove|unlink|rmtree|rename|replace|copy\w*|move|symlink|"
+    r"link|truncate|rm\w*|touch|mkdir)\s*\(|\b(?:unlink|rename|truncate|symlink|link)\s*\(|"
+    r"\bopen\s*\([^()]*?[\"'][rb]*[wax+][rb+]*[\"']|\bopen\s*\([^()]*[\"']\s*>|"
+    r"\bfopen\s*\([^()]*[\"'][rb]*[wax+]"
+)
+_AWK_WRITE_RE = re.compile(r"(?<![<>=!])>(?!=)|\bsystem\s*\(")
+_GATE_PAYLOAD_RE = re.compile(r"\.notari(?:/|$|[\"',)])|\.claude/settings|\.cursor/hooks")
+_MAX_NESTING: Final[int] = 4
+
+
+def _command_words(words: list[str]) -> list[str]:
+    """`words` with wrapper commands, their options, leading assignments and a
+    glued `(`, `{` or `!` removed, so the first word is the program that acts.
+    Index-based: a hundred thousand `A=1` prefixes cost one pass."""
+    i = 0
+    n = len(words)
+    first: str | None = None
+    while i < n:
+        w = words[i] if first is None else first
+        stripped = w.lstrip("({!")
+        if not stripped:
+            i += 1
+            first = None
+            continue
+        if _SHELL_ASSIGN_WORD_RE.match(stripped):
+            i += 1
+            first = None
+            continue
+        name = normalize_shell_word(stripped).rsplit("/", 1)[-1]
+        opts = _COMMAND_PREFIXES.get(name)
+        if opts is None:
+            return [stripped, *words[i + 1 :]]
+        i += 1
+        first = None
+        while i < n and words[i].startswith("-") and words[i] != "--":
+            flag = words[i]
+            i += 1
+            if flag in opts and i < n:
+                i += 1
+        if i < n and words[i] == "--":
+            i += 1
+        if name == "timeout" and i < n:
+            i += 1  # the duration
+    return []
+
+
+def _destination_words(args: list[str], norm: list[str]) -> list[str]:
+    """The words a cp/install/ln/rsync invocation writes: the `-t DIR` or
+    `--target-directory=DIR` target, else the last non-option argument.
+    Options are read from the normalized words; the raw word is returned."""
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        a = norm[i]
+        if a in _TARGET_DIR_OPTS and i + 1 < len(args):
+            return [args[i + 1]]
+        if a.startswith("--target-directory="):
+            return [a.split("=", 1)[1]]
+        if a.startswith("-t") and len(a) > 2 and not a.startswith("--"):
+            return [a[2:]]
+        if a == "--":
+            positional.extend(args[i + 1 :])
+            break
+        if not a.startswith("-"):
+            positional.append(args[i])
+        i += 1
+    return positional[-1:] if len(positional) >= 2 else []
+
+
+def write_target_words(segment: str, *, depth: int = 0) -> list[str]:
+    """The raw shell words that one segment WRITES through a path-taking
+    program or `sed -i`, after wrapper removal. Empty for reads and for
+    programs that are not recognised. Nested `sh -c`, `eval` and `find -exec`
+    are followed to a bounded depth."""
+    words = _command_words(shell_words(segment))
+    if not words:
+        return []
+    verb = normalize_shell_word(words[0]).rsplit("/", 1)[-1]
+    args = words[1:]
+    norm = [normalize_shell_word(a) for a in args]
+    if verb in _EVERY_PATH_VERBS:
+        return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-") or n == "-"]
+    if verb == "dd":
+        return [n[3:] for n in norm if n.startswith("of=")]
+    if verb == "sed":
+        if not any(_SED_IN_PLACE_RE.match(n) for n in norm):
+            return []
+        return [a for a, n in zip(args, norm, strict=True) if not n.startswith("-")]
+    if verb in _DESTINATION_VERBS:
+        return _destination_words(args, norm)
+    if depth >= _MAX_NESTING:
+        return []
+    if verb in _NESTED_SHELLS:
+        for i, n in enumerate(norm):
+            if n in ("-c", "-lc", "-ec", "-ic") and i + 1 < len(args):
+                return _nested_write_targets(norm[i + 1], depth)
+        return []
+    if verb == "eval":
+        return _nested_write_targets(" ".join(norm), depth)
+    if verb == "find":
+        for i, n in enumerate(norm):
+            if n in _FIND_EXEC:
+                # The sub-command runs to `\;` or `+`; a lone backslash is what is
+                # left of `\;` when the segment splitter took the `;`.
+                sub = []
+                for w in args[i + 1 :]:
+                    if w in ("\\;", ";", "+", "\\"):
+                        break
+                    sub.append(w)
+                return write_target_words(" ".join(sub), depth=depth + 1)
+    return []
+
+
+def _nested_write_targets(script: str, depth: int) -> list[str]:
+    joined = _CONTINUATION_RE.sub("", script)
+    masked = _mask_quoted(joined)
+    out: list[str] = []
+    for seg in shell_segments(joined, masked):
+        out.extend(write_target_words(seg, depth=depth + 1))
+        if _segment_interpreter_writes_gate(seg):
+            out.append("~/.notari/")  # the literal payload named the gate
+    return out
+
+
+def _segment_interpreter_writes_gate(segment: str) -> bool:
+    """A Python, Ruby, Node, Perl, PHP or awk one-liner whose code names the
+    gate directory and performs a write."""
+    words = _command_words(shell_words(segment))
+    if not words:
+        return False
+    verb = normalize_shell_word(words[0]).rsplit("/", 1)[-1]
+    if not _INTERPRETER_RE.match(verb):
+        return False
+    args = words[1:]
+    is_awk = verb.endswith("awk")
+    if not is_awk and not any(a in _INTERPRETER_CODE_FLAGS for a in args):
+        return False
+    normalized = [normalize_shell_word(a) for a in args]
+    with_quotes = re.sub(r"\s+", "", "".join(normalized))
+    bare = re.sub(r"[\"']+", "", with_quotes)
+    if not (_GATE_PAYLOAD_RE.search(with_quotes) or _GATE_PAYLOAD_RE.search(bare)):
+        return False
+    code = " ".join(normalized)
+    if is_awk:
+        return bool(_AWK_WRITE_RE.search(code))
+    return bool(_INTERPRETER_WRITE_RE.search(code))
 
 
 def segment_writes_gate_path(segment: str) -> bool:
     """True when one shell segment writes, moves, deletes or links a gate path
-    through a path-taking program, a `sed -i`, or an interpreter one-liner."""
-    words = shell_words(segment)
-    while words and (
-        _SHELL_ASSIGN_WORD_RE.match(words[0]) or words[0].rsplit("/", 1)[-1] in _COMMAND_PREFIXES
-    ):
-        words.pop(0)
-    if not words:
-        return False
-    verb = normalize_shell_word(words[0]).rsplit("/", 1)[-1]
-    args = words[1:]
-    if _INTERPRETER_RE.match(verb):
-        if not any(a in ("-c", "-e", "-E") for a in args):
-            return False
-        payload = re.sub(r"[\s\"']+", "", "".join(normalize_shell_word(a) for a in args))
-        return bool(_GATE_PAYLOAD_RE.search(payload)) and bool(
-            _INTERPRETER_WRITE_RE.search(segment)
-        )
-    if verb == "sed":
-        if not any(_SED_IN_PLACE_RE.match(a) for a in args):
-            return False
-    elif verb not in _PATH_WRITING_VERBS:
-        return False
-    for arg in args:
-        path_word = arg[3:] if arg.startswith(("of=", "if=")) else arg
-        if is_gate_path_word(path_word):
-            return True
-    return False
+    through a path-taking program, a `sed -i`, a nested shell, or an
+    interpreter one-liner."""
+    return any(is_gate_path_word(w) for w in write_target_words(segment)) or (
+        _segment_interpreter_writes_gate(segment)
+    )
 
 
 _CONTINUATION_RE = re.compile(r"\\\n[ \t]*")
@@ -1136,8 +1398,8 @@ _CONTINUATION_RE = re.compile(r"\\\n[ \t]*")
 
 def command_writes_gate_path(command: str) -> bool:
     """True when any segment of `command` writes a gate path by a path-taking
-    program, `sed -i`, or an interpreter one-liner (redirects are checked by
-    the caller via shell_output_targets)."""
+    program, `sed -i`, a nested shell, or an interpreter one-liner (redirects
+    are checked by the caller via shell_output_targets)."""
     joined = _CONTINUATION_RE.sub("", command)
     masked = _mask_quoted(joined)
     return any(segment_writes_gate_path(seg) for seg in shell_segments(joined, masked))

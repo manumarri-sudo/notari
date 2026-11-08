@@ -275,6 +275,7 @@ def scan(
     # red-team 2026-07-22, finding 5). The match points at the credential VALUE
     # (the `secret` group), not the whole line, so the reported location is the
     # secret itself.
+    pflag_tool_present: bool | None = None
     for label, cred_re in _INLINE_CRED_PATTERNS:
         for m in cred_re.finditer(text):
             s, e = m.span("secret")
@@ -290,10 +291,15 @@ def scan(
             # takes one on the same line, and a plural name is not a credential.
             # The tool may sit on another line (`args=(... -pSECRET ...)` then
             # `mysql "${args[@]}"`, or `dbcmd=mysql` then `$dbcmd -pSECRET`), so the
-            # whole text is the context, not the line; a file that names none of
-            # these tools anywhere is still exempt (Codex review of 0.5.1, finding 6).
-            if label == "mysql-pflag" and not _ATTACHED_PFLAG_TOOL_RE.search(text):
-                continue
+            # context is the tool named as a COMMAND or an assignment value anywhere
+            # in the text, computed once per scan, with comment lines ignored so
+            # `# mysql migration below` does not turn an ffmpeg `-pix_fmt` into a
+            # credential (Codex reviews of 0.5.1 and 0.5.5).
+            if label == "mysql-pflag":
+                if pflag_tool_present is None:
+                    pflag_tool_present = _names_attached_pflag_tool(text)
+                if not pflag_tool_present:
+                    continue
             if label == "env-secret" and _is_plural_reference(text[m.start() : s], value):
                 continue
             # The length floor is low-confidence-only: a real DSN password can
@@ -463,6 +469,22 @@ _FLOORED_INLINE: Final[frozenset[str]] = frozenset({"env-secret"})
 _ATTACHED_PFLAG_TOOL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)\b(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
 )
+# The tool in COMMAND position (line start, after a separator, after `$(`, or
+# after `sudo`/`env`-style prefixes) or as an assignment value (`dbcmd=mysql`),
+# so a mention in prose does not count. Comment lines are dropped first.
+_PFLAG_TOOL_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)(?:^|[;&|(`=])\s*(?:(?:sudo|doas|env|exec|command|nohup|nice|time|xargs|timeout)\s+"
+    r"(?:-\S+\s+)*)*(?:\S*/)?(?:mysql\w*|mariadb\w*|7z[ar]?|p7zip|unrar|rar)\b"
+)
+_COMMENT_LINE_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^[ \t]*#.*$")
+
+
+def _names_attached_pflag_tool(text: str) -> bool:
+    """Whether `text` runs or assigns a tool that takes an attached `-p` password.
+    One pass per scan; the cost does not grow with the number of candidates."""
+    return _PFLAG_TOOL_COMMAND_RE.search(_COMMENT_LINE_RE.sub("", text)) is not None
+
+
 _PLURAL_CREDENTIAL_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)(?P<name>[\w-]*(?:password|passwd|secret|token|api[-_]?key|pwd)s)\s*=\s*$"
 )

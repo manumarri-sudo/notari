@@ -4,54 +4,85 @@ All notable changes to `notari` are documented here. The format follows [Keep a 
 
 ## [0.5.5] - the gate reads shell words the way bash does
 
-Two Codex reviews of the 0.5.1 hardening branch (2026-11-08) activated a pause
-against the released gate with commands a regex over the raw text cannot see as
-a write to `~/.notari/`: quoted fragments (`"$HOME"/".notari"/pause.json`,
-`~/"."notari/`), a backslash inside the name (`~/.nota\ri/`), a continuation
-inside the name, brace expansion (`~/.{notari,cache}/`), a directory destination
-with no trailing slash (`cp x "$HOME"/".notari"`, `install -t ~/.notari`), and
-Ruby or Node one-liners that write the file. This release reads each shell word
-the way bash does and checks that, in both the classifier and the hook adapter.
+Three Codex reviews (2026-11-08) activated a pause against the released gate
+with commands a regex over the raw text cannot see as a write to `~/.notari/`:
+quoted fragments (`"$HOME"/".notari"/pause.json`, `~/"."notari/`), a backslash
+or a `$'\x72'` escape inside the name, a continuation inside the name, brace
+expansion (`~/.{notari,cache}/`, `~/.{a,...,notari}/`, nested and `{r..r}`
+forms), a directory destination with no trailing slash (`cp x "$HOME"/".notari"`,
+`install -t ~/.notari`), `sed -i` with its flags reordered or quoted behind
+`nice`, `env -i`, `xargs` or a subshell, `find -exec`, `sh -c` and `eval`
+nesting, and Python, Ruby, Node, Perl, PHP or awk one-liners that write the
+file. This release reads each shell word the way bash does and checks that, in
+both the classifier and the hook adapter.
 
 ### Security
 
-- **Gate self-tamper by shell word.** `normalize_shell_word` removes quotes,
-  resolves escapes and continuations and folds `$HOME` to `~`;
-  `is_gate_path_word` tests the result (expanded over one brace group) for the
-  gate directory itself or a file under it, or the host agent's hook settings.
-  `shell_output_targets` feeds redirect targets through it, and the new
+- **Gate self-tamper by shell word.** `normalize_shell_word` removes quotes
+  (including `$'...'`), resolves escapes and continuations, and folds `$HOME`,
+  `${HOME}` and `${HOME:-x}` to `~`; `is_gate_path_word` tests the result,
+  expanded over its brace groups within a budget (64 results, 16 openers,
+  2,048 characters; a larger brace word is denied if it so much as names the
+  directory), for the gate directory itself or a file under it, or the host
+  agent's hook settings. Redirect targets go through it, and
   `command_writes_gate_path` walks each shell segment (quoted separators stay
-  inside their word) for a path-taking program (`tee`, `cp`, `mv`, `dd`,
-  `install`, `rm`, `ln`, `truncate`, `shred`, `rsync`), a `sed -i`, or a
-  Python, Ruby, Node, Perl or PHP one-liner whose payload names the gate
-  directory and calls a write. The adapter's `_writes_to_gate_state` consults
-  the same helpers. Every shape above is CRITICAL in both layers
-  (`tests/test_gate_path_words.py`).
-- **Bounded time.** The 0.5.1 branch's attempt at the same fix was a regex with
-  overlapping quote alternatives that took over 11 s on twenty adjacent quoted
-  fragments, past the hook's 10 s budget. The word scanner is one linear pass;
-  the test suite holds four adversarial inputs under half a second.
+  inside their word) after removing wrapper words and their options (`env`,
+  `command`, `builtin`, `exec`, `sudo`, `doas`, `nohup`, `nice`, `ionice`,
+  `time`, `xargs`, `timeout`, `caffeinate`, `stdbuf`, a glued `(`, `{` or `!`,
+  leading assignments) for: a program that writes every path it is given
+  (`tee`, `rm`, `mv`, `truncate`, `shred`, `unlink`, `dd of=`), a program that
+  writes only its destination (`cp`, `install`, `ln`, `rsync`, with `-t`,
+  `--target-directory` and the last positional honoured), `sed` with an
+  in-place flag in any position, `sh`/`bash`/`zsh`/`dash`/`ksh`/`fish -c`,
+  `eval` and `find -exec` followed four levels deep, and a Python, Ruby, Node,
+  Perl, PHP or awk one-liner whose payload names the gate directory and whose
+  code performs a write (a write-mode `open`, `.write`, `writeFile`,
+  `File.write`, `file_put_contents`, a delete, rename or copy, awk's `>`).
+  The adapter's `_writes_to_gate_state` uses the same parsed write targets for
+  the default and a relocated `NOTARI_HOME`, so `sed -n -i.bak -e ... <gate>`
+  is denied again however the flags are ordered. The two older regex rules for
+  this shape are retired; they matched `cp ~/.notari/config.toml /tmp/x` (a
+  read) the same as a write (`tests/test_gate_path_words.py`,
+  `tests/test_gate_path_words_round3.py`, `tests/test_gate_sed_in_place.py`).
+- **Reads stay reads.** `File.read`, `readFileSync`, a read-mode `open(...)`,
+  Perl's `open(F, "<", ...)`, `rsync <gate> /tmp/copy`, `cp <gate> /tmp/x`,
+  `sed -n`, `awk '{print}' <gate>` and a quoted mention of a verb
+  (`echo 'tee ~/.notari/x'`) classify below CRITICAL in both layers; each is
+  paired in the tests with the write that must still be denied.
+- **Bounded time.** Every loop is one pass over the input: 60,000 brace commas
+  classify in 0.04 s (11.8 s in the first candidate), 300,000 assignment
+  prefixes in about 1.1 s (6.5 s before; the released 0.5.4 takes 0.9 s on the
+  same input), and the suite holds five adversarial inputs under one second
+  plus a scaling check that doubles the input and expects linear growth.
 
 ### Fixed
 
-- `sed -n '1p' ~/.notari/pause.json` and similar reads are no longer escalated
-  by the adapter, which counted every `sed` as a write; only `sed -i` counts.
-- The `mysql-pflag` scanner context is the whole text, not the line, so a
-  password supplied through an argument array or a `$dbcmd` variable is found
-  again; a file that names no password-taking tool anywhere is still exempt.
+- The adapter counted every `sed` as a write; only `sed -i` counts, so
+  `sed -n '1p' ~/.notari/pause.json` is a read again.
+- The `mysql-pflag` scanner context is the tool named in command position or
+  as an assignment value anywhere in the text, with comment lines ignored and
+  the test computed once per scan: a password supplied through an argument
+  array or a `$dbcmd` variable is found again, a `# mysql migration below`
+  comment above an ffmpeg `-pix_fmt` does not create a hit, and 10,000
+  candidate flags scan in 0.03 s instead of 13 s.
 - `notari off`, `notari on` and the hook's expiry cleanup emit their audit
-  events inside the pause state lock (`after_save`), so the log keeps the same
-  order as the transitions; a slow `off` could previously append its
-  `gate.paused` after a faster `on` had appended `gate.resumed`.
+  events AFTER the pause state lock is released. An intermediate candidate
+  emitted them under the lock to keep the log in transition order, and a
+  stalled audit writer then kept `notari on` from clearing the pause; resume
+  never waits on audit I/O now, every transition event carries `pause_set_at`
+  so a reader orders events by the window they belong to, and a test holds the
+  audit lock while `notari on` restores gating.
 - The pause lock descriptor is opened inside the cleanup `try`, so a signal
   between open and lock cannot leak it.
+- `CITATION.cff` still said 0.5.0; it says 0.5.5.
 
-### Still outside the regex and word rules, by design
+### Still outside the text rules, by design
 
-- A relative write after `cd ~/.notari`, a symlink created elsewhere and written
-  through, and a pathlib join assembled from variables are not recognised by
-  text; the adapter's resolved-path check catches the literal forms and
-  `docs/SECURITY-MODEL.md` names shell grammar as unbounded.
+- A relative write after `cd ~/.notari`, a symlink created elsewhere and
+  written through, a path assembled in a shell variable (`printf -v x ...;
+  printf x > "$x"`), and awk or PHP payloads on hosts without those tools are
+  not recognised by text; the adapter's resolved-path check catches the literal
+  forms and `docs/SECURITY-MODEL.md` names shell grammar as unbounded.
 
 ## [0.5.4] - audit fixes
 

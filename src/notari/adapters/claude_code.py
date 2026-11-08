@@ -60,7 +60,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -80,9 +79,10 @@ from notari.policy import (
     classify,
     classify_command,
     command_writes_gate_path,
-    is_gate_path_word,
+    normalize_shell_word,
     shell_output_targets,
     shell_segments,
+    write_target_words,
 )
 
 # Map Claude Code's built-in tool names to a default risk *when args do not
@@ -374,48 +374,39 @@ _GATE_CONFIG_SUFFIXES: Final[tuple[str, ...]] = (
 _GATE_STATE_DIRS: Final[tuple[str, ...]] = (".notari",)
 
 
-# `sed` counts only in place: `sed -n '1p' ~/.notari/pause.json` is a read
-# (Codex review of 0.5.1, finding 7). Interpreters count because a one-liner
-# can write the file.
-_WRITE_VERB = re.compile(
-    r"\b(?:tee|sed\s+(?:-[a-zA-Z]*i|--in-place)|cp|mv|dd|install|rm|ln|truncate|shred|"
-    r"python\d*|ruby|node|perl)\b"
-)
-
-
 def _writes_to_gate_state(cmd: str) -> bool:
     """True when a shell command looks like it WRITES to a resolved gate path.
 
-    Only an output redirect's target or a path in a mutating command segment
-    can trigger this check. Resolution also covers a relocated NOTARI_HOME.
+    Two checks share the policy module's shell-word parser. The literal check
+    (`command_writes_gate_path`) covers the default state directory however the
+    path is spelled. The resolved check covers a relocated NOTARI_HOME and
+    symlinks: the SAME parsed write targets (redirect targets, and the words a
+    recognised program writes, after wrapper removal, with `sed` counting only
+    in place and only destinations counting for cp/mv/install/ln/rsync) are
+    normalized and resolved. Reads of the gate (`sed -n`, `rsync <gate> /tmp`,
+    `cat`) produce no write target, so they stay allowed; a quoted mention of a
+    verb (`echo 'tee ~/.notari/x'`) is data, not a command.
     """
     if not cmd:
         return False
-
-    def protected(token: str) -> bool:
-        if "/" not in token:
-            return False
-        if is_gate_path_word(token):
-            return True
-        home = str(Path.home())
-        return _is_gate_config_path(token.replace("$HOME", home).replace("${HOME}", home))
-
     if command_writes_gate_path(cmd):
         return True
 
-    for target in shell_output_targets(cmd):
-        with contextlib.suppress(ValueError):
-            if any(protected(token) for token in shlex.split(target)):
-                return True
-    for segment in shell_segments(cmd, _mask_quoted(cmd)):
-        if not _WRITE_VERB.search(segment):
-            continue
-        with contextlib.suppress(ValueError):
-            if any(protected(token) for token in shlex.split(segment)):
-                return True
-        if any(protected(token) for token in re.split(r"[\s()<>\"']+", segment)):
-            return True
-    return False
+    def protected(word: str) -> bool:
+        token = normalize_shell_word(word)
+        if "/" not in token:
+            return False
+        home = str(Path.home())
+        return _is_gate_config_path(token.replace("~", home, 1) if token.startswith("~") else token)
+
+    if any(protected(target) for target in shell_output_targets(cmd)):
+        return True
+    joined = re.sub(r"\\\n[ \t]*", "", cmd)
+    return any(
+        protected(word)
+        for segment in shell_segments(joined, _mask_quoted(joined))
+        for word in write_target_words(segment)
+    )
 
 
 def _is_gate_config_path(raw: str) -> bool:
@@ -1410,26 +1401,25 @@ def _emit_resume_if_expired(log_path: Path) -> None:
         # Flag still set on disk but window expired → close the bracket. Only
         # the process that actually flips the flag emits, so concurrent hooks
         # cannot write the recap twice (2026-06-12 had a doubled gate.resumed).
-        def _emit(closed: _pause.PauseState) -> None:
-            # Runs under the state lock so the recap lands in transition order.
-            with contextlib.suppress(Exception):
-                with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
-                    audit.emit(
-                        event_type="gate.resumed",
-                        session_id="notari-cli",
-                        agent_id="notari.pause",
-                        risk="low",
-                        payload={
-                            "trigger": "auto-expired",
-                            "reason": closed.reason,
-                            "allowed_while_paused": closed.allowed_count,
-                            "allowed_by_log": closed.allowed_by_log,
-                            "pause_set_at": closed.set_at,
-                        },
-                        force_fsync=True,
-                    )
-
-        _pause.resume_if_paused(expired_only=True, after_save=_emit)
+        closed = _pause.resume_if_paused(expired_only=True)
+        if closed is None:
+            return
+        with contextlib.suppress(Exception):
+            with AuditLog(path=log_path, hmac_key=_default_load_hmac_key()) as audit:
+                audit.emit(
+                    event_type="gate.resumed",
+                    session_id="notari-cli",
+                    agent_id="notari.pause",
+                    risk="low",
+                    payload={
+                        "trigger": "auto-expired",
+                        "reason": closed.reason,
+                        "allowed_while_paused": closed.allowed_count,
+                        "allowed_by_log": closed.allowed_by_log,
+                        "pause_set_at": closed.set_at,
+                    },
+                    force_fsync=True,
+                )
 
 
 def _handle_paused(
