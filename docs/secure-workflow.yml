@@ -39,7 +39,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Notari Change Control
-        uses: manumarri-sudo/notari@a33e4c30133b9175774af2a62abcd6474296da85  # 0.5.1 release action, SHA-pinned; bump on release
+        uses: manumarri-sudo/notari@64ae07fd3885a2ccc4543b0cdd8c9031a8b7f174  # 0.5.2 release action, SHA-pinned; bump on release
         with:
           head: ${{ github.event.pull_request.head.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
