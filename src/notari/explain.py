@@ -12,11 +12,13 @@ surface); tests enforce this.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
-from notari.secrets import credential_pattern_label, redact
+from notari.secrets import credential_pattern_label, is_credential_path, redact
 
 
 def redact_passport(value: Any) -> Any:
@@ -28,6 +30,38 @@ def redact_passport(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact_passport(item) for key, item in value.items()}
     return value
+
+
+def load_passport(path: Path) -> dict[str, Any]:
+    """Prepare an imported passport without trusting it for credential locations."""
+    passport = json.loads(path.read_text())
+    if not isinstance(passport, dict):
+        raise ValueError("expected a passport object")
+    evidence = passport.get("evidence", {})
+    if not isinstance(evidence, dict):
+        raise ValueError("expected a passport evidence object")
+    if evidence.get("secret_findings"):
+        evidence["changed_files"] = _git_changed_paths(passport)
+    return cast("dict[str, Any]", redact_passport(passport))
+
+
+def _git_changed_paths(passport: dict[str, Any]) -> list[str]:
+    from notari.contract import repo_root
+    from notari.verify import VerifyError, git_name_status
+
+    base = passport.get("base_commit")
+    head = passport.get("head_commit")
+    if not isinstance(base, str) or not isinstance(head, str):
+        return []
+    if any(not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) for sha in (base, head)):
+        return []
+    try:
+        inventory, truncated = git_name_status(base, repo_root(), head=head)
+    except (VerifyError, OSError):
+        return []
+    if truncated:
+        return []
+    return [path for record in inventory for path in record.endpoints]
 
 
 def _undo(path: str, base: str = "") -> str:
@@ -119,10 +153,17 @@ def build_remediations(passport: dict[str, Any]) -> list[dict[str, str]]:
 
     # Resolve locations from the changed-file inventory, rather than echoing a
     # string supplied in a credential finding. Native passports include both.
-    changed_paths = {
-        path: redact(path) for path in ev.get("changed_files", []) if isinstance(path, str)
-    }
-    for finding in ev.get("secret_findings", []):
+    findings = ev.get("secret_findings") or []
+    changed_paths = (
+        {
+            path: path
+            for path in ev.get("changed_files", [])
+            if isinstance(path, str) and not is_credential_path(path)
+        }
+        if findings
+        else {}
+    )
+    for finding in findings:
         if not isinstance(finding, dict):
             continue
         raw_path = finding.get("path")

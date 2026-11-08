@@ -96,16 +96,18 @@ def test_doctor_config_hint_creates_or_repairs_the_requested_file(
 ) -> None:
     from notari.doctor import PASS, check_config
 
-    config_path = tmp_path / "local hooks.toml"
+    config_path = tmp_path / ("long-" * 8 + "local hooks[red].toml")
     if invalid:
         config_path.write_text("[invalid")
-    check, config = check_config(config_path)
-    assert config is None
-    command = re.search(r"`([^`]+)`", check.fix)
+    runner = CliRunner()
+    check = runner.invoke(app, ["doctor", "--config", str(config_path)], env={"COLUMNS": "80"})
+    command = re.search(r"`(notari init-config[^\n`]+)`", check.output)
     assert command is not None
     args = shlex.split(command[1])
     assert args[:2] == ["notari", "init-config"]
-    result = CliRunner().invoke(app, args[1:])
+    result = runner.invoke(app, args[1:], env={"COLUMNS": "80"})
     assert result.exit_code == 0, result.output
-    assert "notari doctor" in result.output
+    followup = re.search(r"`(notari doctor[^\n`]+)`", result.output)
+    assert followup is not None
+    assert shlex.split(followup[1]) == ["notari", "doctor", "--config", str(config_path)]
     assert check_config(config_path)[0].status == PASS
