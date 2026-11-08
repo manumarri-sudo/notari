@@ -11,7 +11,7 @@ treat it as the source of truth wherever the two differ.
 
 ## Reporting a vulnerability
 
-Please use [GitHub Security Advisories](https://github.com/manumarri-sudo/notari/security/advisories/new).
+Use [GitHub private vulnerability reporting](https://github.com/manumarri-sudo/notari/security/advisories/new).
 For the most sensitive reports, open a draft advisory before any public discussion.
 
 We aim to respond within 48 hours and to ship a fix within 7 days for
@@ -126,9 +126,8 @@ In rough priority order:
 
 Current, verifiable:
 
-- The lockfile (`uv.lock`) is committed and tested in CI.
-- `pip-audit --strict` runs on every PR as a **blocking** gate (a dependency CVE
-  fails the build).
+- CI installs the checked-in lockfile and tests Python 3.11 through 3.13.
+- CI audits the locked optional and development dependencies and a fresh base install.
 - Releases publish to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
   (OIDC from `release.yml`; no API token lives in repo secrets), and GitHub
   build-provenance attestations are generated for release artifacts.
@@ -143,7 +142,9 @@ Planned, not yet in place (do not assume present):
 
 | Date | Auditor | Scope | Report |
 |---|---|---|---|
-| _none yet_ | _scheduled post-1.0_ | | |
+| 2026 | Maintainer and automated review | Source review and regression testing | [Threat model](docs/SECURITY-MODEL.md) |
+
+An external security audit remains open.
 
 ## Supported versions
 

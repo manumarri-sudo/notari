@@ -939,6 +939,7 @@ def explain_cmd(
     compact agent surfaces (same output as `notari fix-prompt` / `agent-brief`).
     """
     from notari import explain as explain_mod
+    from notari.passport import write_report_file
 
     out = Console()  # stdout - this is the command's primary output
 
@@ -969,7 +970,7 @@ def explain_cmd(
         raise typer.Exit(code=2)
 
     try:
-        passport = json.loads(found.read_text())
+        passport = explain_mod.redact_passport(json.loads(found.read_text()))
     except (OSError, json.JSONDecodeError) as e:
         out.print(f"[red]cannot read passport at {found}[/red]: {e}")
         raise typer.Exit(code=2) from e
@@ -992,7 +993,11 @@ def explain_cmd(
         rendered = explain_mod.render_text(passport)
 
     if out_file is not None:
-        out_file.write_text(rendered)
+        try:
+            write_report_file(out_file, rendered)
+        except OSError as exc:
+            out.print(f"[red]cannot write report:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
         out.print(f"wrote {out_file}")
     else:
         print(rendered)
@@ -1010,6 +1015,7 @@ def _repo_root_or_cwd() -> Path:
 def _emit_fix_prompt(passport_file: Path | None) -> None:
     """Shared by `notari fix-prompt` and `notari explain --fix-prompt`."""
     from notari import teach as teach_mod
+    from notari.explain import redact_passport
 
     candidates = (
         [passport_file]
@@ -1022,7 +1028,7 @@ def _emit_fix_prompt(passport_file: Path | None) -> None:
         out.print("[red]no passport found[/red], run `notari verify` first, or pass --passport.")
         raise typer.Exit(code=2)
     try:
-        passport = json.loads(found.read_text())
+        passport = redact_passport(json.loads(found.read_text()))
     except (OSError, json.JSONDecodeError) as e:
         out.print(f"[red]cannot read passport at {found}[/red]: {e}")
         raise typer.Exit(code=2) from e
@@ -1167,12 +1173,14 @@ jobs:
   change-control:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{{{ github.event.pull_request.head.sha }}}}
           fetch-depth: 0
           path: _pr_checkout
           persist-credentials: false
+          # Notari reads the candidate checkout as data.
+          allow-unsafe-pr-checkout: true
       - uses: {_NOTARI_ACTION_PIN}  # v0, SHA-pinned; bump on release
         with:
           mode: "boundary"

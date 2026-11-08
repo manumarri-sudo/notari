@@ -264,7 +264,9 @@ def git_diff(
     review H-2).
     """
     lim = limits or ScanLimits()
-    flags = ["--text"] if text else []
+    flags = ["--no-ext-diff", "--no-textconv"]
+    if text:
+        flags.append("--text")
     if base_commit:
         args = ["git", "diff", *flags, base_commit, head]
     else:

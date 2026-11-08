@@ -2,6 +2,13 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - launch hardening
+
+- Fetch the PR commit as Git data in the scan template and leave the trusted base checked out.
+- Use explicit token permissions and audit both the checked-in lock and a fresh install in CI.
+- Redact credential patterns in imported passports before rendering and save reports with protected writes.
+- Refresh pinned workflow and development dependencies, and document supported platforms and GitHub setup.
+
 ## [0.5.1] - scan and onboarding hardening
 
 - Publish the scan verdict under `notari/scan` and fail the job if a requested

@@ -61,7 +61,7 @@ inputs:
       Action release was cut from. The Change Control engine (notari begin/verify)
       requires >=0.3.0; earlier versions do not contain it.
     required: false
-    default: "==0.5.1"
+    default: "==0.5.2"
   install-from-source:
     description: "Install notari from this checked-out repo instead of PyPI (used for dogfooding)."
     required: false
@@ -135,7 +135,7 @@ runs:
   using: "composite"
   steps:
     - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
       with:
         python-version: "3.12"
 
@@ -143,6 +143,9 @@ runs:
       shell: bash
       env:
         PYTHONSAFEPATH: "1"
+        NOTARI_INSTALL_FROM_SOURCE: ${{ inputs.install-from-source }}
+        NOTARI_VERSION_SPEC: ${{ inputs.notari-version }}
+        NOTARI_ACTION_PATH: ${{ github.action_path }}
       run: |
         # -I = isolated mode: cwd is NOT added to sys.path, so a candidate
         # pip.py / json.py / sitecustomize.py in the checkout cannot shadow
@@ -155,10 +158,10 @@ runs:
         # version but resolves its (already-pinned) dependency tree from PyPI without
         # --require-hashes; for a fully hermetic gate, install from a hash-locked
         # requirements file or a prebuilt container. See docs/SECURITY-MODEL.md.
-        if [[ "${{ inputs.install-from-source }}" == "true" ]]; then
-          python -I -m pip install -e "${{ github.action_path }}"
+        if [[ "$NOTARI_INSTALL_FROM_SOURCE" == "true" ]]; then
+          python -I -m pip install -e "$NOTARI_ACTION_PATH"
         else
-          python -I -m pip install "notari${{ inputs.notari-version }}"
+          python -I -m pip install "notari$NOTARI_VERSION_SPEC"
         fi
 
     - name: Verify diff against contract
@@ -181,6 +184,7 @@ runs:
         NOTARI_APPROVER_PUBKEYS: ${{ inputs.approver-pubkeys }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         NOTARI_CHECKOUT_PATH: ${{ inputs.checkout-path }}
+        NOTARI_ACTION_PATH: ${{ github.action_path }}
       run: |
         # cd into the candidate checkout so git commands find the repo. This makes
         # cwd candidate-controlled, so every trusted Python process started from here
@@ -189,5 +193,5 @@ runs:
         # which drops cwd from sys.path independently of PYTHONSAFEPATH (3.11+). A
         # candidate pip.py / json.py / sitecustomize.py therefore cannot execute or
         # shadow a trusted import even though cwd is the checkout.
-        cd "${{ inputs.checkout-path }}"
-        bash "${{ github.action_path }}/scripts/notari-passport.sh"
+        cd -- "$NOTARI_CHECKOUT_PATH"
+        bash "$NOTARI_ACTION_PATH/scripts/notari-passport.sh"
