@@ -93,7 +93,12 @@ def test_committed_passport_cannot_fake_a_pass(repo: tuple[Path, dict[str, str]]
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": ".notari",
+        },
         capture_output=True,
         text=True,
     )
@@ -148,6 +153,7 @@ def test_wrapper_fails_closed_on_rc_verdict_mismatch(
         env={
             **env,
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],  # fake notari wins
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "false",
             "NOTARI_PASSPORT_DIR": ".notari",
         },
@@ -166,7 +172,7 @@ def _wrapper(
     return subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_PASSPORT_DIR": ".notari", **extra},
+        env={**env, "NOTARI_MODE": "boundary", "NOTARI_PASSPORT_DIR": ".notari", **extra},
         capture_output=True,
         text=True,
     )
@@ -223,6 +229,7 @@ def test_strict_unsigned_evidence_opt_out_is_explicit(repo: tuple[Path, dict[str
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "true",
             "NOTARI_ALLOW_UNSIGNED_EVIDENCE": "true",
         },
@@ -244,6 +251,7 @@ def test_strict_rejects_pull_request_trigger(repo: tuple[Path, dict[str, str]]) 
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "true",
             "NOTARI_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request",
@@ -266,6 +274,7 @@ def test_strict_allows_pull_request_target_trigger(repo: tuple[Path, dict[str, s
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "true",
             "NOTARI_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request_target",
@@ -287,6 +296,7 @@ def test_strict_pull_request_with_opt_in(repo: tuple[Path, dict[str, str]]) -> N
         env,
         {
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "true",
             "NOTARI_ALLOW_UNSIGNED_EVIDENCE": "true",
             "GITHUB_EVENT_NAME": "pull_request",
@@ -330,7 +340,12 @@ def test_symlinked_passport_target_is_not_followed_outside_checkout(
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": ".notari",
+        },
         capture_output=True,
         text=True,
     )
@@ -368,7 +383,12 @@ def test_symlinked_publish_dir_is_refused(
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "pubout"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": "pubout",
+        },
         capture_output=True,
         text=True,
     )
@@ -407,7 +427,12 @@ def test_symlinked_intermediate_component_is_refused(
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "pubdir/nested"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": "pubdir/nested",
+        },
         capture_output=True,
         text=True,
     )
@@ -449,7 +474,12 @@ def test_symlinked_dest_to_outside_directory_is_not_followed(
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": ".notari"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": ".notari",
+        },
         capture_output=True,
         text=True,
     )
@@ -480,7 +510,12 @@ def test_publish_into_clean_nested_dir_succeeds(repo: tuple[Path, dict[str, str]
     proc = subprocess.run(
         ["bash", str(WRAPPER)],
         cwd=root,
-        env={**env, "NOTARI_STRICT": "false", "NOTARI_PASSPORT_DIR": "artifacts/notari"},
+        env={
+            **env,
+            "NOTARI_MODE": "boundary",
+            "NOTARI_STRICT": "false",
+            "NOTARI_PASSPORT_DIR": "artifacts/notari",
+        },
         capture_output=True,
         text=True,
     )
@@ -509,6 +544,7 @@ def _run_wrapper_with_evidence(
         env={
             **env,
             "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "boundary",
             "NOTARI_STRICT": "false",
             "NOTARI_PASSPORT_DIR": ".notari",
             "GITHUB_OUTPUT": str(out_file),
@@ -624,7 +660,12 @@ class TestAbortBeforeTheTrapIsInstalled:
         proc = subprocess.run(
             ["bash", str(WRAPPER)],
             cwd=root,
-            env={**env, "TMPDIR": "/nonexistent", "NOTARI_STRICT": "false"},
+            env={
+                **env,
+                "TMPDIR": "/nonexistent",
+                "NOTARI_MODE": "boundary",
+                "NOTARI_STRICT": "false",
+            },
             capture_output=True,
             text=True,
         )
@@ -698,6 +739,7 @@ class TestRunnerEnvironmentGaps:
             env={
                 **env,
                 "PATH": str(bin_dir) + os.pathsep + str(clean),
+                "NOTARI_MODE": "boundary",
                 "NOTARI_STRICT": "false",
                 "NOTARI_PASSPORT_DIR": ".notari",
                 "GITHUB_OUTPUT": str(out_file),
@@ -713,3 +755,123 @@ class TestRunnerEnvironmentGaps:
         assert "verdict=" not in out_file.read_text()
         # ...but the run explains itself rather than failing silently.
         assert "did not complete" in sum_file.read_text()
+
+
+# ── scan mode (the default): no contract, no keys, no strict switches ─────────
+
+
+def test_scan_mode_is_the_default_and_needs_no_keys(repo: tuple[Path, dict[str, str]]) -> None:
+    """With no NOTARI_MODE the wrapper runs `notari scan`, accepts a plain
+    pull_request event, and needs neither gate key nor approver keys."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_scan"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    proc = subprocess.run(
+        ["bash", str(WRAPPER)],
+        cwd=root,
+        env={
+            **env,
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_PASSPORT_DIR": ".notari",
+            "GITHUB_EVENT_NAME": "pull_request",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "requires a gate-signed passport" not in (proc.stdout + proc.stderr)
+    assert "pull_request_target" not in (proc.stdout + proc.stderr)
+
+
+def test_scan_mode_ignores_strict_switch(repo: tuple[Path, dict[str, str]]) -> None:
+    """NOTARI_STRICT is a boundary-mode input; in scan mode it must not turn
+    the run into an unsigned-evidence refusal."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_scan_strict"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    proc = _wrapper(
+        root,
+        env,
+        {
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "scan",
+            "NOTARI_STRICT": "true",
+        },
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_scan_mode_block_still_fails_the_job(repo: tuple[Path, dict[str, str]]) -> None:
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_scan_block"
+    _install_fake_notari(bin_dir, rc=1, verdict="BLOCK", exit_code=1, head_commit=head_sha)
+    proc = _wrapper(
+        root, env, {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTARI_MODE": "scan"}
+    )
+    assert proc.returncode == 1
+    assert "Notari verdict: BLOCK" in proc.stdout
+
+
+def test_boundary_mode_keeps_strict_behaviour(repo: tuple[Path, dict[str, str]]) -> None:
+    """mode=boundary is exactly the 0.4 Action: strict by default, so a PASS
+    without a gate key is refused."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_boundary"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    proc = _wrapper(
+        root,
+        env,
+        {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTARI_MODE": "boundary"},
+    )
+    assert proc.returncode == 2
+    assert "requires a gate-signed passport" in (proc.stdout + proc.stderr)
+
+
+@pytest.mark.parametrize(
+    "extra, needle",
+    [
+        ({"NOTARI_MODE": "audit"}, "NOTARI_MODE must be"),
+        ({"NOTARI_BASE_SHA": "main"}, "NOTARI_BASE_SHA is not a valid"),
+    ],
+)
+def test_scan_mode_rejects_malformed_inputs(
+    repo: tuple[Path, dict[str, str]], extra: dict[str, str], needle: str
+) -> None:
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_scan_bad"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0, head_commit=head_sha)
+    proc = _wrapper(
+        root, env, {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTARI_MODE": "scan", **extra}
+    )
+    assert proc.returncode == 2
+    assert needle in (proc.stdout + proc.stderr)
+
+
+def test_scan_mode_requires_head_commit_binding(repo: tuple[Path, dict[str, str]]) -> None:
+    """Third review: the passport-to-status binding was strict-only, so a scan
+    passport with no head_commit skipped it. Scan mode requires it too."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    bin_dir = root.parent / "fakebin_scan_nohead"
+    _install_fake_notari(bin_dir, rc=0, verdict="PASS", exit_code=0)
+    proc = _wrapper(
+        root, env, {"PATH": str(bin_dir) + os.pathsep + env["PATH"], "NOTARI_MODE": "scan"}
+    )
+    assert proc.returncode == 2
+    assert "head_commit" in (proc.stdout + proc.stderr)

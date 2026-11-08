@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Point every Action pin at a release commit, in one move.
+
+    uv run python scripts/bump_action_pin.py <40-hex release commit> <version>
+
+The pin sits in five places (README twice, docs/scan-workflow.yml,
+docs/secure-workflow.yml, and `_NOTARI_ACTION_PIN` in src/notari/cli.py) and
+every release has to move all of them to the commit whose action.yml is the one
+being released. Doing it by hand missed a site more than once; this rewrites
+them together and refuses anything that is not a full commit SHA, because a tag
+or a short SHA is exactly what `notari status` rejects in a consumer workflow.
+
+Release order (docs/LAUNCH-DRY-RUN-0.3.0.md, section 6): merge the release
+branch, run this with the merge commit's SHA, commit that pin bump, then tag the
+pin-bump commit. The pin points one commit below the tag because a commit
+cannot name its own SHA; both carry the same action.yml.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+PIN_RE = re.compile(r"manumarri-sudo/notari@[0-9a-f]{40}(?P<tail>[^\n]*)")
+SITES = (
+    "README.md",
+    "docs/scan-workflow.yml",
+    "docs/secure-workflow.yml",
+    "src/notari/cli.py",
+)
+
+
+def bump(root: Path, sha: str, version: str) -> dict[str, int]:
+    """Rewrite every pin under `root`; return {relative path: pins rewritten}."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        msg = f"not a full lowercase 40-hex commit SHA: {sha!r}"
+        raise ValueError(msg)
+    counts: dict[str, int] = {}
+    for rel in SITES:
+        path = root / rel
+        text = path.read_text(encoding="utf-8")
+
+        def _sub(m: re.Match[str]) -> str:
+            tail = re.sub(
+                r"\d+\.\d+\.\d+ release action", f"{version} release action", m.group("tail")
+            )
+            return f"manumarri-sudo/notari@{sha}{tail}"
+
+        new, n = PIN_RE.subn(_sub, text)
+        if n == 0:
+            msg = f"no pin found in {rel}; the site list in this script is stale"
+            raise ValueError(msg)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+        counts[rel] = n
+    return counts
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("sha", help="the release commit, 40 lowercase hex")
+    ap.add_argument("version", help="the version being released, e.g. 0.5.0")
+    ap.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    args = ap.parse_args(argv)
+    try:
+        counts = bump(args.root, args.sha, args.version)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    for rel, n in counts.items():
+        print(f"{rel}: {n} pin(s) -> {args.sha[:12]} ({args.version})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -59,9 +59,31 @@ EVAL_REF="${NOTARI_HEAD_SHA:-${NOTARI_HEAD:-HEAD}}"
 # --strict (default on) requires a signed perimeter AND signed contract from a
 # trusted approver, so an unsigned / tampered / absent boundary BLOCKs rather
 # than silently passing.
+# NOTARI_MODE selects the product surface. "scan" (the default) needs no contract
+# and no keys: secrets, gate tamper and sensitive surfaces on the pull request
+# diff, published under the notari/scan status context. "boundary" is the signed
+# Change Passport: contract + perimeter, strict by default, under
+# notari/change-control. The two never mix: scan ignores every strict switch and
+# never reads a contract, so a PR that deletes one changes nothing in scan mode.
+MODE="${NOTARI_MODE:-scan}"
+case "$MODE" in
+  scan | boundary) ;;
+  *)
+    echo "::error::NOTARI_MODE must be 'scan' or 'boundary' (got '${MODE}')"
+    exit 2
+    ;;
+esac
+if [[ "$MODE" == "scan" ]]; then
+  STATUS_CONTEXT="notari/scan"
+fi
+
 STRICT_FLAG=""
-if [[ "${NOTARI_STRICT:-true}" == "true" ]]; then
+if [[ "$MODE" == "boundary" && "${NOTARI_STRICT:-true}" == "true" ]]; then
   STRICT_FLAG="--strict"
+fi
+if [[ "$MODE" == "scan" && -n "${NOTARI_BASE_SHA:-}" ]] && ! [[ "$NOTARI_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "::error::NOTARI_BASE_SHA is not a valid 40-hex SHA: '${NOTARI_BASE_SHA}'"
+  exit 2
 fi
 
 # Strict mode must not expose switches that silently degrade it to cooperative
@@ -151,8 +173,15 @@ fi
 #    PASS/NEEDS_REVIEW; any OTHER exit is a crash / bad invocation. Capture the
 #    real exit code without aborting so we can tell BLOCK apart from failure.
 set +e
-notari verify $STRICT_FLAG --head "$EVAL_REF" --passport-dir "$WORK" \
-  >"$WORK/stdout" 2>"$WORK/stderr"
+if [[ "$MODE" == "scan" ]]; then
+  # NOTARI_BASE_SHA (the pull request's base) is read by `notari scan` itself;
+  # without it the scan falls back to the branch upstream / origin/main.
+  notari scan --head "$EVAL_REF" --passport-dir "$WORK" \
+    >"$WORK/stdout" 2>"$WORK/stderr"
+else
+  notari verify $STRICT_FLAG --head "$EVAL_REF" --passport-dir "$WORK" \
+    >"$WORK/stdout" 2>"$WORK/stderr"
+fi
 NOTARI_RC=$?
 set -e
 
@@ -163,7 +192,7 @@ PASSPORT_MD="$WORK/passport.md"
 #    are the only sanctioned codes. Anything else (or a missing passport) is an
 #    error, never a pass.
 if [[ "$NOTARI_RC" != "0" && "$NOTARI_RC" != "1" ]] || [[ ! -f "$PASSPORT_JSON" ]]; then
-  echo "::error::notari verify failed to produce a verdict (rc=$NOTARI_RC)"
+  echo "::error::notari $([[ "$MODE" == "scan" ]] && echo scan || echo verify) failed to produce a verdict (rc=$NOTARI_RC)"
   cat "$WORK/stderr" 2>/dev/null || true
   exit 2
 fi
@@ -231,8 +260,8 @@ fi
 #     than the one being gated (security review H-6). In strict mode the passport
 #     MUST contain a valid head_commit; an empty one bypasses the binding check.
 HEAD_COMMIT="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("head_commit") or "")' "$PASSPORT_JSON")"
-if [[ -n "$STRICT_FLAG" && -z "$HEAD_COMMIT" ]]; then
-  echo "::error::strict mode requires the passport to contain a head_commit SHA; failing closed."
+if [[ ( -n "$STRICT_FLAG" || "$MODE" == "scan" ) && -z "$HEAD_COMMIT" ]]; then
+  echo "::error::${MODE} mode requires the passport to contain a head_commit SHA; failing closed."
   exit 2
 fi
 # The passport head_commit must match the SHA used for the Status Check,

@@ -55,6 +55,9 @@ def build_passport(result: VerifyResult, *, generated_at: str | None = None) -> 
     c = result.contract
     passport: dict[str, Any] = {
         "schema": "notari.change-passport/v1.1",
+        # "scan": no contract, no boundary, evidence rules only (notari scan).
+        # "boundary": measured against a contract and perimeter (notari verify).
+        "mode": "scan" if result.contract.task_source == "scan" else "boundary",
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
         "verdict": result.verdict.value,
         "exit_code": result.verdict.exit_code,
@@ -196,7 +199,11 @@ def render_markdown(
         lines.append(f"- **Approved by:** {_md_text(c.approved_by)}")
     from notari.policy import scope_is_unrestricted
 
-    if scope_is_unrestricted(c.allowed_paths):
+    if c.task_source == "scan":
+        # A scan has no boundary by design; say so instead of warning about an
+        # unrestricted scope a reviewer never chose.
+        scope = "none (scan mode): secrets, gate tamper and sensitive surfaces only"
+    elif scope_is_unrestricted(c.allowed_paths):
         # Never let an unrestricted contract read like a scoped one: a reviewer
         # must see that the per-task boundary here is the perimeter only, so a
         # PASS means "nothing forbidden", not "only the approved paths".

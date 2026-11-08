@@ -15,6 +15,8 @@ late-April / early-May 2026:
 
 from __future__ import annotations
 
+import pytest
+
 from notari.policy import (
     SUBCOMMAND_CHAIN_LIMIT,
     Risk,
@@ -68,6 +70,186 @@ def test_chain_inside_quotes_not_counted() -> None:
     cmd = "echo '" + "; ".join([f"item{i}" for i in range(30)]) + "'"
     c = classify_command(cmd)
     assert "subcommand chain" not in c.reason
+
+
+_JS_BODY = "\n".join(f"  var x{i} = {i}; y{i} = x{i} + 1;" for i in range(12))
+_CHAIN_25 = "; ".join(f"echo {i}" for i in range(25))
+
+
+def test_chain_heredoc_body_not_counted() -> None:
+    """A file written through `cat > f <<'EOF'` is stdin data, not a chain of
+    subcommands. Before the fix, a twelve-line JavaScript body counted as 27
+    segments and the chain gate blocked a plain file write (audit log,
+    2026-10-26, right before the operator paused the gate)."""
+    from notari.policy import _count_chain_segments
+
+    cmd = f"S=/tmp/s; cat > $S/collect.js <<'EOF'\n(function(){{\n{_JS_BODY}\n}})();\nEOF"
+    assert _count_chain_segments(cmd) == 2
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the gate's own advice: write the script to a file, then run it
+        f"cat > /tmp/w.py <<'EOF'\n{_JS_BODY}\nEOF\npython /tmp/w.py",
+        # unquoted and double-quoted delimiters
+        f"cat > /tmp/w.js <<EOF\n{_JS_BODY}\nEOF",
+        f'cat > /tmp/w.js <<"EOF"\n{_JS_BODY}\nEOF',
+        # <<- strips leading tabs from the body and the terminator
+        f"cat > /tmp/a <<-EOF\n\t{_JS_BODY}\n\tEOF",
+        # two heredocs in one command, consumed in order
+        f"cat > /tmp/a <<'A'\n{_JS_BODY}\nA\ncat > /tmp/b <<'B'\n{_JS_BODY}\nB",
+        # an indented look-alike terminator does not end the body (bash semantics)
+        f"cat <<'EOF'\n  EOF\n{_JS_BODY}\nEOF",
+    ],
+)
+def test_chain_heredoc_shapes_not_counted(cmd: str) -> None:
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+def test_chain_after_heredoc_still_counted() -> None:
+    """Blanking the body must not blank the commands that follow the
+    terminator: a real 25-segment chain after a heredoc still trips the gate."""
+    cmd = f"cat > /tmp/a <<'EOF'\nhello\nEOF\n{_CHAIN_25}"
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert "subcommand chain" in c.reason
+
+
+def test_chain_quoted_heredoc_operator_is_not_an_opener() -> None:
+    """`<<` inside a quoted string is text. If it opened a body, every command
+    on the following lines would be blanked, a bypass of the chain gate."""
+    cmd = 'echo "usage: cmd <<EOF"\n' + _CHAIN_25 + "\nEOF"
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert "subcommand chain" in c.reason
+
+
+def test_chain_unterminated_heredoc_body_runs_to_end() -> None:
+    """Without a terminator the shell feeds everything to stdin; nothing in
+    the body executes as a subcommand, so it is not counted."""
+    cmd = "cat <<'EOF'\n" + _CHAIN_25
+    assert "subcommand chain" not in classify_command(cmd).reason
+
+
+def test_chain_heredoc_stripper_is_linear() -> None:
+    """Second review: thousands of operators on one line went quadratic
+    (28 s at 100 KB). Bounded now: past four operators a line gets no
+    exemption and no per-operator analysis."""
+    import time
+
+    from notari.policy import _strip_heredoc_bodies
+
+    many_ops = "cat " + "<<A " * 25_000 + "\n" + _CHAIN_25
+    big_body = "cat > /tmp/x <<'EOF'\n" + ("a; b; c\n" * 50_000) + "EOF"
+    # third review: many separate heredoc statements went quadratic (263 s at
+    # 500 KB) because the whole-command check ran once per heredoc
+    many_statements = "".join(f"cat > /tmp/f{i} <<'E'\nx;y\nE\n" for i in range(20_000))
+    for cmd in (many_ops, big_body, many_statements):
+        t0 = time.perf_counter()
+        _strip_heredoc_bodies(cmd)
+        assert time.perf_counter() - t0 < 2.0
+    assert "subcommand chain" in classify_command(many_ops).reason
+    assert "subcommand chain" not in classify_command(big_body).reason
+
+
+_ECHOS_30 = "\n".join(f"echo {i};" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the body is executed by whatever is on the other side of the pipe,
+        # listed or not: the count must stay as it was before the heredoc fix
+        f"cat <<'EOF' | /bin/bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | env bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | php\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | tee f | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' | xargs -I{{}} bash -c {{}}\n{_ECHOS_30}\nEOF",
+        # wrappers and interpreters outside the pattern list execute the body
+        f"env bash <<EOF\n{_ECHOS_30}\nEOF",
+        f"nohup bash <<EOF\n{_ECHOS_30}\nEOF",
+        f"source /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f". /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f"osascript <<EOF\n{_ECHOS_30}\nEOF",
+        f"awk -f /dev/stdin <<EOF\n{_ECHOS_30}\nEOF",
+        f"eval \"$(cat <<'EOF'\n{_ECHOS_30}\nEOF\n)\"",
+        f"bash <(cat <<EOF\n{_ECHOS_30}\nEOF\n)",
+        f"tee >(bash) <<EOF\n{_ECHOS_30}\nEOF",
+        f"cat $(true) <<EOF\n{_ECHOS_30}\nEOF",
+        # `<<` that is not a heredoc: the lines after it run
+        f"echo hi # <<EOF\n{_ECHOS_30}",
+        f"cat # <<EOF\n{_ECHOS_30}",
+        f"echo $((1<<EOF))\n{_ECHOS_30}",
+        f"cat $((1<<EOF))\n{_ECHOS_30}",
+        f"(( x = 1 <<EOF ))\n{_ECHOS_30}",
+        f"echo $'<<EOF'\n{_ECHOS_30}\nEOF",
+        f"cat $'<<EOF'\n{_ECHOS_30}\nEOF",
+        # delimiter quoting the way bash reads it: the body ends at EOF / EOFx
+        f"cat <<E'O'F\nx\nEOF\n{_ECHOS_30}",
+        f'cat <<"EO"F\nx\nEOF\n{_ECHOS_30}',
+        f"cat <<E\\OF\nx\nEOF\n{_ECHOS_30}",
+        f"cat <<'EOF'x\nx\nEOFx\n{_ECHOS_30}",
+        f"cat <<EOF\r\nx\r\nEOF\r\n{_ECHOS_30}",
+        # a heredoc opener inside an executed body must not swallow what follows
+        f"bash <<EOF\ncat <<X\nEOF\n{_ECHOS_30}",
+        # second review: fd games before the pipe, and a continued line
+        f"cat <<EOF 2>&1 | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF >&2 | bash\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF \\\n| bash\n{_ECHOS_30}\nEOF",
+        # second review: an unquoted delimiter expands the body
+        "cat <<EOF\n$(" + _CHAIN_25 + ")\nEOF",
+        "cat <<EOF\n`" + _CHAIN_25 + "`\nEOF",
+        # second review: an fd set up earlier points at an executor
+        f"exec 3> >(bash); cat <<EOF >&3\n{_ECHOS_30}\nEOF",
+        f"mkfifo /tmp/p; bash </tmp/p & cat <<'EOF' >/tmp/p\n{_ECHOS_30}\nEOF",
+        f"cat <<'EOF' >/dev/tcp/1.2.3.4/80\n{_ECHOS_30}\nEOF",
+        # more than four operators on one line: no exemption at all
+        "cat <<A <<A <<A <<A <<A\n" + _CHAIN_25,
+        # third review: fd duplication is part of the segment, not a separator
+        f"cat <<EOF >&3\n{_ECHOS_30}\nEOF",
+        f"cat <<EOF > f 2>&1\n{_ECHOS_30}\nEOF",
+    ],
+)
+def test_chain_executed_heredoc_bodies_still_counted(cmd: str) -> None:
+    """Review of the first heredoc fix (2026-10-26): blanking every body hid
+    commands the shell runs. Only a plain cat/tee sink is exempt; each shape
+    here executes its thirty segments and must stay CRITICAL."""
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL, (cmd[:40], c.reason)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat <<EOF | dash-fmt\nx\nEOF",
+        "cat <<EOF | python3 -m json.tool\nx\nEOF",
+        "cat <<EOF | jq .\nx\nEOF",
+        "cat <<EOF | tee file\nx\nEOF",
+    ],
+)
+def test_heredoc_piped_to_a_tool_is_not_critical_by_shape(cmd: str) -> None:
+    """A short heredoc piped to a formatter classifies by its content, not by
+    a pipe-target name match (the first fix's regex false-fired on these)."""
+    assert classify_command(cmd).risk is not Risk.CRITICAL
+
+
+@pytest.mark.parametrize(
+    "cmd, reason",
+    [
+        # a here-string is the program as an argument, same class as -c
+        ("python3 - <<< 'print(1); print(2)'", "interpreter here-string"),
+        ("bash <<< 'echo hi'", "interpreter here-string"),
+        # the existing shapes keep their verdict
+        ("python3 - <<'EOF'\nprint(1)\nEOF", "interpreter heredoc"),
+        ("bash <<'EOF'\necho hi\nEOF", "interpreter heredoc"),
+    ],
+)
+def test_heredoc_into_interpreter_stays_critical(cmd: str, reason: str) -> None:
+    c = classify_command(cmd)
+    assert c.risk is Risk.CRITICAL
+    assert c.reason == reason
 
 
 # ---------------------------------------------------------------------------

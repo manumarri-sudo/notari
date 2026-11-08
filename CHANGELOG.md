@@ -2,6 +2,113 @@
 
 All notable changes to `notari` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - the drop-in scan is the product
+
+Three and a half months after launch, Notari had no external adopter: zero stars,
+zero outside issues, and a download curve shaped like CI bots. The signed boundary
+asked a team to adopt keys, contracts, and a strict gate before it delivered
+anything. This release narrows the product to the part a team can adopt in one
+pull request with no keys and no config, and keeps the boundary as the opt-in
+second step.
+
+### Added
+
+- **`notari scan`.** The diff from merge-base(base, head) to head is scanned for
+  secrets on added lines (vendor formats BLOCK, loose shapes review), edits to the
+  gate's own surfaces (workflows, action manifests, approver keys: BLOCK), and
+  sensitive surfaces (CI, lockfiles, git config: review), with renames, binaries,
+  symlinks and submodules in the inventory. It reuses the verify engine through a
+  synthetic every-path contract, so the evidence rules are exactly `notari verify`'s,
+  and it never reads `.notari/contract.json`. Base comes from `--base`, then
+  `NOTARI_BASE_SHA`, then the branch upstream, `origin/HEAD`, `origin/main`,
+  `main`, `master`; no base is an error (exit 2), never a PASS. Option-shaped refs
+  are rejected (`tests/test_scan.py`).
+- **The Action defaults to `mode: scan`.** No keys, no contract, status context
+  `notari/scan`, strict and key inputs ignored, `pull_request` accepted (the scan
+  needs no secret). `mode: boundary` is the 0.4 Action unchanged: strict by default,
+  `notari/change-control`, fails closed without a contract
+  (`tests/test_action_wrapper.py::test_scan_mode_*`, `test_boundary_mode_*`). New
+  input `base-sha`, defaulting to the pull request's base.
+- **Scan fails closed on nothing.** A base that is not behind the head (a push or
+  `workflow_dispatch` run with no base, `--base HEAD`, swapped refs) is exit 2,
+  "nothing to scan", never a green check on an empty diff; an explicit base that
+  does not resolve (`NOTARI_BASE_SHA` on a shallow checkout) is exit 2 instead of
+  a silent fallthrough to `main`; the wrapper requires `head_commit` in scan mode
+  as it did in strict mode (third review, 2026-10-26).
+- **Passports carry `mode`** (`scan` or `boundary`), and a scan passport says "none
+  (scan mode)" for scope instead of warning about an unrestricted contract;
+  `notari explain --fix-prompt` says "Mode: scan" instead of an approved task.
+- **`scripts/bump_action_pin.py`** moves the Action pin at all five sites to a
+  release commit in one move and refuses anything but a full SHA. The pins in
+  this tree still point at the 0.4.2 action, which has no `mode` input: the
+  scan workflow does not work until the 0.5.0 pin-bump commit lands, which is
+  the release step (docs/LAUNCH-DRY-RUN-0.3.0.md, section 6).
+- `docs/scan-workflow.yml`, the one-file install; README and QUICKSTART lead with
+  it and keep the signed boundary as the second step. The dogfood workflow and
+  `docs/secure-workflow.yml` set `mode: boundary` explicitly.
+
+### Fixed (local gate)
+
+A diagnostic of the October audit log found 35 local-gate blocks, 27 of them
+the intended interpreter-heredoc rule and 5 of them a bug: the subcommand-chain
+counter read the body of a heredoc as shell syntax, so a twelve-line file write
+(`cat > app.js <<'EOF' ... EOF`) counted as a 27-segment chain and was blocked
+as a CVE-2025-59536-class bypass. That was also the exact shape the heredoc
+rule's "try instead" text recommends, so the advice could not be followed.
+
+- **Chain counter ignores heredoc bodies that are data.** `_strip_heredoc_bodies`
+  tracks every heredoc with bash semantics (operator found on the quote-masked
+  form so a `<<` inside a string cannot open a body; delimiter read the way bash
+  reads it, so `E'O'F`, `"EO"F`, `E\OF`, `'EOF'x` and CRLF lines pair correctly;
+  `<<-` tab stripping; operator order; unterminated runs to the end; `<<` after
+  `#` or inside `$(( ))` is not an operator) and blanks only a body consumed by a
+  plain `cat` or `tee` when nothing could run it: no pipe or line continuation
+  after the operator, no fd duplication, device redirection or substitution in
+  the segment, no process substitution, fifo or `exec` anywhere in the command,
+  and no `$(` or backtick in the body unless the delimiter was quoted. Every
+  other body (`bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`, `cat
+  <<EOF | php`, `cat <<EOF 2>&1 | bash`, `exec 3> >(bash); cat <<EOF >&3`,
+  `tee >(bash) <<EOF`, and so on) keeps counting exactly as before. The count
+  runs before ANSI-C decoding so `$'<<EOF'` stays one quoted word, and a line
+  with more than four heredoc operators gets no exemption, which keeps the pass
+  linear (a 100 KB operator run took 28 s in the first cut). Two hostile review
+  rounds produced the 38 executed shapes pinned CRITICAL in
+  `test_chain_executed_heredoc_bodies_still_counted`, next to the benign shapes
+  in `test_chain_heredoc_*` that must not count.
+- **Accepted trade-off, stated plainly.** A plain file write whose body has
+  more than 20 segments and is later run (`cat > x.sh <<'EOF' ... EOF; bash
+  x.sh`) was CRITICAL before only because the body inflated the chain count; it
+  now classifies by its verbs, like the under-20 case always did (architectural
+  limit 3, `test_residual_write_then_run_payload`). The same applies to a
+  heredoc written to `~/.bashrc` or a cron directory. The body is still scanned
+  by every CRITICAL and HIGH pattern; a persistence-path rule is a separate
+  follow-up.
+- **`notari status` no longer judges workflows that merely mention notari.** A
+  workflow counts as a gate when it runs the action or the CLI (`uses:
+  org/notari@`, `install-from-source`, `notari verify`, `pip install notari`),
+  not when the word appears in a comment or a PyPI URL. Notari's own
+  `release.yml` was being reported as "referenced but not pinned"
+  (`test_workflow_that_only_mentions_notari_is_not_a_gate`).
+
+### Added (security)
+
+- **Here-strings join the interpreter-heredoc class.** `python3 - <<< '...'`
+  is "interpreter here-string", the same class as `python -c`
+  (`test_heredoc_into_interpreter_stays_critical`).
+- **`notari state`.** One truthful line for session banners: "Notari is on" or
+  "Notari is PAUSED for N more min (reason), K call(s) let through". The Claude
+  Code SessionStart banner was a hard-coded "Notari is on" that kept printing
+  during a pause (`tests/test_pause.py::test_state_*`).
+
+### Changed
+
+- `action.yml` defaults to `==0.4.3`; `CITATION.cff` catches up from 0.4.1.
+- `scripts/verify_launch_readiness.py` documents `uv run python ...`: outside the
+  project venv the behaviour checks fail on import and read as product failures.
+- README drops the invisible `mcp-name` registry comment. Notari stopped being an
+  MCP server in the Change Control pivot; the 2026-07-09 journal scheduled the
+  removal for the next routine release.
+
 ## [0.4.2] - one product, second security pass
 
 The first release after the 2026-07-23 cross-vendor red team returned DO NOT

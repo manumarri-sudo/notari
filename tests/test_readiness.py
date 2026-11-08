@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from notari import attest, readiness
 from notari import perimeter as perimeter_mod
 from notari import provenance as provenance_mod
@@ -70,6 +72,58 @@ def test_unpinned_workflow_is_a_blocker(tmp_path: Path) -> None:
     report = readiness.assess(tmp_path, env={provenance_mod.APPROVER_ENV: pub_pem})
     assert report.posture is Posture.COOPERATIVE
     assert any(c.name == "gate workflow" and not c.ok for c in report.checks)
+
+
+def test_workflow_that_only_mentions_notari_is_not_a_gate(tmp_path: Path) -> None:
+    """A release or docs workflow that says "notari" in a comment or a PyPI URL
+    does not run the gate, so it must not be judged as an unpinned gate. Notari's
+    own release.yml tripped this: `notari status` reported it as "referenced but
+    not pinned" next to a correctly pinned gate workflow."""
+    pub_pem = _sign_perimeter(tmp_path)
+    _pinned_workflow(tmp_path)
+    wf = tmp_path / ".github" / "workflows"
+    (wf / "release.yml").write_text(
+        "# publishes notari to PyPI\n"
+        "jobs:\n  publish:\n    environment:\n      url: https://pypi.org/p/notari\n"
+        "    steps:\n      - run: python -m build\n"
+    )
+    assert "release.yml" not in {p.name for p in readiness._notari_workflow_files(tmp_path)}
+    report = readiness.assess(tmp_path, env={provenance_mod.APPROVER_ENV: pub_pem})
+    gate = [c for c in report.checks if c.name == "gate workflow"]
+    assert gate and gate[0].ok, gate
+
+
+def test_workflow_running_the_cli_is_a_gate(tmp_path: Path) -> None:
+    """Wiring Notari in without the action (`pip install notari` + `notari
+    verify`) still counts as a gate workflow, so it is still checked."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "gate.yml").write_text(
+        "on:\n  pull_request:\njobs:\n  cc:\n    steps:\n"
+        "      - run: pip install notari==0.5.0\n      - run: notari verify --strict\n"
+    )
+    assert [p.name for p in readiness._notari_workflow_files(tmp_path)] == ["gate.yml"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # self-checkout gate that only names itself after Notari
+        "name: Notari gate\non:\n  pull_request:\njobs:\n  cc:\n    steps:\n      - uses: ./\n",
+        "jobs:\n  cc:\n    steps:\n      - uses: ./.github/actions/notari\n",
+        "jobs:\n  cc:\n    steps:\n      - uses: org/notari-action@0123456789abcdef\n",
+        "jobs:\n  cc:\n    steps:\n      - run: notari --base main verify\n",
+        "jobs:\n  cc:\n    steps:\n      - run: pipx install notari && notari status\n",
+        "jobs:\n  cc:\n    steps:\n      - run: uv tool install notari\n",
+    ],
+)
+def test_workflow_wiring_shapes_are_gates(tmp_path: Path, text: str) -> None:
+    """Every way a workflow can wire Notari in is still checked (review of the
+    first filter, 2026-10-26: it missed `uses: ./`, `-action@`, `pipx`)."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "gate.yml").write_text(text)
+    assert [p.name for p in readiness._notari_workflow_files(tmp_path)] == ["gate.yml"]
 
 
 def test_tampered_perimeter_is_not_enforced(tmp_path: Path) -> None:

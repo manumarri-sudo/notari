@@ -601,6 +601,15 @@ RAW_CRITICAL_COMMAND_PATTERNS: Final[tuple[tuple[str, str, str], ...]] = (
         "Heredocs hide what's about to run. Write the script to a file first "
         "and run it: `cat > /tmp/work.py <<'EOF' ... EOF && python /tmp/work.py`",
     ),
+    # Here-string into an interpreter: `python3 - <<< 'import os; ...'`. Same
+    # class as `python -c` and the heredoc above (the program is the argument),
+    # and the single quotes blank it under masking, so scan raw.
+    (
+        r"(?:^|[;&|]\s*)(?:python\d?|node|ruby|perl|bash|sh|zsh)\b[^<\n]*<<<",
+        "interpreter here-string",
+        "Here-strings hide what's about to run. Write the script to a file first "
+        "and run it: `cat > /tmp/work.py <<'EOF' ... EOF && python /tmp/work.py`",
+    ),
     # find for credential-file extensions, with the glob commonly quoted
     # (`-name "*.env"`). Masking blanks the quoted glob; scan raw.
     (
@@ -929,13 +938,200 @@ SUBCOMMAND_CHAIN_LIMIT: Final[int] = 20
 _CHAIN_RE = re.compile(r"(?:&&|\|\||;|(?<!\|)\|(?!\|))")
 
 
+# A heredoc operator outside quotes: `<<EOF`, `<<-EOF`, `<< 'EOF'`. The
+# negative lookarounds keep `<<<` (a here-string, which is an argument, not a
+# body) out. Matched on the quote-masked form so a `<<` inside a quoted string
+# cannot start a fake body that swallows the real commands that follow it.
+_HEREDOC_OP_RE = re.compile(r"(?<!<)<<(?!<)([-~]?)\s*")
+# Spans of an opener line where `<<` is not a heredoc: a comment tail, and
+# arithmetic (`$((1<<2))`, `(( x = 1<<2 ))`) where it is a left shift.
+_COMMENT_TAIL_RE = re.compile(r"(?:^|\s)#")
+_ARITH_RE = re.compile(r"\$?\(\((?:[^()]|\([^()]*\))*\)\)")
+# Commands that only read their stdin as data. A heredoc fed to one of these
+# is exempt from the chain count when nothing else on the command could run
+# the body; a heredoc fed to anything else keeps its body counted, exactly as
+# before, because `bash <<EOF`, `env bash <<EOF`, `source /dev/stdin <<EOF`,
+# `cat <<EOF | php` and every interpreter not on a list all execute the body.
+_HEREDOC_SINKS: Final[frozenset[str]] = frozenset({"cat", "tee"})
+_SHELL_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+# Anywhere in the command: a process substitution, a fifo, or `exec` can turn
+# a later "write to a file" into "feed an interpreter" (`exec 3> >(bash); cat
+# <<EOF >&3`). Inside the segment: fd duplication, or a redirection into a
+# device path, hands the body to something other than a file.
+_EXECUTOR_ANYWHERE_RE = re.compile(r"[<>]\(|\bmkfifo\b|(?:^|[;&|(\s])exec\b")
+_SEGMENT_ESCAPE_RE = re.compile(r"\$\(|`|[<>]&|&>|[<>]\s*/(?:dev|proc)/")
+# Inside an UNQUOTED-delimiter body the shell expands `$(...)` and backticks,
+# so such a body is not data (`cat <<EOF\n$(cmd1; cmd2)\nEOF`).
+_BODY_EXPANSION_RE = re.compile(r"\$\(|`")
+# More heredoc operators than this on one line is not a shape bash users
+# write; stop exempting rather than analyse each one (linear time, closed).
+_MAX_HEREDOCS_PER_LINE: Final[int] = 4
+# Segment separators: `;`, `|`, `||`, `&&`, and a background `&`, but not the
+# `&` of an fd duplication (`>&3`, `2>&1`), which stays inside its segment so
+# the escape check can see it.
+_SEGMENT_SEP_RE = re.compile(r";|\|\|?|&&|(?<![<>])&")
+
+
+def _heredoc_delimiter(raw: str, start: int, end: int) -> tuple[str, bool, int]:
+    """Read a heredoc delimiter word from `raw[start:end]` the way bash does.
+
+    Quotes are removed and may be partial (`E'O'F` is `EOF`), a backslash
+    escapes the next character, `\r` is an ordinary character (so a CRLF
+    opener line pairs with a CRLF terminator line), and the word ends at
+    unquoted whitespace or a shell operator. Returns (delimiter, quoted, end):
+    bash expands the body only when no part of the delimiter was quoted; `end`
+    is the index just past the word.
+    """
+    i = start
+    out: list[str] = []
+    quoted = False
+    while i < end:
+        ch = raw[i]
+        if ch in "'\"":
+            quoted = True
+            j = raw.find(ch, i + 1, end)
+            if j == -1:
+                j = end
+            out.append(raw[i + 1 : j])
+            i = j + 1
+        elif ch == "\\" and i + 1 < end:
+            quoted = True
+            out.append(raw[i + 1])
+            i += 2
+        elif ch in " \t\n;&|<>()":
+            break
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), quoted, i
+
+
+def _heredoc_is_data_sink(
+    masked: str,
+    line_start: int,
+    op_start: int,
+    delim_end: int,
+    line_end: int,
+    *,
+    executor_anywhere: bool,
+) -> bool:
+    """True when the segment that owns this heredoc operator is a plain
+    `cat`/`tee` whose body can only land in a file or on stdout.
+
+    Refused, and therefore counted as before, when: anything after the
+    operator on the opener line pipes or continues the line; the segment
+    duplicates an fd, redirects into /dev or /proc, or substitutes a command;
+    or the command anywhere uses process substitution, a fifo, or `exec`.
+    """
+    if executor_anywhere:
+        return False
+    rest = masked[delim_end:line_end]
+    if "|" in rest or rest.rstrip().endswith("\\"):
+        return False
+    seg_start = line_start
+    for m in _SEGMENT_SEP_RE.finditer(masked, line_start, op_start):
+        seg_start = m.end()
+    seg_end_m = _SEGMENT_SEP_RE.search(masked, op_start, line_end)
+    seg_end = seg_end_m.start() if seg_end_m else line_end
+    if _SEGMENT_ESCAPE_RE.search(masked, seg_start, seg_end):
+        return False
+    words = masked[seg_start:op_start].replace("(", " ").split()
+    while words and _SHELL_ASSIGN_RE.match(words[0]):
+        words.pop(0)
+    if not words:
+        return False
+    return words[0].rsplit("/", 1)[-1] in _HEREDOC_SINKS
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """Blank heredoc bodies that are known to be data, so a file write is not
+    read as a chain of subcommands.
+
+    `cat > app.js <<'EOF' ... EOF` feeds the body to `cat` as stdin; the
+    semicolons inside it are JavaScript. Before this, a twelve-line file write
+    counted as a 27-segment chain and tripped the chain-bypass gate, which
+    also made the gate's own "write the script to a file first" advice
+    impossible to follow.
+
+    Fail-closed by construction: every heredoc's extent is tracked with bash
+    semantics (operator order, `<<-` tab stripping, bash delimiter quoting,
+    terminator equal to the delimiter, unterminated runs to the end), but a
+    body is blanked only when `_heredoc_is_data_sink` accepts its segment and
+    the body itself cannot expand (quoted delimiter, or no `$(` / backtick in
+    it). Every other body stays in the text and keeps counting. Output keeps
+    the input's length and newlines. Pattern matching never uses this: the
+    scanners keep seeing every body. Linear in the command length.
+    """
+    if "<<" not in cmd:
+        return cmd
+    out = list(cmd)
+    masked = _mask_quoted(cmd)
+    # Whole-command checks run once: per-heredoc they made a command with many
+    # heredoc statements quadratic (263 s at 500 KB in review).
+    executor_anywhere = bool(_EXECUTOR_ANYWHERE_RE.search(masked))
+    n = len(cmd)
+    line_start = 0
+    while line_start < n:
+        nl = cmd.find("\n", line_start)
+        line_end = n if nl == -1 else nl
+        body_start = line_end + 1
+        search_end = line_end
+        cm = _COMMENT_TAIL_RE.search(masked, line_start, line_end)
+        if cm:
+            search_end = cm.start()
+        arith = [(m.start(), m.end()) for m in _ARITH_RE.finditer(masked, line_start, search_end)]
+        ops = list(_HEREDOC_OP_RE.finditer(masked, line_start, search_end))
+        exempt_allowed = len(ops) <= _MAX_HEREDOCS_PER_LINE
+        for op in ops:
+            if any(a <= op.start() < b for a, b in arith):
+                continue
+            delim, quoted, delim_end = _heredoc_delimiter(cmd, op.end(), line_end)
+            if not delim:
+                continue
+            strip_tabs = op.group(1) == "-"
+            sink = exempt_allowed and _heredoc_is_data_sink(
+                masked,
+                line_start,
+                op.start(),
+                delim_end,
+                line_end,
+                executor_anywhere=executor_anywhere,
+            )
+            pos = body_start
+            body_end = n
+            while pos < n:
+                end = cmd.find("\n", pos)
+                if end == -1:
+                    end = n
+                probe = cmd[pos:end]
+                if strip_tabs:
+                    probe = probe.lstrip("\t")
+                if probe == delim:
+                    body_end = pos
+                    pos = end + 1
+                    break
+                pos = end + 1
+            else:
+                body_end = n
+            if sink and (quoted or not _BODY_EXPANSION_RE.search(cmd, body_start, body_end)):
+                for k in range(body_start, body_end):
+                    if out[k] != "\n":
+                        out[k] = " "
+            body_start = pos
+        line_start = body_start
+    return "".join(out)
+
+
 def _count_chain_segments(cmd: str) -> int:
     """Count subcommand segments split by `&&`, `||`, `;`, `|`.
 
-    Operates on the quote-masked form so chaining operators *inside*
-    quoted strings don't inflate the count (e.g. `echo 'a; b; c'`).
+    Operates on the quote-masked form with data-sink heredoc bodies blanked,
+    so chaining operators inside quoted strings (`echo 'a; b; c'`) or inside
+    a file being written don't inflate the count. Call it on the command as
+    written, before ANSI-C decoding: `$'<<EOF'` is one quoted word to the
+    shell and must stay one to the counter.
     """
-    masked = _mask_quoted(cmd)
+    masked = _mask_quoted(_strip_heredoc_bodies(cmd))
     parts = _CHAIN_RE.split(masked)
     return sum(1 for p in parts if p.strip())
 
@@ -1020,13 +1216,15 @@ def classify_command(command: str) -> CommandClassification:
     if not cmd:
         return CommandClassification(Risk.LOW, "empty command")
 
+    # Gate 1: subcommand-chain bypass (Claude Code CVE-2025-59536 / 21852).
+    # Even if the operator allowlists `.*`, a 20-segment chain stays CRITICAL.
+    # Counted on the command as written: decoding `$'...'` first would turn
+    # a quoted `$'<<EOF'` word into a bare heredoc operator.
+    n_segments = _count_chain_segments(cmd)
+
     # Gate 0: normalise whitespace-obfuscation (`${IFS}` -> space) so the
     # space-separated patterns below see the real command shape.
     cmd = _strip_shell_obfuscation(cmd)
-
-    # Gate 1: subcommand-chain bypass (Claude Code CVE-2025-59536 / 21852).
-    # Even if the operator allowlists `.*`, a 20-segment chain stays CRITICAL.
-    n_segments = _count_chain_segments(cmd)
     if n_segments > SUBCOMMAND_CHAIN_LIMIT:
         return CommandClassification(
             Risk.CRITICAL,

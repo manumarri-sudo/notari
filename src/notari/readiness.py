@@ -66,8 +66,26 @@ def _notari_workflow_files(root: Path) -> list[Path]:
     return [
         p
         for p in sorted(wf_dir.glob("*.y*ml"))
-        if p.is_file() and re.search(r"notari", p.read_text(errors="replace"), re.I)
+        if p.is_file() and _WIRES_NOTARI_RE.search(p.read_text(errors="replace"))
     ]
+
+
+# A workflow wires Notari in when it runs the action (`uses: org/notari@sha`,
+# `uses: org/notari-action@sha`, `uses: ./.github/actions/notari`, `uses: ./`
+# with `install-from-source`), runs the CLI (`notari verify`, `notari --base x
+# verify`), installs the package (`pip`, `pip3`, `pipx`, `uv`), or names
+# itself after Notari. The word alone in a comment or a PyPI URL is not a gate:
+# flagging notari's own release.yml as "referenced but not pinned" was a false
+# blocker. When in doubt the match is broad, because the failure mode of
+# checking a non-gate is one spurious line, and of missing a gate is silence.
+_WIRES_NOTARI_RE = re.compile(
+    r"uses:\s*\S*notari"
+    r"|install-from-source"
+    r"|\bnotari\b[^\n]*\b(?:verify|begin|init|guard|status|ci|check|scan|gate)\b"
+    r"|\b(?:pip3?|pipx|uv)\b[^\n]*\b(?:install|add)\b[^\n]*\bnotari\b"
+    r"|\bname:[^\n]*notari",
+    re.I,
+)
 
 
 def _workflow_issue(text: str) -> str | None:
