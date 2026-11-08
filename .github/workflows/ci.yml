@@ -46,7 +46,7 @@ jobs:
           fresh_python="$RUNNER_TEMP/notari-fresh/bin/python"
           uv pip install --python "$fresh_python" .
           uv pip check --python "$fresh_python"
-          uv pip freeze --python "$fresh_python" | sed '/^notari==/d' > "$RUNNER_TEMP/notari-fresh.txt"
+          uv pip freeze --python "$fresh_python" | sed -E '/^notari(==| @ )/d' > "$RUNNER_TEMP/notari-fresh.txt"
           uv run --locked --extra dev pip-audit --strict --no-deps --disable-pip -r "$RUNNER_TEMP/notari-fresh.txt"
   build:
     runs-on: ubuntu-latest
