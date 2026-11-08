@@ -139,14 +139,16 @@ class TestReviewerIsToldWhatTheVerdictIsWorth:
         assert "provably approved by a human" in combined
 
     def test_strict_signed_passport_gets_no_caveat(self, tmp_path: Path) -> None:
-        pj, pub = _signed_passport(
-            tmp_path, trust={"strict": True, "contract_provenance": "verified"}
-        )
-        proc = _run(pj, pub)
-        combined = " ".join((proc.stdout + proc.stderr).split())
-        assert proc.returncode == 0, combined
-        assert "passport verified" in combined
-        assert "not an enforced boundary" not in combined
+        for status in ("signed-trusted", "verified"):
+            pj, pub = _signed_passport(
+                tmp_path,
+                trust={"strict": True, "contract_provenance": status, "provenance": status},
+            )
+            proc = _run(pj, pub)
+            combined = " ".join((proc.stdout + proc.stderr).split())
+            assert proc.returncode == 0, combined
+            assert "passport verified" in combined
+            assert "not an enforced boundary" not in combined
 
     def test_naive_contract_expiry_is_refused_not_crashed(self, tmp_path: Path) -> None:
         """`2027-01-01T00:00:00` is valid ISO-8601 with no offset. Comparing it against

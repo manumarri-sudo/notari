@@ -747,6 +747,7 @@ def verify_passport_cmd(
 
     from notari import attest
     from notari import passport as passport_mod
+    from notari.provenance import ProvenanceStatus
 
     pems: list[str] = []
     for p in gate_key or []:
@@ -877,17 +878,18 @@ def verify_passport_cmd(
     # It stays exit 0, because the passport IS authentic and that is what this command
     # verifies. What changes is that the reviewer is told what they are looking at.
     trust = passport.get("trust") or {}
+    trusted_states = (ProvenanceStatus.OK.value, "verified")
     caveats: list[str] = []
     if trust.get("strict") is False:
         caveats.append("run in COOPERATIVE mode, so the boundary was advisory, not enforced")
     contract_prov = trust.get("contract_provenance")
-    if contract_prov and contract_prov != "verified":
+    if contract_prov and contract_prov not in trusted_states:
         caveats.append(
             f"contract provenance is {contract_prov}, so the task and scope were not "
             "provably approved by a human"
         )
     provenance = trust.get("provenance")
-    if provenance and provenance not in ("verified", None):
+    if provenance and provenance not in trusted_states:
         caveats.append(f"perimeter provenance is {provenance}")
     if caveats:
         out.print("[yellow]⚠ the verdict is not an enforced boundary:[/yellow]")
