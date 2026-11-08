@@ -40,10 +40,6 @@ the evidence under `.notari/` in your checkout.
 
 ## Add it to a GitHub repo
 
-> The 0.5.0 Action pin below posts to the legacy `notari/change-control` status
-> context. Use the CLI to try the scan today. Before making `notari/scan` a
-> required check, use a corrected release and confirm that context on a test PR.
-
 ```yaml
 # .github/workflows/notari-scan.yml
 on:
@@ -62,14 +58,14 @@ jobs:
           fetch-depth: 0
           path: _pr_checkout
           persist-credentials: false
-      - uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # release action, SHA-pinned
+      - uses: manumarri-sudo/notari@a33e4c30133b9175774af2a62abcd6474296da85  # release action, SHA-pinned
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}
           checkout-path: _pr_checkout
 ```
 
-On a corrected Action release, the next pull request gets a `notari/scan` status
+The next pull request gets a `notari/scan` status
 and a summary of what was flagged. Once you have confirmed the status on a test
 PR, make it required in branch protection so a BLOCK prevents merging. See
 [`docs/scan-workflow.yml`](docs/scan-workflow.yml) for the full template.
@@ -345,7 +341,7 @@ jobs:
           persist-credentials: false
       # Pin to the release commit SHA, not a mutable tag, `notari status`
       # rejects a non-SHA pin. `notari init` writes the current pin for you.
-      - uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # 0.5.0 release action
+      - uses: manumarri-sudo/notari@a33e4c30133b9175774af2a62abcd6474296da85  # 0.5.1 release action
         with:
           mode: "boundary"
           head: ${{ github.event.pull_request.head.sha }}
@@ -563,7 +559,7 @@ read [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) before using them).
 
 ## What's shipping today vs. on the roadmap
 
-**Shipping (0.5.0), with on-disk evidence:** the drop-in scan (`notari scan` and
+**Shipping (0.5.1), with on-disk evidence:** the drop-in scan (`notari scan` and
 the Action's default `mode: scan`: secrets, gate tamper, sensitive surfaces, no
 keys), the Change Control flow
 (`begin`/`verify`/passport + the Action's `mode: boundary`), the HMAC-chained audit log (32k+ entries

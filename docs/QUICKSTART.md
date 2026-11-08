@@ -17,9 +17,8 @@ untracked files are outside this comparison. PASS and NEEDS_REVIEW exit 0, BLOCK
 exits 1, and a scan error exits 2. Leave out `--no-passport` if you want JSON and
 Markdown evidence in the repository's `.notari/` directory.
 
-The [workflow template](scan-workflow.yml) runs the scan on GitHub. The 0.5.0
-Action posts the legacy `notari/change-control` context, so verify a corrected
-release posts `notari/scan` on a test PR before requiring that context.
+The [workflow template](scan-workflow.yml) runs the scan on GitHub. Confirm
+that a test PR gets the `notari/scan` status before making that check required.
 
 The rest of this guide is the signed boundary: a human states, under a signature
 the agent cannot forge, which paths the agent may touch, and CI verifies each PR

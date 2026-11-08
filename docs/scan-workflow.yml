@@ -1,6 +1,4 @@
 # Notari scan, the drop-in workflow. Copy this into .github/workflows/notari-scan.yml.
-# The 0.5.0 pin below publishes the legacy status context. Confirm a corrected
-# release publishes notari/scan on a test PR before making that context required.
 #
 # What it does on every pull request, with no keys and no config:
 #   BLOCK        a leaked secret (26 vendor formats, matched in full against
@@ -33,8 +31,7 @@
 # the trigger: keep pull_request_target.
 #
 # The uses: line must point at a release commit whose action.yml has the mode
-# and base-sha inputs (0.5.0 or later). An older pin runs the strict boundary
-# verifier instead and fails closed without a contract.
+# and base-sha inputs and posts notari/scan (0.5.1 or later).
 #
 name: notari-scan
 
@@ -59,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Notari scan
-        uses: manumarri-sudo/notari@04cfc5cf19bbc2652d295665f7f2aee47a3ffe3c  # release action, SHA-pinned; bump on release
+        uses: manumarri-sudo/notari@a33e4c30133b9175774af2a62abcd6474296da85  # release action, SHA-pinned; bump on release
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}
