@@ -1479,49 +1479,6 @@ def frameworks_cmd(
     )
 
 
-@app.command("roster", hidden=True)
-def roster_cmd(
-    log_path: Annotated[
-        Path | None, typer.Option("--log", "-l", help="audit log to read (default: ~/.notari).")
-    ] = None,
-    last: Annotated[int, typer.Option("--last", help="show only the most recent N rows.")] = 20,
-    as_json: Annotated[bool, typer.Option("--json", help="machine-readable output.")] = False,
-) -> None:
-    """Which agents ran, what they were permitted, and what they touched.
-
-    The shadow-AI / audit-readiness view: one row per agent + session, with its
-    action count, verdict mix (allowed / asked / blocked), the tools and
-    directories it touched, and approvals consumed. A read over the audit chain;
-    nothing is written.
-    """
-    from notari import roster as roster_mod
-    from notari.receipt import load_audit_events
-
-    events = load_audit_events(log_path or default_audit_path())
-    rows = roster_mod.derive_roster(events)[:last]
-
-    out = Console()
-    if as_json:
-        out.print_json(data=[r.to_dict() for r in rows])
-        return
-    if not rows:
-        out.print("[yellow]no agent activity in the audit log yet.[/yellow]")
-        return
-    out.print(f"[bold]Agent roster[/bold] ({len(rows)} most-recent agent/session rows)\n")
-    for r in rows:
-        tools = ", ".join(r.tools) or "-"
-        touched = ", ".join(r.touched_dirs) or "-"
-        out.print(f"[bold]{r.agent_id}[/bold]  [dim]session {r.session_id[:12]}[/dim]")
-        out.print(
-            f"  {r.actions} actions · "
-            f"[green]{r.allowed} allowed[/green] · "
-            f"[yellow]{r.asked} asked[/yellow] · "
-            f"[red]{r.blocked} blocked[/red] · {r.approvals} approvals"
-        )
-        out.print(f"  [dim]tools:[/dim] {tools}")
-        out.print(f"  [dim]touched:[/dim] {touched}\n")
-
-
 @app.command(
     "git-hook",
     hidden=True,
