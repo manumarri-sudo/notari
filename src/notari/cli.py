@@ -109,12 +109,6 @@ trifecta_app = typer.Typer(
 )
 app.add_typer(trifecta_app, name="trifecta", hidden=True)
 
-pins_app = typer.Typer(
-    no_args_is_help=True,
-    help="tool description pins: detect rug-pulls and tool-poisoning attacks.",
-)
-app.add_typer(pins_app, name="pins", hidden=True)
-
 approvals_app = typer.Typer(
     no_args_is_help=True,
     help="one-shot approvals - list / revoke pending tokens.",
@@ -4255,78 +4249,6 @@ def trifecta_show(
         )
         return
     Console().print(table)
-
-
-# --------------------------------------------------------------------------
-# pins - tool description pinning (anti-tool-poisoning, anti-rug-pull)
-
-
-@pins_app.command("list")
-def pins_list(
-    upstream: Annotated[str | None, typer.Option("--upstream", "-u")] = None,
-) -> None:
-    """List pinned tools. Pins are auto-recorded on first sight; new digests
-    require explicit approval before the tool is re-advertised to the client.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    if not store.pins:
-        console.print("[dim]no pins yet - pins are recorded on first sight of each tool[/dim]")
-        return
-    table = Table(title="tool pins")
-    table.add_column("upstream", style="dim", no_wrap=True, width=14)
-    table.add_column("tool", no_wrap=True, width=24)
-    table.add_column("digest", style="dim", width=14)
-    table.add_column("first seen", style="dim", width=20)
-    table.add_column("approved by", width=16)
-    table.add_column("status")
-    for (up, name), pin in sorted(store.pins.items()):
-        if upstream and up != upstream:
-            continue
-        status = "[red]revoked[/red]" if pin.revoked_at else "[green]active[/green]"
-        table.add_row(
-            up,
-            name,
-            pin.digest[:12] + "…",
-            pin.first_seen[:19],
-            pin.approved_by,
-            status,
-        )
-    Console().print(table)
-
-
-@pins_app.command("approve")
-def pins_approve(
-    upstream: Annotated[str, typer.Argument(help="upstream name (e.g. filesystem)")],
-    tool_name: Annotated[str, typer.Argument(help="tool name (e.g. read_file)")],
-    digest: Annotated[str, typer.Argument(help="full SHA-256 digest from the refusal message")],
-) -> None:
-    """Approve a new digest for a tool. Use after a legitimate upstream update
-    or after manually inspecting a description change.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    store.approve(upstream, tool_name, digest, by=f"user:{os.environ.get('USER', 'cli')}")
-    console.print(
-        f"[green]approved[/green] {upstream}.{tool_name} digest={digest[:12]}…",
-    )
-
-
-@pins_app.command("revoke")
-def pins_revoke(
-    upstream: Annotated[str, typer.Argument()],
-    tool_name: Annotated[str, typer.Argument()],
-) -> None:
-    """Revoke a pinned tool. Future verify() refuses; tool is hidden from the
-    client until re-approved with a new digest.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    store.revoke(upstream, tool_name)
-    console.print(f"[yellow]revoked[/yellow] {upstream}.{tool_name}")
 
 
 # --------------------------------------------------------------------------
