@@ -1140,6 +1140,61 @@ def verify(
 
     blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
+    # History channel: the added lines of every commit in base..candidate, not only
+    # the net diff. A secret committed and removed later in the same change never
+    # shows in the net diff but stays in the change's Git history (audit s14).
+    # Only reports a (path, pattern) the other channels did not already find.
+    history_secret_findings: list[policy.SecretFinding] = []
+    if base is not None and base != _EMPTY_TREE:
+        try:
+            history_text, history_truncated = _git_capture(
+                [
+                    "git",
+                    "log",
+                    "-p",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--text",
+                    "--no-color",
+                    "--no-renames",
+                    f"{base}..{candidate_sha}",
+                ],
+                root,
+                timeout=limits.git_timeout,
+                max_bytes=limits.max_diff_bytes,
+            )
+        except VerifyError:
+            scan_dispositions.append(
+                "history-scan-inconclusive: could not read the commits in this change; "
+                "secrets in intermediate commits were not checked"
+            )
+        else:
+            if history_truncated:
+                scan_dispositions.append(
+                    f"oversized-history: the commits in this change exceeded "
+                    f"{limits.max_diff_bytes} bytes; secret scanning did not cover every "
+                    "intermediate commit"
+                )
+            reported = {
+                (f.path, f.pattern_name)
+                for f in (*evaluation.secret_findings, *blob_secret_findings)
+            }
+            for df in policy.parse_unified_diff(history_text):
+                for lineno, line in df.added_lines:
+                    for hit in _secrets.scan(line):
+                        if (df.path, hit.pattern_name) in reported:
+                            continue
+                        reported.add((df.path, hit.pattern_name))
+                        history_secret_findings.append(
+                            policy.SecretFinding(
+                                path=df.path,
+                                line=lineno,
+                                pattern_name=hit.pattern_name,
+                                confidence=hit.confidence,
+                            )
+                        )
+
     # Only cooperative boundary verification honors local exceptions. A PR
     # must never be able to waive its own findings in the drop-in scan.
     exceptions = [] if strict or scan_mode else load_exceptions(root)
@@ -1192,6 +1247,8 @@ def verify(
                     if _confidence_of(existing) == "low":
                         all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
                     break
+
+    all_secret_findings.extend(history_secret_findings)
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:

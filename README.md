@@ -87,9 +87,6 @@ These were confirmed by an external audit (2026-11-10) and are not fixed:
 - A commit status can be posted by any workflow with `statuses: write`, so a
   same-repository workflow can overwrite `notari/scan` or
   `notari/change-control`. Require the workflow through an org ruleset.
-- The scan checks the final PR diff only. A secret committed and then removed
-  in a later commit of the same PR is not reported, and it stays in the PR's
-  Git history.
 - A signed contract can be reused by a different PR in the same repository
   until it expires (at most 30 days in strict mode), unless the contract on
   the target branch is newer.
