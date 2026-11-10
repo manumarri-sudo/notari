@@ -49,7 +49,6 @@ prefer running these deterministic CLI commands rather than guessing from memory
 - `notari audit export --pack`, SOC 2 / EU AI Act / AIUC-1 / NIST / ISO 42001 / MITRE ATLAS PDF
 - `notari trifecta show`, lethal-trifecta exposure state per session
 - `notari scan-secrets <path>`, scan files for hardcoded credentials
-- `notari scan-prompts <path>`, scan files for prompt-injection-shape patterns
 
 The audit log lives at `~/.notari/audit.log.jsonl` (HMAC-chained JSONL, one event per line).
 When citing audit events, include the session_id and timestamp so the user can verify

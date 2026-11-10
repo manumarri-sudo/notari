@@ -1716,69 +1716,6 @@ def integrate_cmd(
         )
 
 
-@app.command("scan-prompts", hidden=True)
-def scan_prompts_cmd(
-    paths: Annotated[
-        list[Path],
-        typer.Argument(help="one or more files or directories to scan"),
-    ],
-    no_gitignore: Annotated[
-        bool,
-        typer.Option(
-            "--no-gitignore",
-            help="don't ask git which files to ignore; scan everything (slower)",
-        ),
-    ] = False,
-) -> None:
-    """Scan files for prompt-injection-shape patterns (observation signal only).
-
-    Useful before ingesting third-party text into an agent's context: scrape
-    output, RAG corpora, fetched web pages, user-uploaded documents. Hits do
-    NOT indicate the content is necessarily malicious; they indicate the
-    content has the *shape* of common published injection attacks and is
-    worth a human review before the agent acts on it.
-
-    Exit code is 0 even when hits are found (this is a signal, not a verdict).
-    See `notari scan-secrets` for the hard-block secret detector.
-    """
-    from notari.prompt_injection import scan as pi_scan
-
-    out = Console()
-    total_hits = 0
-    files_scanned = 0
-    for p in paths:
-        targets = _collect_scan_targets(p, respect_gitignore=not no_gitignore)
-        if targets is None:
-            out.print(f"[yellow]skip:[/yellow] {p} (not a file or directory)")
-            continue
-        for f in targets:
-            try:
-                text = f.read_text(errors="replace")
-            except OSError as e:
-                out.print(f"[yellow]skip:[/yellow] {f} ({e})")
-                continue
-            files_scanned += 1
-            hits = pi_scan(text)
-            for h in hits:
-                total_hits += 1
-                out.print(
-                    f"[yellow]injection-shape[/yellow] {f}:{h.line if h.line else '?'}: "
-                    f"[bold]{h.pattern_name}[/bold] ({h.category})",
-                )
-    if total_hits:
-        out.print(
-            f"\n[yellow]{total_hits} injection-shape pattern(s) found across "
-            f"{files_scanned} file(s).[/yellow]\n"
-            "  This is a heuristic SIGNAL, not a verdict. Review the matched "
-            "content; pair with model-level guardrails.",
-        )
-    else:
-        out.print(
-            f"[green]no prompt-injection-shape patterns detected[/green] "
-            f"across {files_scanned} file(s).",
-        )
-
-
 @app.command("scan-secrets", hidden=True)
 def scan_secrets_cmd(
     paths: Annotated[
