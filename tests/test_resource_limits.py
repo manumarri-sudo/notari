@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ import pytest
 from notari import contract as contract_mod
 from notari import verify as verify_mod
 from notari.verify import ScanLimits, Verdict, VerifyError, _git_capture, git_diff
+
+_NOW = datetime.now(UTC)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -115,8 +118,9 @@ def test_oversized_diff_blocks_in_strict(tmp_path: Path) -> None:
         task_source="text",
         allowed_paths=("**",),
         base_commit=base,
-        created_at="2026-01-01T00:00:00Z",
+        created_at=_NOW.isoformat(),
         contract_id="oversize-strict",
+        expires_at=(_NOW + timedelta(days=7)).isoformat(),
         repo="owner/name",
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv_pem, root / ".notari" / "contract.sig")

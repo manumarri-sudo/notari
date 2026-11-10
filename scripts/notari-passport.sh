@@ -291,8 +291,8 @@ echo "Notari verdict: $VERDICT ($SAFE_REASONS)"
 #    This is a copy of the artifact we already trusted, not the source of truth.
 #
 #    SECURITY (red-team 2026-07-22, finding 1): PUBLISH_DIR is inside the
-#    candidate checkout (_pr_checkout/.notari), and .notari is excluded from
-#    scope and symlink scanning, so a PR can commit a symlink here that a naive
+#    candidate checkout (_pr_checkout/.notari), and a PR can commit a symlink
+#    at an evidence path such as passport.json here that a naive
 #    `cp` / `>` would FOLLOW to overwrite a runner file OUTSIDE the checkout. We
 #    refuse a symlinked publish dir, and replace any symlink AT each target with
 #    a real file before writing, so the write lands in the intended directory

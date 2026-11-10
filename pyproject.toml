@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 [project]
 name = "notari"
 version = "0.5.5"
-description = "Scan Git changes for credential patterns and sensitive paths, with optional signed change boundaries."
+description = "Policy gate for Git changes with a signed evidence trail; not a security control against a hostile PR author."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -62,8 +62,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-keyring = ["keyring>=25.7.0"]
-postgres = ["asyncpg>=0.31.0"]
 # Touch-ID-gated approvals on macOS. Optional because the binding is
 # Apple-platform-only; on Linux/Windows the typed-token flow remains
 # the only option. Notari auto-detects availability at runtime.
@@ -83,7 +81,7 @@ otel = [
 # Optional because weasyprint pulls in pango / cairo / harfbuzz at runtime
 # on Linux; the browser path is preferred when present (faster, fewer deps).
 pdf = ["weasyprint>=62"]
-all = ["notari[keyring,postgres,touchid,otel,pdf]"]
+all = ["notari[touchid,otel,pdf]"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",

@@ -72,7 +72,7 @@ def test_wrong_order_boundary_in_diff_cooperative_passes(repo: Path) -> None:
     verify must not flag the signature-valid perimeter files as tamper."""
     priv, pub = _keypair_and_perimeter(repo)
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
     _commit_all(repo, "boundary + contract (after begin: the naive order)")
@@ -97,7 +97,7 @@ def test_wrong_order_boundary_in_diff_strict_still_blocks(repo: Path) -> None:
     its signature is valid, so a PR cannot replay an old signed perimeter."""
     priv, pub = _keypair_and_perimeter(repo)
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
     _commit_all(repo, "boundary + contract inside the PR range")
@@ -123,7 +123,7 @@ def test_correct_order_quickstart_passes_cooperative(repo: Path) -> None:
     priv, pub = _keypair_and_perimeter(repo)
     _commit_all(repo, "notari: signed boundary")
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
     _commit_all(repo, "notari: open task contract")
@@ -151,7 +151,7 @@ def test_wrong_order_untrusted_signature_is_not_exempted(repo: Path) -> None:
     p = perimeter_mod.load(repo)
     provenance_mod.sign_artifact(p.to_dict(), other_priv, perimeter_mod.signature_path(repo))
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     _commit_all(repo, "boundary + contract, untrusted signature")
     (repo / "src" / "app.py").write_text("x = 1\ny = 2\n")
@@ -173,7 +173,7 @@ def test_cooperative_exemption_is_surfaced_not_silent(repo: Path) -> None:
     """When the exemption fires, the passport must say so in its reasons."""
     priv, pub = _keypair_and_perimeter(repo)
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
     _commit_all(repo, "boundary + contract (after begin)")
@@ -232,7 +232,7 @@ def _cli_ready_repo(repo: Path) -> str:
     priv, pub = _keypair_and_perimeter(repo)
     _commit_all(repo, "notari: signed boundary")
     contract, _ = contract_mod.begin(
-        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "add feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     provenance_mod.sign_artifact(contract.to_dict(), priv, repo / ".notari" / "contract.sig")
     _commit_all(repo, "notari: open task contract")
@@ -338,7 +338,7 @@ def test_strict_forged_base_non_ancestor_blocks(repo: Path) -> None:
     # Forge a contract pinned to the sibling base, signed by the trusted key so
     # provenance is valid and only the ancestry check can block it.
     forged, _ = contract_mod.begin(
-        "feature", allowed_paths=("src/**",), root=repo, repo="owner/name"
+        "feature", allowed_paths=("src/**",), root=repo, repo="owner/name", expires_in_days=7
     )
     forged_d = forged.to_dict()
     forged_d["base_commit"] = sibling

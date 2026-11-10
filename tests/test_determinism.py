@@ -17,7 +17,6 @@ What we pin:
   - `fold_handoffs(events)` produces identical handoff pairings.
   - `fold_audit_events(events)` (taint) produces identical state.
   - `payload_hash` is stable across dict key order.
-  - `fingerprint` (pinning) is stable across dict key order.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ import json
 
 from notari import events as ev
 from notari.bridge import fold_handoffs, payload_hash
-from notari.pinning import fingerprint
 from notari.policy import Risk, classify, classify_command
 from notari.receipt import derive_from_events
 from notari.taint import fold_audit_events
@@ -166,22 +164,6 @@ def test_payload_hash_stable_across_key_order() -> None:
     b = {"contract": "task", "to": "sub", "from": "root"}
     c = {"from": "root", "contract": "task", "to": "sub"}
     assert payload_hash(a) == payload_hash(b) == payload_hash(c)
-
-
-def test_fingerprint_stable_across_key_order() -> None:
-    """Tool description fingerprint MUST be stable across dict key
-    order. A drifting hash would force re-approval on every connect."""
-    a = {
-        "name": "search",
-        "description": "find things",
-        "inputSchema": {"properties": {"q": {"type": "string"}}},
-    }
-    b = {
-        "description": "find things",
-        "name": "search",
-        "inputSchema": {"properties": {"q": {"type": "string"}}},
-    }
-    assert fingerprint(a) == fingerprint(b)
 
 
 def test_classifier_no_hidden_state_between_calls() -> None:

@@ -37,6 +37,12 @@ class ContractError(NotariError):
     """Raised when a contract cannot be created, read, or parsed."""
 
 
+# Longest approval `notari verify --strict` accepts, from created_at to
+# expires_at. Bounds how long a signed contract can be replayed
+# (NOTARI_AUDIT.md launch blocker 2).
+MAX_STRICT_LIFETIME = timedelta(days=30)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -172,6 +178,18 @@ class Contract:
         if exp.tzinfo is None:
             return False
         return (now or datetime.now(UTC)) >= exp
+
+    def lifetime(self) -> timedelta | None:
+        """expires_at minus created_at, or None when either is missing, unparseable
+        or timezone-naive. Strict mode treats None as "no usable expiry"."""
+        try:
+            created = datetime.fromisoformat(self.created_at)
+            expires = datetime.fromisoformat(self.expires_at or "")
+        except ValueError:
+            return None
+        if created.tzinfo is None or expires.tzinfo is None:
+            return None
+        return expires - created
 
     def write(self, root: Path) -> Path:
         p = contract_path(root)

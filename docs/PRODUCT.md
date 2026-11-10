@@ -1,8 +1,9 @@
 # Notari, Product & Tiers
 
-Notari is open-source change control for AI coding agents. The core security
-primitive, a human-signed boundary that deterministically gates agent-authored
-diffs, is free and open source **forever**. Paid tiers add the things a *team*
+Notari is open-source change control for AI coding agents: a policy gate with
+a signed evidence trail, not a security control against a hostile pull request
+author. The core primitive, a human-signed boundary that deterministically gates
+agent-authored diffs, is free and open source **forever**. Paid tiers add the things a *team*
 needs once the primitive works: shared policy, history, monitoring, and the
 governance/compliance surface that only makes sense across many repos and people.
 
@@ -27,7 +28,7 @@ Everything below exists in this repository and is covered by tests.
 | Local installation, hook, key and audit chain diagnostics | `notari doctor` |
 | Secure GitHub Action + `pull_request_target` template | `action.yml`, `notari init` |
 | Tamper-evident local audit log (hash-chained) | `notari audit …` |
-| Secret scanning on added lines (incl. UTF-16, `-diff`) | inside `notari verify` |
+| Secret scanning on added lines (UTF-16/32 with a BOM, `-diff` files; not binaries or BOM-less UTF-16) | inside `notari verify` |
 | Submodule / gitlink opacity evidence | inside `notari verify` |
 | Resource ceilings + scan dispositions (no silent PASS) | inside `notari verify` |
 
@@ -39,10 +40,13 @@ Everything below exists in this repository and is covered by tests.
 - Strict mode requires a signed perimeter **and** a signed, repo-bound contract; an
   unbound contract cannot silently pass. (`tests/test_trust_spine.py`,
   `tests/test_contract_expiry.py`)
-- A contract cannot widen past the perimeter; forbidden-path and gate-tamper edits
-  BLOCK. (`tests/test_trust_spine.py`, `tests/test_security_regressions.py`)
-- Oversized / unscannable content is BLOCKed (strict) or flagged (cooperative),
-  never reported as fully scanned. (`tests/test_resource_limits.py`)
+- A contract cannot widen past the perimeter's `allowed_paths` when the perimeter
+  sets them (the default perimeter sets none, so it is no outer bound by default);
+  forbidden-path and gate-tamper edits BLOCK. (`tests/test_trust_spine.py`,
+  `tests/test_security_regressions.py`)
+- Oversized content is BLOCKed (strict) or flagged (cooperative), never reported as
+  fully scanned. (`tests/test_resource_limits.py`) Binaries and BOM-less
+  wide-encoded files are skipped without a disposition (SECURITY-MODEL.md limit 8).
 
 ## What stays open source, forever
 

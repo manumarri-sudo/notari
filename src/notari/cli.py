@@ -109,12 +109,6 @@ trifecta_app = typer.Typer(
 )
 app.add_typer(trifecta_app, name="trifecta", hidden=True)
 
-pins_app = typer.Typer(
-    no_args_is_help=True,
-    help="tool description pins: detect rug-pulls and tool-poisoning attacks.",
-)
-app.add_typer(pins_app, name="pins", hidden=True)
-
 approvals_app = typer.Typer(
     no_args_is_help=True,
     help="one-shot approvals - list / revoke pending tokens.",
@@ -1345,6 +1339,10 @@ def init_cmd(
         f"     [dim]gh secret set NOTARI_APPROVER_PUBKEYS < {keys_shown / 'approver.pub'}[/dim]",
         soft_wrap=True,
     )
+    out.print(
+        f"     [dim]gh variable set NOTARI_GATE_PUBKEYS < {keys_shown / 'gate.pub'}[/dim]",
+        soft_wrap=True,
+    )
     out.print("     [dim](better: keep the approver key on a YubiKey/HSM, never on disk)[/dim]")
     out.print(
         "  2. The workflow uses [bold]pull_request_target[/bold] and SHA-pinned actions (already set)."
@@ -1481,49 +1479,6 @@ def frameworks_cmd(
     )
 
 
-@app.command("roster", hidden=True)
-def roster_cmd(
-    log_path: Annotated[
-        Path | None, typer.Option("--log", "-l", help="audit log to read (default: ~/.notari).")
-    ] = None,
-    last: Annotated[int, typer.Option("--last", help="show only the most recent N rows.")] = 20,
-    as_json: Annotated[bool, typer.Option("--json", help="machine-readable output.")] = False,
-) -> None:
-    """Which agents ran, what they were permitted, and what they touched.
-
-    The shadow-AI / audit-readiness view: one row per agent + session, with its
-    action count, verdict mix (allowed / asked / blocked), the tools and
-    directories it touched, and approvals consumed. A read over the audit chain;
-    nothing is written.
-    """
-    from notari import roster as roster_mod
-    from notari.receipt import load_audit_events
-
-    events = load_audit_events(log_path or default_audit_path())
-    rows = roster_mod.derive_roster(events)[:last]
-
-    out = Console()
-    if as_json:
-        out.print_json(data=[r.to_dict() for r in rows])
-        return
-    if not rows:
-        out.print("[yellow]no agent activity in the audit log yet.[/yellow]")
-        return
-    out.print(f"[bold]Agent roster[/bold] ({len(rows)} most-recent agent/session rows)\n")
-    for r in rows:
-        tools = ", ".join(r.tools) or "-"
-        touched = ", ".join(r.touched_dirs) or "-"
-        out.print(f"[bold]{r.agent_id}[/bold]  [dim]session {r.session_id[:12]}[/dim]")
-        out.print(
-            f"  {r.actions} actions · "
-            f"[green]{r.allowed} allowed[/green] · "
-            f"[yellow]{r.asked} asked[/yellow] · "
-            f"[red]{r.blocked} blocked[/red] · {r.approvals} approvals"
-        )
-        out.print(f"  [dim]tools:[/dim] {tools}")
-        out.print(f"  [dim]touched:[/dim] {touched}\n")
-
-
 @app.command(
     "git-hook",
     hidden=True,
@@ -1611,174 +1566,6 @@ def commit_hook_uninstall(
         console.print(f"[green]removed[/green] {p}")
     else:
         console.print(f"[dim]no hook to remove at[/dim] {p}")
-
-
-@app.command("integrate", hidden=True)
-def integrate_cmd(
-    agent: Annotated[
-        str,
-        typer.Argument(
-            help="agent id (claude-code / cursor / aider) or 'auto' / 'list'",
-        ),
-    ] = "auto",
-    global_scope: Annotated[
-        bool,
-        typer.Option(
-            "--global",
-            help="write to the per-user rules file (~/.claude/CLAUDE.md) instead of the project one",
-        ),
-    ] = False,
-    remove: Annotated[
-        bool,
-        typer.Option("--remove", help="remove the Notari snippet instead of installing"),
-    ] = False,
-) -> None:
-    """Teach your coding agent how to query Notari data via its existing LLM.
-
-    Appends a small instructions snippet to your coding-agent's rules file
-    (CLAUDE.md / .cursorrules / CONVENTIONS.md). The snippet lists the
-    deterministic `notari` commands your agent can run when you ask about
-    agent activity. Idempotent; safe to re-run after Notari upgrades.
-
-    No LLM ships in Notari itself. Your existing coding agent does the asking.
-
-    Examples:
-      notari integrate            # auto-detect agents and prompt for which to set up
-      notari integrate list       # show what's supported + currently installed
-      notari integrate claude-code           # install for Claude Code (project scope)
-      notari integrate claude-code --global  # install for Claude Code (user scope)
-      notari integrate cursor                # install for Cursor in current repo
-      notari integrate claude-code --remove  # uninstall
-    """
-    from notari.integrate import (
-        all_integrations,
-        detect_installed,
-        get_integration,
-        install,
-        uninstall,
-    )
-
-    out = Console()
-
-    if agent == "list":
-        installed = {i.name for i in detect_installed()}
-        out.print("[bold]notari integrate, supported agents[/bold]\n")
-        for entry in all_integrations():
-            mark = "[green]found[/green]" if entry.name in installed else "[dim]not found[/dim]"
-            out.print(f"  {entry.name:14}  {entry.label:18}  {mark}")
-        out.print(
-            "\n[dim]run `notari integrate <name>` to install the rules snippet.[/dim]",
-        )
-        return
-
-    if agent == "auto":
-        found = detect_installed()
-        if not found:
-            out.print("[yellow]no supported coding agents detected.[/yellow]")
-            out.print("  run `notari integrate list` to see what's supported.")
-            raise typer.Exit(code=1)
-        if len(found) == 1:
-            agent = found[0].name
-        else:
-            out.print("[bold]multiple agents detected.[/bold] pick one:")
-            for cand in found:
-                out.print(f"  notari integrate {cand.name}   ({cand.label})")
-            raise typer.Exit(code=0)
-
-    integ = get_integration(agent)
-    if integ is None:
-        out.print(f"[red]unknown agent:[/red] {agent}")
-        out.print("  run `notari integrate list` to see supported agents.")
-        raise typer.Exit(code=1)
-
-    if remove:
-        path, removed = uninstall(integ, global_scope=global_scope)
-        if removed:
-            out.print(f"[green]removed[/green] Notari snippet from {path}")
-        else:
-            out.print(f"[dim]no snippet to remove[/dim] in {path}")
-        return
-
-    try:
-        path, status = install(integ, global_scope=global_scope)
-    except ValueError as e:
-        out.print(f"[red]{e}[/red]")
-        raise typer.Exit(code=1) from e
-
-    status_color = {
-        "installed": "green",
-        "refreshed": "yellow",
-        "current": "dim",
-    }[status]
-    out.print(f"[{status_color}]{status}[/{status_color}]  {path}")
-    if status in ("installed", "refreshed"):
-        out.print(
-            "\n[dim]your coding agent will now know how to query Notari data when you ask.\n"
-            f'try: open {integ.label} and ask "what did the agent do this morning?"[/dim]',
-        )
-
-
-@app.command("scan-prompts", hidden=True)
-def scan_prompts_cmd(
-    paths: Annotated[
-        list[Path],
-        typer.Argument(help="one or more files or directories to scan"),
-    ],
-    no_gitignore: Annotated[
-        bool,
-        typer.Option(
-            "--no-gitignore",
-            help="don't ask git which files to ignore; scan everything (slower)",
-        ),
-    ] = False,
-) -> None:
-    """Scan files for prompt-injection-shape patterns (observation signal only).
-
-    Useful before ingesting third-party text into an agent's context: scrape
-    output, RAG corpora, fetched web pages, user-uploaded documents. Hits do
-    NOT indicate the content is necessarily malicious; they indicate the
-    content has the *shape* of common published injection attacks and is
-    worth a human review before the agent acts on it.
-
-    Exit code is 0 even when hits are found (this is a signal, not a verdict).
-    See `notari scan-secrets` for the hard-block secret detector.
-    """
-    from notari.prompt_injection import scan as pi_scan
-
-    out = Console()
-    total_hits = 0
-    files_scanned = 0
-    for p in paths:
-        targets = _collect_scan_targets(p, respect_gitignore=not no_gitignore)
-        if targets is None:
-            out.print(f"[yellow]skip:[/yellow] {p} (not a file or directory)")
-            continue
-        for f in targets:
-            try:
-                text = f.read_text(errors="replace")
-            except OSError as e:
-                out.print(f"[yellow]skip:[/yellow] {f} ({e})")
-                continue
-            files_scanned += 1
-            hits = pi_scan(text)
-            for h in hits:
-                total_hits += 1
-                out.print(
-                    f"[yellow]injection-shape[/yellow] {f}:{h.line if h.line else '?'}: "
-                    f"[bold]{h.pattern_name}[/bold] ({h.category})",
-                )
-    if total_hits:
-        out.print(
-            f"\n[yellow]{total_hits} injection-shape pattern(s) found across "
-            f"{files_scanned} file(s).[/yellow]\n"
-            "  This is a heuristic SIGNAL, not a verdict. Review the matched "
-            "content; pair with model-level guardrails.",
-        )
-    else:
-        out.print(
-            f"[green]no prompt-injection-shape patterns detected[/green] "
-            f"across {files_scanned} file(s).",
-        )
 
 
 @app.command("scan-secrets", hidden=True)
@@ -4251,78 +4038,6 @@ def trifecta_show(
         )
         return
     Console().print(table)
-
-
-# --------------------------------------------------------------------------
-# pins - tool description pinning (anti-tool-poisoning, anti-rug-pull)
-
-
-@pins_app.command("list")
-def pins_list(
-    upstream: Annotated[str | None, typer.Option("--upstream", "-u")] = None,
-) -> None:
-    """List pinned tools. Pins are auto-recorded on first sight; new digests
-    require explicit approval before the tool is re-advertised to the client.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    if not store.pins:
-        console.print("[dim]no pins yet - pins are recorded on first sight of each tool[/dim]")
-        return
-    table = Table(title="tool pins")
-    table.add_column("upstream", style="dim", no_wrap=True, width=14)
-    table.add_column("tool", no_wrap=True, width=24)
-    table.add_column("digest", style="dim", width=14)
-    table.add_column("first seen", style="dim", width=20)
-    table.add_column("approved by", width=16)
-    table.add_column("status")
-    for (up, name), pin in sorted(store.pins.items()):
-        if upstream and up != upstream:
-            continue
-        status = "[red]revoked[/red]" if pin.revoked_at else "[green]active[/green]"
-        table.add_row(
-            up,
-            name,
-            pin.digest[:12] + "…",
-            pin.first_seen[:19],
-            pin.approved_by,
-            status,
-        )
-    Console().print(table)
-
-
-@pins_app.command("approve")
-def pins_approve(
-    upstream: Annotated[str, typer.Argument(help="upstream name (e.g. filesystem)")],
-    tool_name: Annotated[str, typer.Argument(help="tool name (e.g. read_file)")],
-    digest: Annotated[str, typer.Argument(help="full SHA-256 digest from the refusal message")],
-) -> None:
-    """Approve a new digest for a tool. Use after a legitimate upstream update
-    or after manually inspecting a description change.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    store.approve(upstream, tool_name, digest, by=f"user:{os.environ.get('USER', 'cli')}")
-    console.print(
-        f"[green]approved[/green] {upstream}.{tool_name} digest={digest[:12]}…",
-    )
-
-
-@pins_app.command("revoke")
-def pins_revoke(
-    upstream: Annotated[str, typer.Argument()],
-    tool_name: Annotated[str, typer.Argument()],
-) -> None:
-    """Revoke a pinned tool. Future verify() refuses; tool is hidden from the
-    client until re-approved with a new digest.
-    """
-    from notari.pinning import PinStore
-
-    store = PinStore.load()
-    store.revoke(upstream, tool_name)
-    console.print(f"[yellow]revoked[/yellow] {upstream}.{tool_name}")
 
 
 # --------------------------------------------------------------------------

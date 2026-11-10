@@ -29,6 +29,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,7 +37,7 @@ from notari import events as ev
 from notari import perimeter as perimeter_mod
 from notari import policy
 from notari import provenance as provenance_mod
-from notari.contract import Contract, repo_root
+from notari.contract import MAX_STRICT_LIFETIME, Contract, repo_root
 from notari.errors import NotariError
 from notari.perimeter import GATE_TAMPER_GLOBS, Perimeter, deny_hit
 from notari.provenance import ProvenanceResult
@@ -602,6 +603,55 @@ def _base_line_counts(
     return Counter(text.splitlines())
 
 
+def _replayed_contract_reason(root: Path, contract: Contract, env: dict[str, str]) -> str | None:
+    """Return a BLOCK reason when the candidate's contract is OLDER than the one
+    already on the pull request's target branch (``NOTARI_BASE_SHA``): an earlier
+    signed approval swapped back in (audit t11). Fails closed when the target
+    commit is set but cannot be read. Returns None when no target is given or the
+    target has no contract yet."""
+    target = (env.get("NOTARI_BASE_SHA") or "").strip()
+    if not target:
+        return None
+    if not _is_hex_sha(target):
+        return (
+            f"NOTARI_BASE_SHA {target!r} is not a commit SHA; cannot rule out a replayed contract"
+        )
+    timeout = ScanLimits.from_env(env).git_timeout
+    try:
+        _git_capture(
+            ["git", "cat-file", "-e", f"{target}^{{commit}}"], root, timeout=timeout, max_bytes=64
+        )
+    except VerifyError:
+        return (
+            f"target branch commit {target[:12]} (NOTARI_BASE_SHA) is not in this "
+            "checkout; cannot rule out a replayed contract"
+        )
+    try:
+        raw, _ = _git_capture(
+            ["git", "cat-file", "blob", f"{target}:.notari/contract.json"],
+            root,
+            timeout=timeout,
+            max_bytes=1_000_000,
+        )
+    except VerifyError:
+        return None  # the target branch has no contract yet
+    try:
+        prior = str(json.loads(raw)["created_at"])
+        older = datetime.fromisoformat(contract.created_at) < datetime.fromisoformat(prior)
+    except (ValueError, KeyError, TypeError):
+        return (
+            "cannot compare this contract's created_at with the contract on the "
+            "target branch; refusing to rule out a replayed contract"
+        )
+    if older:
+        return (
+            f"contract created {contract.created_at} is older than the contract "
+            f"already on the target branch (created {prior}); an earlier approval "
+            "cannot be replayed onto this change"
+        )
+    return None
+
+
 def _block_result(
     contract: Contract,
     reason: str,
@@ -754,6 +804,26 @@ def verify(
             root=root,
             head=head,
         )
+    if strict:
+        # An approval must lapse, and not too late: a contract with no expiry, or a
+        # very long one, could be replayed onto any later change (audit k02, k01).
+        # One minute of slack: `begin` stamps expires_at just after created_at.
+        lifetime = contract.lifetime()
+        lifetime_msg = None
+        if lifetime is None:
+            lifetime_msg = (
+                "contract has no usable expiry; strict requires `notari begin "
+                f"--expires-in N` with N at most {MAX_STRICT_LIFETIME.days} days"
+            )
+        elif lifetime > MAX_STRICT_LIFETIME + timedelta(minutes=1):
+            lifetime_msg = (
+                f"contract lifetime of {lifetime.days} days exceeds the "
+                f"{MAX_STRICT_LIFETIME.days}-day strict maximum; re-approve with a "
+                "shorter --expires-in"
+            )
+        replay_msg = lifetime_msg or _replayed_contract_reason(root, contract, _env)
+        if replay_msg:
+            return _block_result(contract, replay_msg, strict=strict, root=root, head=head)
 
     # Resolve the candidate to ONE concrete SHA and use it for the diff, the
     # inventory, and the recorded head, so evaluated == recorded (security review:
@@ -848,7 +918,7 @@ def verify(
     # INVARIANT: the secret scan inside evaluate_diff runs over this --text diff,
     # not the authoritative inventory. Dropping --text would silently regress secret
     # detection on files marked `-diff` in .gitattributes (test_gitattributes_secret).
-    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths, scan_metadata=scan_mode)
+    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths)
 
     # Authoritative changed-path inventory (NUL-delimited, both rename endpoints,
     # binary + mode-only included). This is the source of truth for every path
@@ -866,11 +936,11 @@ def verify(
             f"{limits.max_files}-file ceiling; path policy may be incomplete"
         )
     raw_changed: set[str] = set()  # every touched path, both ends, incl. .notari/
-    policed_changed: set[str] = set()  # scope/surface set: .notari/ excluded
+    policed_changed: set[str] = set()  # scope/surface set: Notari evidence files excluded
     for cp in inventory:
         for p in cp.endpoints:
             raw_changed.add(p)
-            if not p.startswith(".notari/"):
+            if not policy.is_notari_metadata(p):
                 policed_changed.add(p)
     # Detect submodule (gitlink) changes: mode 160000 entries are opaque, the
     # candidate scanner can't read their content (they're commit objects, not
@@ -934,7 +1004,7 @@ def verify(
             if len(cols) < 5:
                 continue
             oldmode, newmode, oldsha, newsha, status = cols[:5]
-            if not path or (not scan_mode and path.startswith(".notari/")):
+            if not path:
                 continue
             # Symlink addition/modification: newmode 120000. Record the target
             # (the blob content) so a reviewer sees where the link points.
@@ -985,7 +1055,7 @@ def verify(
         for p in (df.path, df.old_path):
             if p and p != "/dev/null":  # /dev/null is the add/delete sentinel
                 raw_changed.add(p)
-                if not p.startswith(".notari/"):
+                if not policy.is_notari_metadata(p):
                     policed_changed.add(p)
 
     # Blob-level secret scan: read each touched file from the CANDIDATE COMMIT
@@ -1005,8 +1075,6 @@ def verify(
         if cp.status == "D":
             continue
         dest = cp.path
-        if not scan_mode and dest.startswith(".notari/"):
-            continue
         text, blob_truncated = _read_candidate_blob(root, candidate_sha, dest, limits=limits)
         if blob_truncated:
             scan_dispositions.append(
@@ -1073,6 +1141,61 @@ def verify(
 
     blob_secret_findings.sort(key=lambda f: (f.path, f.line, f.pattern_name))
 
+    # History channel: the added lines of every commit in base..candidate, not only
+    # the net diff. A secret committed and removed later in the same change never
+    # shows in the net diff but stays in the change's Git history (audit s14).
+    # Only reports a (path, pattern) the other channels did not already find.
+    history_secret_findings: list[policy.SecretFinding] = []
+    if base is not None and base != _EMPTY_TREE:
+        try:
+            history_text, history_truncated = _git_capture(
+                [
+                    "git",
+                    "log",
+                    "-p",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--text",
+                    "--no-color",
+                    "--no-renames",
+                    f"{base}..{candidate_sha}",
+                ],
+                root,
+                timeout=limits.git_timeout,
+                max_bytes=limits.max_diff_bytes,
+            )
+        except VerifyError:
+            scan_dispositions.append(
+                "history-scan-inconclusive: could not read the commits in this change; "
+                "secrets in intermediate commits were not checked"
+            )
+        else:
+            if history_truncated:
+                scan_dispositions.append(
+                    f"oversized-history: the commits in this change exceeded "
+                    f"{limits.max_diff_bytes} bytes; secret scanning did not cover every "
+                    "intermediate commit"
+                )
+            reported = {
+                (f.path, f.pattern_name)
+                for f in (*evaluation.secret_findings, *blob_secret_findings)
+            }
+            for df in policy.parse_unified_diff(history_text):
+                for lineno, line in df.added_lines:
+                    for hit in _secrets.scan(line):
+                        if (df.path, hit.pattern_name) in reported:
+                            continue
+                        reported.add((df.path, hit.pattern_name))
+                        history_secret_findings.append(
+                            policy.SecretFinding(
+                                path=df.path,
+                                line=lineno,
+                                pattern_name=hit.pattern_name,
+                                confidence=hit.confidence,
+                            )
+                        )
+
     # Only cooperative boundary verification honors local exceptions. A PR
     # must never be able to waive its own findings in the drop-in scan.
     exceptions = [] if strict or scan_mode else load_exceptions(root)
@@ -1125,6 +1248,8 @@ def verify(
                     if _confidence_of(existing) == "low":
                         all_secret_findings[i] = dataclasses.replace(existing, confidence="high")
                     break
+
+    all_secret_findings.extend(history_secret_findings)
 
     unwaived_secrets: list[policy.SecretFinding] = []
     for f in all_secret_findings:

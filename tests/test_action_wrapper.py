@@ -875,3 +875,42 @@ def test_scan_mode_requires_head_commit_binding(repo: tuple[Path, dict[str, str]
     )
     assert proc.returncode == 2
     assert "head_commit" in (proc.stdout + proc.stderr)
+
+
+def _scan_template_block_on_review() -> str:
+    """The block-on-review value a user gets from docs/scan-workflow.yml: the
+    template's own `with:` value, else the action.yml input default."""
+    import re
+
+    repo_root = WRAPPER.parent.parent
+    template = (repo_root / "docs" / "scan-workflow.yml").read_text()
+    m = re.search(r'^\s*block-on-review:\s*"?(\w+)"?\s*$', template, re.M)
+    if m:
+        return m.group(1)
+    action = (repo_root / "action.yml").read_text()
+    m = re.search(r"^  block-on-review:\n(?:    .*\n)*?    default:\s*\"?(\w+)\"?", action, re.M)
+    assert m, "action.yml has no block-on-review default"
+    return m.group(1)
+
+
+def test_scan_template_fails_needs_review(repo: tuple[Path, dict[str, str]]) -> None:
+    """NOTARI_AUDIT.md launch blocker 5 (g05, t07, w02): with the default scan
+    template a NEEDS_REVIEW verdict (symlink to /etc/passwd, submodule swap)
+    exited 0 and posted a green `success` status."""
+    if not WRAPPER.exists():
+        pytest.skip("wrapper script not present")
+    root, env = repo
+    head_sha = _repo_head(root, env)
+    bin_dir = root.parent / "fakebin_scan_review"
+    _install_fake_notari(bin_dir, rc=0, verdict="NEEDS_REVIEW", exit_code=0, head_commit=head_sha)
+    proc = _wrapper(
+        root,
+        env,
+        {
+            "PATH": str(bin_dir) + os.pathsep + env["PATH"],
+            "NOTARI_MODE": "scan",
+            "NOTARI_BLOCK_ON_REVIEW": _scan_template_block_on_review(),
+        },
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "NEEDS_REVIEW treated as BLOCK" in proc.stdout + proc.stderr

@@ -121,7 +121,9 @@ def test_contract_bound_to_other_repo_blocks_in_strict(repo: Path) -> None:
     """A contract bound to owner/A must not authorize a change in owner/B (H-5)."""
     priv_pem, pub_pem = attest.generate_keypair()
     perim = _sign_perimeter_and_commit(repo, priv_pem)
-    c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/A")
+    c, _ = contract_mod.begin(
+        "task", allowed_paths=["src/**"], root=repo, repo="owner/A", expires_in_days=7
+    )
     provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".notari" / "contract.sig")
     env = {provenance_mod.APPROVER_ENV: pub_pem, "NOTARI_REPO_ID": "owner/B"}
     result = verify_mod.verify(contract=c, root=repo, perimeter=perim, strict=True, env=env)
@@ -132,7 +134,9 @@ def test_contract_bound_to_other_repo_blocks_in_strict(repo: Path) -> None:
 def test_contract_bound_to_matching_repo_passes_strict(repo: Path) -> None:
     priv_pem, pub_pem = attest.generate_keypair()
     perim = _sign_perimeter_and_commit(repo, priv_pem)
-    c, _ = contract_mod.begin("task", allowed_paths=["src/**"], root=repo, repo="owner/A")
+    c, _ = contract_mod.begin(
+        "task", allowed_paths=["src/**"], root=repo, repo="owner/A", expires_in_days=7
+    )
     provenance_mod.sign_artifact(c.to_dict(), priv_pem, repo / ".notari" / "contract.sig")
     (repo / "src" / "app.py").write_text("x = 2\n")
     _git(repo, "add", "-A")

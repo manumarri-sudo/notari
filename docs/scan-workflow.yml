@@ -45,3 +45,8 @@ jobs:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-sha: ${{ github.event.pull_request.base.sha }}
           checkout-path: _pr_checkout
+          # Fail the check on NEEDS_REVIEW (a symlink, a submodule swap, a
+          # low-confidence credential), not only on BLOCK. Without this a
+          # review-class finding posts a green status. Set "false" only if a
+          # separate human review gates NEEDS_REVIEW.
+          block-on-review: "true"
