@@ -7,6 +7,7 @@ it cannot silently regress. Tests are named after the finding ID they cover.
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from notari import provenance as provenance_mod
 from notari import verify as verify_mod
 from notari.policy import _glob_segments
 from notari.verify import Verdict
+
+_NOW = datetime.now(UTC)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -570,8 +573,9 @@ class TestBaseCommitAncestry:
             task_source="text",
             allowed_paths=("**",),
             base_commit=head_sha,
-            created_at="2026-01-01T00:00:00Z",
+            created_at=_NOW.isoformat(),
             contract_id="test-ancestry",
+            expires_at=(_NOW + timedelta(days=7)).isoformat(),
             repo="owner/name",
         )
         # Sign the contract with an externally-pinned key so the strict path

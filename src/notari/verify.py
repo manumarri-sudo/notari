@@ -29,6 +29,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,7 +37,7 @@ from notari import events as ev
 from notari import perimeter as perimeter_mod
 from notari import policy
 from notari import provenance as provenance_mod
-from notari.contract import Contract, repo_root
+from notari.contract import MAX_STRICT_LIFETIME, Contract, repo_root
 from notari.errors import NotariError
 from notari.perimeter import GATE_TAMPER_GLOBS, Perimeter, deny_hit
 from notari.provenance import ProvenanceResult
@@ -602,6 +603,55 @@ def _base_line_counts(
     return Counter(text.splitlines())
 
 
+def _replayed_contract_reason(root: Path, contract: Contract, env: dict[str, str]) -> str | None:
+    """Return a BLOCK reason when the candidate's contract is OLDER than the one
+    already on the pull request's target branch (``NOTARI_BASE_SHA``): an earlier
+    signed approval swapped back in (audit t11). Fails closed when the target
+    commit is set but cannot be read. Returns None when no target is given or the
+    target has no contract yet."""
+    target = (env.get("NOTARI_BASE_SHA") or "").strip()
+    if not target:
+        return None
+    if not _is_hex_sha(target):
+        return (
+            f"NOTARI_BASE_SHA {target!r} is not a commit SHA; cannot rule out a replayed contract"
+        )
+    timeout = ScanLimits.from_env(env).git_timeout
+    try:
+        _git_capture(
+            ["git", "cat-file", "-e", f"{target}^{{commit}}"], root, timeout=timeout, max_bytes=64
+        )
+    except VerifyError:
+        return (
+            f"target branch commit {target[:12]} (NOTARI_BASE_SHA) is not in this "
+            "checkout; cannot rule out a replayed contract"
+        )
+    try:
+        raw, _ = _git_capture(
+            ["git", "cat-file", "blob", f"{target}:.notari/contract.json"],
+            root,
+            timeout=timeout,
+            max_bytes=1_000_000,
+        )
+    except VerifyError:
+        return None  # the target branch has no contract yet
+    try:
+        prior = str(json.loads(raw)["created_at"])
+        older = datetime.fromisoformat(contract.created_at) < datetime.fromisoformat(prior)
+    except (ValueError, KeyError, TypeError):
+        return (
+            "cannot compare this contract's created_at with the contract on the "
+            "target branch; refusing to rule out a replayed contract"
+        )
+    if older:
+        return (
+            f"contract created {contract.created_at} is older than the contract "
+            f"already on the target branch (created {prior}); an earlier approval "
+            "cannot be replayed onto this change"
+        )
+    return None
+
+
 def _block_result(
     contract: Contract,
     reason: str,
@@ -754,6 +804,25 @@ def verify(
             root=root,
             head=head,
         )
+    if strict:
+        # An approval must lapse, and not too late: a contract with no expiry, or a
+        # very long one, could be replayed onto any later change (audit k02, k01).
+        lifetime = contract.lifetime()
+        lifetime_msg = None
+        if lifetime is None:
+            lifetime_msg = (
+                "contract has no usable expiry; strict requires `notari begin "
+                f"--expires-in N` with N at most {MAX_STRICT_LIFETIME.days} days"
+            )
+        elif lifetime > MAX_STRICT_LIFETIME:
+            lifetime_msg = (
+                f"contract lifetime of {lifetime.days} days exceeds the "
+                f"{MAX_STRICT_LIFETIME.days}-day strict maximum; re-approve with a "
+                "shorter --expires-in"
+            )
+        replay_msg = lifetime_msg or _replayed_contract_reason(root, contract, _env)
+        if replay_msg:
+            return _block_result(contract, replay_msg, strict=strict, root=root, head=head)
 
     # Resolve the candidate to ONE concrete SHA and use it for the diff, the
     # inventory, and the recorded head, so evaluated == recorded (security review:

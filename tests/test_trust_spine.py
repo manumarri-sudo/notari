@@ -72,7 +72,11 @@ def _begin(repo: Path, priv: str | None = None) -> contract_mod.Contract:
     if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo).returncode != 0:
         _git(repo, "commit", "-m", "perimeter setup")
     c, _ = contract_mod.begin(
-        "standing perimeter task", allowed_paths=(), root=repo, repo="owner/name"
+        "standing perimeter task",
+        allowed_paths=(),
+        root=repo,
+        repo="owner/name",
+        expires_in_days=7,
     )
     if priv is not None:
         provenance_mod.sign_artifact(c.to_dict(), priv, repo / ".notari" / "contract.sig")
