@@ -7,8 +7,8 @@
 
 Notari is an open-source alpha for reviewing committed Git changes. It is
 a policy gate with a signed evidence trail, not a security control against a
-hostile pull request author: it catches careless agent changes, and a PR
-author who is trying to evade it can (see [Known limitations](#known-limitations)).
+hostile pull request author. It catches careless agent changes; a PR author
+who is trying to evade it can get past it (see [Known limitations](#known-limitations)).
 
 Its scan flags workflow edits, checks added lines against
 26 vendor-format secret patterns, and flags test, CI, lockfile, git-config and
