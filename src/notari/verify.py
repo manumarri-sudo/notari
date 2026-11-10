@@ -848,7 +848,7 @@ def verify(
     # INVARIANT: the secret scan inside evaluate_diff runs over this --text diff,
     # not the authoritative inventory. Dropping --text would silently regress secret
     # detection on files marked `-diff` in .gitattributes (test_gitattributes_secret).
-    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths, scan_metadata=scan_mode)
+    evaluation = policy.evaluate_diff(diff_text, contract.allowed_paths)
 
     # Authoritative changed-path inventory (NUL-delimited, both rename endpoints,
     # binary + mode-only included). This is the source of truth for every path
@@ -866,11 +866,11 @@ def verify(
             f"{limits.max_files}-file ceiling; path policy may be incomplete"
         )
     raw_changed: set[str] = set()  # every touched path, both ends, incl. .notari/
-    policed_changed: set[str] = set()  # scope/surface set: .notari/ excluded
+    policed_changed: set[str] = set()  # scope/surface set: Notari evidence files excluded
     for cp in inventory:
         for p in cp.endpoints:
             raw_changed.add(p)
-            if not p.startswith(".notari/"):
+            if not policy.is_notari_metadata(p):
                 policed_changed.add(p)
     # Detect submodule (gitlink) changes: mode 160000 entries are opaque, the
     # candidate scanner can't read their content (they're commit objects, not
@@ -934,7 +934,7 @@ def verify(
             if len(cols) < 5:
                 continue
             oldmode, newmode, oldsha, newsha, status = cols[:5]
-            if not path or (not scan_mode and path.startswith(".notari/")):
+            if not path:
                 continue
             # Symlink addition/modification: newmode 120000. Record the target
             # (the blob content) so a reviewer sees where the link points.
@@ -985,7 +985,7 @@ def verify(
         for p in (df.path, df.old_path):
             if p and p != "/dev/null":  # /dev/null is the add/delete sentinel
                 raw_changed.add(p)
-                if not p.startswith(".notari/"):
+                if not policy.is_notari_metadata(p):
                     policed_changed.add(p)
 
     # Blob-level secret scan: read each touched file from the CANDIDATE COMMIT
@@ -1005,8 +1005,6 @@ def verify(
         if cp.status == "D":
             continue
         dest = cp.path
-        if not scan_mode and dest.startswith(".notari/"):
-            continue
         text, blob_truncated = _read_candidate_blob(root, candidate_sha, dest, limits=limits)
         if blob_truncated:
             scan_dispositions.append(

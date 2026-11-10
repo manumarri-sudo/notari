@@ -2449,9 +2449,30 @@ def classify_sensitive_surface(path: str) -> str | None:
     return None
 
 
-def evaluate_diff(
-    diff_text: str, allowed_paths: Sequence[str], *, scan_metadata: bool = False
-) -> DiffEvaluation:
+# Notari's own files. These are the only paths under .notari/ that are exempt
+# from the contract scope check (NOTARI_AUDIT.md launch blocker 1). Perimeter
+# and approver files are gate-tamper surfaces, judged by that rule instead.
+# Every .notari/ path is still secret-scanned.
+_NOTARI_METADATA = frozenset(
+    {
+        ".notari/contract.json",
+        ".notari/contract.sig",
+        ".notari/passport.json",
+        ".notari/passport.md",
+        ".notari/status-fingerprint",
+        ".notari/exceptions.json",
+        ".notari/perimeter.json",
+        ".notari/perimeter.sig",
+    }
+)
+
+
+def is_notari_metadata(path: str) -> bool:
+    """True only for Notari's own files, never for other .notari/ paths."""
+    return path in _NOTARI_METADATA or path.startswith(".notari/approvers/")
+
+
+def evaluate_diff(diff_text: str, allowed_paths: Sequence[str]) -> DiffEvaluation:
     """Deterministically evaluate a unified diff against a contract scope.
 
     Returns the raw evidence - out-of-scope paths, secret hits on added lines,
@@ -2463,11 +2484,11 @@ def evaluate_diff(
     """
     from notari import secrets as _secrets
 
-    # Notari's own metadata dir (contract.json, exceptions.json, passport.*) is
-    # never agent-authored code; committing it must not register as an
-    # out-of-scope change against the contract it describes.
+    # Notari's own evidence files (contract.json, passport.*, ...) must not
+    # register as an out-of-scope change against the contract they describe.
+    # Any OTHER path under .notari/ is policed like the rest of the tree.
     all_files = tuple(parse_unified_diff(diff_text))
-    files = tuple(f for f in all_files if not f.path.startswith(".notari/"))
+    files = tuple(f for f in all_files if not is_notari_metadata(f.path))
     allowed = tuple(allowed_paths)
 
     out_of_scope: list[str] = []
@@ -2506,9 +2527,8 @@ def evaluate_diff(
             if sp and not path_in_scope(sp, allowed) and sp not in out_of_scope:
                 out_of_scope.append(sp)
 
-    # A scan has no trusted boundary metadata. Its secrets check covers this
-    # directory as well as the rest of the candidate.
-    for f in all_files if scan_metadata else files:
+    # Secrets are scanned everywhere, .notari/ included, in every mode.
+    for f in all_files:
         for lineno, text in f.added_lines:
             for hit in _secrets.scan(text):
                 secret_findings.append(
