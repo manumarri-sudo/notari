@@ -29,7 +29,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -807,6 +807,7 @@ def verify(
     if strict:
         # An approval must lapse, and not too late: a contract with no expiry, or a
         # very long one, could be replayed onto any later change (audit k02, k01).
+        # One minute of slack: `begin` stamps expires_at just after created_at.
         lifetime = contract.lifetime()
         lifetime_msg = None
         if lifetime is None:
@@ -814,7 +815,7 @@ def verify(
                 "contract has no usable expiry; strict requires `notari begin "
                 f"--expires-in N` with N at most {MAX_STRICT_LIFETIME.days} days"
             )
-        elif lifetime > MAX_STRICT_LIFETIME:
+        elif lifetime > MAX_STRICT_LIFETIME + timedelta(minutes=1):
             lifetime_msg = (
                 f"contract lifetime of {lifetime.days} days exceeds the "
                 f"{MAX_STRICT_LIFETIME.days}-day strict maximum; re-approve with a "

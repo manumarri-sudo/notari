@@ -163,3 +163,15 @@ def test_unresolvable_target_base_fails_closed(base) -> None:  # type: ignore[no
     _commit(repo, "src/api/app.py", "x = 2\n")
     result = _strict(repo, c, {**env, "NOTARI_BASE_SHA": "f" * 40})
     assert result.verdict is Verdict.BLOCK
+
+
+def test_begin_with_max_lifetime_passes(base) -> None:  # type: ignore[no-untyped-def]
+    """`notari begin --expires-in 30` must satisfy the 30-day strict cap even though
+    begin stamps expires_at a few microseconds after created_at."""
+    repo, priv, env = base
+    c, _ = contract_mod.begin(
+        "task", allowed_paths=("**",), root=repo, repo="owner/name", expires_in_days=30
+    )
+    provenance_mod.sign_artifact(c.to_dict(), priv, repo / ".notari" / "contract.sig")
+    _commit(repo, "other.py", "z = 1\n")
+    assert _strict(repo, c, env).verdict is Verdict.PASS
