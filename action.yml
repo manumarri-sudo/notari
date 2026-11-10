@@ -1,10 +1,12 @@
 name: "Notari Change Control"
 description: >-
-  Drop-in scan for AI-written pull requests: blocks leaked secrets and edits to
-  your workflows, action manifests and approver keys, flags CI, lockfile and git
-  config changes for review, and posts the evidence as a commit Status Check. No
-  keys, no config. Set mode to "boundary" to verify the diff against a
-  human-signed perimeter and contract and issue a gate-signed Change Passport.
+  Policy gate with a signed evidence trail for AI-written pull requests, not a
+  security control against a hostile PR author. Blocks added lines matching 26
+  vendor-format secret patterns and edits to your workflows, action manifests
+  and approver keys, flags CI, lockfile and git config changes for review, and
+  posts the evidence as a commit Status Check. Set mode to "boundary" to verify
+  the diff against a human-signed perimeter and contract and issue a
+  gate-signed Change Passport.
 author: "Manu Marri"
 branding:
   icon: "shield"

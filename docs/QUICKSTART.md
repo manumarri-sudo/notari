@@ -101,7 +101,11 @@ from `$GITHUB_REPOSITORY`.
 Pass `--key` so the contract is **signed**: an unsigned contract cannot establish
 provenance under `notari verify --strict` (the CI default), so the boundary wouldn't
 actually enforce. `--expires-in` takes a number of days; after it lapses,
-`notari verify --strict` BLOCKs so a stale approval can't authorize work forever. In
+`notari verify --strict` BLOCKs. Strict mode also BLOCKs a contract with no
+`--expires-in` or one longer than 30 days, and, when CI supplies the PR base
+(`NOTARI_BASE_SHA`), a contract older than the one already on the target branch.
+A signed contract can still be reused by another PR in the same repository until
+it expires. In
 CI the repo is bound automatically from `$GITHUB_REPOSITORY`; locally pass `--repo
 owner/name`. (The contract commit itself lands after the base by design; verify
 exempts it because its integrity is protected by the approver signature, which

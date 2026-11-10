@@ -288,8 +288,9 @@ def default_perimeter(
     """A secure-by-default standing perimeter.
 
     Forbids the gate's own trust surfaces out of the box, blocks secrets, and
-    sends CI/lockfile edits to human review. Callers add project-specific
-    forbidden paths (auth, migrations, infra) on top.
+    sends CI, lockfile and git-config edits to human review. Test files are NOT
+    a default review surface. Callers add project-specific forbidden paths
+    (auth, migrations, infra) on top.
     """
     created = _now()
     forbidden = tuple(dict.fromkeys((*GATE_TAMPER_GLOBS, *forbidden_paths)))
