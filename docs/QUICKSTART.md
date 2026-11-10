@@ -199,6 +199,7 @@ To reach 🟢 you move three things off the machine (Notari prints the commands)
 ```bash
 gh secret set NOTARI_GATE_KEY < .notari/keys/gate.pem
 gh secret set NOTARI_APPROVER_PUBKEYS < .notari/keys/approver.pub
+gh variable set NOTARI_GATE_PUBKEYS < .notari/keys/gate.pub
 # then delete the local private keys, and make the `notari/change-control`
 # status check REQUIRED in branch protection on main.
 ```

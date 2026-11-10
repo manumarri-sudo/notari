@@ -1345,6 +1345,10 @@ def init_cmd(
         f"     [dim]gh secret set NOTARI_APPROVER_PUBKEYS < {keys_shown / 'approver.pub'}[/dim]",
         soft_wrap=True,
     )
+    out.print(
+        f"     [dim]gh variable set NOTARI_GATE_PUBKEYS < {keys_shown / 'gate.pub'}[/dim]",
+        soft_wrap=True,
+    )
     out.print("     [dim](better: keep the approver key on a YubiKey/HSM, never on disk)[/dim]")
     out.print(
         "  2. The workflow uses [bold]pull_request_target[/bold] and SHA-pinned actions (already set)."
